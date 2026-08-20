@@ -1,126 +1,164 @@
-// E203 HBirdv2 IFU Top — wires IfuIfetch, IfuMinidec, LiteBpu, Ift2Icb
-// Simplified: no RVC (16-bit) support, ITCM-only fetch path.
-module IfuTop (
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+module e203_ifu_top (
   input logic clk,
   input logic rst_n,
-  output logic o_valid,
-  input logic o_ready,
-  output logic [32-1:0] o_instr,
-  output logic [32-1:0] o_pc,
-  output logic o_bus_err,
-  input logic exu_redirect,
-  input logic [32-1:0] exu_redirect_pc,
-  output logic itcm_cmd_valid,
-  output logic [14-1:0] itcm_cmd_addr,
-  input logic itcm_cmd_ready,
-  input logic itcm_rsp_valid,
-  input logic [32-1:0] itcm_rsp_data,
-  output logic itcm_rsp_ready,
+  output logic [31:0] inspect_pc,
+  output logic ifu_active,
+  input logic itcm_nohold,
+  input logic [31:0] pc_rtvec,
+  input logic ifu2itcm_holdup,
+  input logic [31:0] itcm_region_indic,
+  output logic ifu2itcm_icb_cmd_valid,
+  input logic ifu2itcm_icb_cmd_ready,
+  output logic [15:0] ifu2itcm_icb_cmd_addr,
+  input logic ifu2itcm_icb_rsp_valid,
+  output logic ifu2itcm_icb_rsp_ready,
+  input logic ifu2itcm_icb_rsp_err,
+  input logic [63:0] ifu2itcm_icb_rsp_rdata,
+  output logic ifu2biu_icb_cmd_valid,
+  input logic ifu2biu_icb_cmd_ready,
+  output logic [31:0] ifu2biu_icb_cmd_addr,
+  input logic ifu2biu_icb_rsp_valid,
+  output logic ifu2biu_icb_rsp_ready,
+  input logic ifu2biu_icb_rsp_err,
+  input logic [31:0] ifu2biu_icb_rsp_rdata,
+  output logic [31:0] ifu_o_ir,
+  output logic [31:0] ifu_o_pc,
+  output logic ifu_o_pc_vld,
+  output logic ifu_o_misalgn,
+  output logic ifu_o_buserr,
+  output logic [4:0] ifu_o_rs1idx,
+  output logic [4:0] ifu_o_rs2idx,
+  output logic ifu_o_prdt_taken,
+  output logic ifu_o_muldiv_b2b,
+  output logic ifu_o_valid,
+  input logic ifu_o_ready,
+  output logic pipe_flush_ack,
+  input logic pipe_flush_req,
+  input logic [31:0] pipe_flush_add_op1,
+  input logic [31:0] pipe_flush_add_op2,
+  input logic [31:0] pipe_flush_pc,
+  input logic ifu_halt_req,
+  output logic ifu_halt_ack,
   input logic oitf_empty,
-  input logic ir_empty,
-  input logic ir_rs1en,
-  input logic jalr_rs1idx_cam_irrdidx,
-  input logic ir_valid_clr,
-  input logic [32-1:0] rf2bpu_x1,
-  input logic [32-1:0] rf2bpu_rs1,
-  output logic bpu_wait,
-  output logic bpu2rf_rs1_ena,
-  output logic prdt_taken,
-  output logic [32-1:0] prdt_pc_add_op1,
-  output logic [32-1:0] prdt_pc_add_op2,
-  output logic dec_is_bjp,
-  output logic dec_is_lui,
-  output logic dec_is_auipc
+  input logic [31:0] rf2ifu_x1,
+  input logic [31:0] rf2ifu_rs1,
+  input logic dec2ifu_rden,
+  input logic dec2ifu_rs1en,
+  input logic [4:0] dec2ifu_rdidx,
+  input logic dec2ifu_mulhsu,
+  input logic dec2ifu_div,
+  input logic dec2ifu_rem,
+  input logic dec2ifu_divu,
+  input logic dec2ifu_remu
 );
 
-  // Output to EXU: decoded instruction
-  // Branch redirect from EXU
-  // ITCM interface
-  // OITF/regfile inputs for BPU
-  // BPU outputs
-  // Mini-decoder classification (used by EXU for decode hints)
-  // ── IfuIfetch: PC generation + fetch state machine ──────────────────
-  logic ifetch_req_valid;
-  logic [32-1:0] ifetch_req_addr;
-  logic ifetch_rsp_ready;
-  IfuIfetch ifetch (
-    .clk(clk),
-    .rst(rst_n),
-    .req_ready(icb_req_ready),
-    .rsp_valid(icb_rsp_valid),
-    .rsp_instr(icb_rsp_instr),
-    .rsp_err(1'b0),
-    .o_ready(o_ready),
-    .redirect(exu_redirect),
-    .redirect_pc(exu_redirect_pc),
-    .req_valid(ifetch_req_valid),
-    .req_addr(ifetch_req_addr),
-    .rsp_ready(ifetch_rsp_ready),
-    .o_valid(o_valid),
-    .o_instr(o_instr),
-    .o_pc(o_pc),
-    .o_bus_err(o_bus_err)
-  );
-  // ── Ift2Icb: fetch-to-ITCM bridge ──────────────────────────────────
-  logic icb_req_ready;
-  logic icb_rsp_valid;
-  logic [32-1:0] icb_rsp_instr;
-  Ift2Icb icb (
+  assign ifu_active = 1'b1;
+  logic ifu_req_valid_w;
+  logic ifu_req_ready_w;
+  logic [31:0] ifu_req_pc_w;
+  logic ifu_rsp_valid_w;
+  logic ifu_rsp_ready_w;
+  logic [31:0] ifu_rsp_instr_w;
+  logic ifu_req_seq_w;
+  logic ifu_req_seq_rv32_w;
+  logic [31:0] ifu_req_last_pc_w;
+  logic ifu_rsp_err_w;
+  e203_ifu_ifetch ifetch (
     .clk(clk),
     .rst_n(rst_n),
-    .ifu_req_valid(ifetch_req_valid),
-    .ifu_req_pc(ifetch_req_addr),
-    .ifu_rsp_ready(ifetch_rsp_ready),
-    .itcm_cmd_ready(itcm_cmd_ready),
-    .itcm_rsp_valid(itcm_rsp_valid),
-    .itcm_rsp_data(itcm_rsp_data),
-    .ifu_req_ready(icb_req_ready),
-    .ifu_rsp_valid(icb_rsp_valid),
-    .ifu_rsp_instr(icb_rsp_instr),
-    .itcm_cmd_valid(itcm_cmd_valid),
-    .itcm_cmd_addr(itcm_cmd_addr),
-    .itcm_rsp_ready(itcm_rsp_ready)
-  );
-  // ── IfuMinidec: classify fetched instruction ────────────────────────
-  logic mdec_is_jal;
-  logic mdec_is_jalr;
-  logic mdec_is_bxx;
-  logic signed [21-1:0] mdec_bjp_imm;
-  logic [5-1:0] mdec_rs1_idx;
-  IfuMinidec mdec (
-    .instr(o_instr),
-    .o_is_bjp(dec_is_bjp),
-    .o_is_jal(mdec_is_jal),
-    .o_is_jalr(mdec_is_jalr),
-    .o_is_bxx(mdec_is_bxx),
-    .o_is_lui(dec_is_lui),
-    .o_is_auipc(dec_is_auipc),
-    .o_bjp_imm(mdec_bjp_imm),
-    .o_rs1_idx(mdec_rs1_idx)
-  );
-  // ── LiteBpu: static branch prediction ──────────────────────────────
-  LiteBpu bpu (
-    .clk(clk),
-    .rst_n(rst_n),
-    .pc(o_pc),
-    .dec_jal(mdec_is_jal),
-    .dec_jalr(mdec_is_jalr),
-    .dec_bxx(mdec_is_bxx),
-    .dec_bjp_imm(32'($unsigned(mdec_bjp_imm))),
-    .dec_jalr_rs1idx(mdec_rs1_idx),
+    .pc_rtvec(pc_rtvec),
+    .ifu_req_ready(ifu_req_ready_w),
+    .ifu_rsp_valid(ifu_rsp_valid_w),
+    .ifu_rsp_err(1'b0),
+    .ifu_rsp_instr(ifu_rsp_instr_w),
+    .ifu_o_ready(ifu_o_ready),
+    .pipe_flush_req(pipe_flush_req),
+    .pipe_flush_add_op1(pipe_flush_add_op1),
+    .pipe_flush_add_op2(pipe_flush_add_op2),
+    .pipe_flush_pc(pipe_flush_pc),
+    .ifu_halt_req(ifu_halt_req),
     .oitf_empty(oitf_empty),
-    .ir_empty(ir_empty),
-    .ir_rs1en(ir_rs1en),
-    .jalr_rs1idx_cam_irrdidx(jalr_rs1idx_cam_irrdidx),
-    .dec_i_valid(o_valid),
-    .ir_valid_clr(ir_valid_clr),
-    .rf2bpu_x1(rf2bpu_x1),
-    .rf2bpu_rs1(rf2bpu_rs1),
-    .prdt_taken(prdt_taken),
-    .prdt_pc_add_op1(prdt_pc_add_op1),
-    .prdt_pc_add_op2(prdt_pc_add_op2),
-    .bpu_wait(bpu_wait),
-    .bpu2rf_rs1_ena(bpu2rf_rs1_ena)
+    .rf2ifu_x1(rf2ifu_x1),
+    .rf2ifu_rs1(rf2ifu_rs1),
+    .dec2ifu_rs1en(dec2ifu_rs1en),
+    .dec2ifu_rden(dec2ifu_rden),
+    .dec2ifu_rdidx(dec2ifu_rdidx),
+    .dec2ifu_mulhsu(dec2ifu_mulhsu),
+    .dec2ifu_div(dec2ifu_div),
+    .dec2ifu_rem(dec2ifu_rem),
+    .dec2ifu_divu(dec2ifu_divu),
+    .dec2ifu_remu(dec2ifu_remu),
+    .inspect_pc(inspect_pc),
+    .ifu_req_valid(ifu_req_valid_w),
+    .ifu_req_pc(ifu_req_pc_w),
+    .ifu_req_seq(ifu_req_seq_w),
+    .ifu_req_seq_rv32(ifu_req_seq_rv32_w),
+    .ifu_req_last_pc(ifu_req_last_pc_w),
+    .ifu_rsp_ready(ifu_rsp_ready_w),
+    .ifu_o_ir(ifu_o_ir),
+    .ifu_o_pc(ifu_o_pc),
+    .ifu_o_pc_vld(ifu_o_pc_vld),
+    .ifu_o_rs1idx(ifu_o_rs1idx),
+    .ifu_o_rs2idx(ifu_o_rs2idx),
+    .ifu_o_prdt_taken(ifu_o_prdt_taken),
+    .ifu_o_misalgn(ifu_o_misalgn),
+    .ifu_o_buserr(ifu_o_buserr),
+    .ifu_o_muldiv_b2b(ifu_o_muldiv_b2b),
+    .ifu_o_valid(ifu_o_valid),
+    .pipe_flush_ack(pipe_flush_ack),
+    .ifu_halt_ack(ifu_halt_ack)
+  );
+  e203_ifu_ift2icb icb (
+    .clk(clk),
+    .rst_n(rst_n),
+    .itcm_nohold(itcm_nohold),
+    .ifu_req_valid(ifu_req_valid_w),
+    .ifu_req_pc(ifu_req_pc_w),
+    .ifu_req_seq(ifu_req_seq_w),
+    .ifu_req_seq_rv32(ifu_req_seq_rv32_w),
+    .ifu_req_last_pc(ifu_req_last_pc_w),
+    .ifu_rsp_ready(ifu_rsp_ready_w),
+    .itcm_region_indic(itcm_region_indic),
+    .ifu2itcm_icb_cmd_ready(ifu2itcm_icb_cmd_ready),
+    .ifu2itcm_icb_rsp_valid(ifu2itcm_icb_rsp_valid),
+    .ifu2itcm_icb_rsp_err(ifu2itcm_icb_rsp_err),
+    .ifu2itcm_icb_rsp_rdata(ifu2itcm_icb_rsp_rdata),
+    .ifu2biu_icb_cmd_ready(ifu2biu_icb_cmd_ready),
+    .ifu2biu_icb_rsp_valid(ifu2biu_icb_rsp_valid),
+    .ifu2biu_icb_rsp_err(ifu2biu_icb_rsp_err),
+    .ifu2biu_icb_rsp_rdata(ifu2biu_icb_rsp_rdata),
+    .ifu2itcm_holdup(ifu2itcm_holdup),
+    .ifu_req_ready(ifu_req_ready_w),
+    .ifu_rsp_valid(ifu_rsp_valid_w),
+    .ifu_rsp_err(ifu_rsp_err_w),
+    .ifu_rsp_instr(ifu_rsp_instr_w),
+    .ifu2itcm_icb_cmd_valid(ifu2itcm_icb_cmd_valid),
+    .ifu2itcm_icb_cmd_addr(ifu2itcm_icb_cmd_addr),
+    .ifu2itcm_icb_rsp_ready(ifu2itcm_icb_rsp_ready),
+    .ifu2biu_icb_cmd_valid(ifu2biu_icb_cmd_valid),
+    .ifu2biu_icb_cmd_addr(ifu2biu_icb_cmd_addr),
+    .ifu2biu_icb_rsp_ready(ifu2biu_icb_rsp_ready)
   );
 
 endmodule

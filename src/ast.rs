@@ -96,6 +96,13 @@ pub struct BusDecl {
     /// the method surface here; elaboration/codegen materialize the flattened
     /// request/response wires and thread lowering. See doc/archive/plan_tlm_method.md.
     pub tlm_methods: Vec<TlmMethodMeta>,
+    /// True when this `bus` was loaded from a `.archi` interface stub
+    /// rather than from real source. `arch build` emits a stub for every
+    /// bus a design references, so a rebuild in the same directory
+    /// re-discovers it alongside the real definition; `resolve` drops the
+    /// stub when a real definition of the same name is in the unit, but
+    /// only if it can *tell* it is a stub (arch#887).
+    pub is_interface: bool,
     pub span: Span,
 }
 
@@ -331,6 +338,17 @@ pub struct PortDecl {
     /// (`name[i]`) is unchanged — `0` is always the first element. Only
     /// legal when `unpacked` is also set.
     pub unpacked_ascending: bool,
+    /// `split` modifier on a `ScaledVec<E,N,S>` port: instead of one packed
+    /// `logic [scale_w+N*elem_w-1:0] name`, emit TWO SV ports —
+    /// `name_scale` (`[scale_w-1:0]`) and `name_elems` (`[N*elem_w-1:0]`) —
+    /// flattened the way `bus` ports already flatten.
+    ///
+    /// This is what real datapaths want (proposal §3.2, decision #8): the
+    /// scale feeds the exponent path and the elements feed the mantissa
+    /// path, so packing and unpacking a 136-bit word per block is pure
+    /// overhead. Purely an SV-boundary shape — ARCH-internal semantics are
+    /// identical either way. Only legal on `ScaledVec` types.
+    pub split: bool,
     /// Per-output combinational-dependency annotation (issue #246
     /// Phase 2). Only legal on output ports without `reg_info` (i.e.
     /// comb-driven outputs). Three states:
@@ -505,11 +523,28 @@ pub struct PipeRegDecl {
 pub enum AssertKind {
     Assert,
     Cover,
+    /// `assume Name: expr;` — input constraint. The QF_BV formal path
+    /// conjoins it as a hypothesis at every timestep; the error-bound
+    /// engine reads range-shaped assumes as interval hypotheses.
+    Assume,
+}
+
+/// Which engine discharges an `assert`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssertEngine {
+    /// Default: the QF_BV BMC solver path of `arch formal`.
+    Solver,
+    /// `assert<bound_err>` — numeric error bound vs the real-valued spec;
+    /// discharged by the configured error engine (Gappa first). The
+    /// property expression may use the spec builtins `exact()`, `abs()`,
+    /// `ulp()`, which are illegal outside this property class.
+    BoundErr,
 }
 
 #[derive(Debug, Clone)]
 pub struct AssertDecl {
     pub kind: AssertKind,
+    pub engine: AssertEngine,
     pub name: Option<Ident>, // optional label (e.g. `assert no_overflow: expr;`)
     pub expr: Expr,
     pub span: Span,
@@ -1096,6 +1131,85 @@ pub enum TypeExpr {
     FP32,
     /// bfloat16 (1 sign + 8 exp + 7 mant = 16 bits).
     BF16,
+    /// OCP OFP8 E4M3 (1 sign + 4 exp + 3 mant = 8 bits): no infinities,
+    /// sole NaN encoding S.1111.111, max finite 448.
+    FP8E4M3,
+    /// FP8 E5M2 (1 sign + 5 exp + 2 mant = 8 bits): IEEE-style (5,3)
+    /// instantiation with infinities and a NaN class, max finite 57344.
+    FP8E5M2,
+    /// OCP MX FP4 (1+2+1). Storage-only: no Inf, no NaN, max finite 6.0.
+    /// Element type of MXFP4/NVFP4 blocks; no shipping ISA exposes scalar
+    /// arithmetic on it, so it carries conversions and literals only.
+    FP4E2M1,
+    /// OCP MX FP6 (1+2+3). Storage-only: no Inf, no NaN, max finite 7.5.
+    FP6E2M3,
+    /// OCP MX FP6 (1+3+2). Storage-only: no Inf, no NaN, max finite 28.0.
+    FP6E3M2,
+    /// OCP MX E8M0 — the block SCALE type, not a float.
+    ///
+    /// 8 bits of unsigned biased exponent (bias 127) representing 2^(e-127).
+    /// It has NO sign, NO mantissa, NO infinity, and — the easy thing to get
+    /// wrong — **NO zero**: `0x00` is the MINIMUM SCALE 2^-127, not zero.
+    /// `0xFF` is NaN, which at block level marks the whole block NaN.
+    E8M0,
+    /// NVFP4 `UE4M3` — the NVIDIA block SCALE type, not a float.
+    ///
+    /// PTX: *"a 7-bit unsigned floating-point format … NaN value is limited to
+    /// `0x7f` … MSB bit padded with zero."* So the carrier is 8 bits with bit
+    /// 7 always zero, and bits `[6:0]` are E4M3's exponent+mantissa fields.
+    ///
+    /// **It is NOT `FP8E4M3`.** Reusing that type here would be a real bug:
+    /// this one is unsigned, and its sole NaN is `0x7F` rather than E4M3's
+    /// sign-agnostic all-magnitude-ones. It is, however, *numerically* E4M3
+    /// restricted to sign 0 — every one of its 128 codes denotes the same
+    /// value as the E4M3 code with the same bits — which is why its
+    /// conversions reuse the proven E4M3 helpers rather than adding numerics.
+    ///
+    /// Unlike [`TypeExpr::E8M0`] it **has a zero** (`0x00`), and its scale is
+    /// **not a power of two** — so dividing by it is not exact, and the
+    /// single-rounding property MX quantization enjoys does not carry over.
+    UE4M3,
+    /// A block-scaled vector: `ScaledVec<Elem, N, Scale>` — `N` narrow
+    /// elements sharing one scale, the unit of meaning in OCP MX / NVFP4.
+    /// Fields: element type, block size `N`, scale type.
+    ///
+    /// Unlike `Vec<T,N>` this is NOT an array: it lowers to a single packed
+    /// word `{ scale, P[N-1], …, P[0] }` of width `scale_w + N*elem_w`
+    /// (proposal §3.2, decision #8), so it flows through the pipeline as a
+    /// wide scalar rather than as an aggregate.
+    ///
+    /// Deliberately has no arithmetic, no comparison, and no element
+    /// indexing: OCP MX defines exactly one operation on blocks (the dot
+    /// product), and inventing element-wise semantics here would diverge
+    /// from every shipping ISA. Read elements via `scaled_dequantize(b)[i]`.
+    ScaledVec(Box<TypeExpr>, Box<Expr>, Box<TypeExpr>),
+}
+
+/// Shared-scale selection policy for `scaled_quantize` (proposal §3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScalePolicy {
+    /// OCP §6.3: largest power of two <= amax. The default for a
+    /// power-of-two scale (`E8M0`; proposal §9 decision #1).
+    FloorPow2,
+    /// NVIDIA: round the scale UP instead, trading the top element codes
+    /// for fewer saturations.
+    CeilPow2,
+    /// `X = RNE(amax / elem_max)` — use the scale's mantissa instead of
+    /// discarding it. Meaningful only for a scale that is *not* a power of
+    /// two, so it is the default for `UE4M3` and refused for `E8M0`.
+    Exact,
+}
+
+/// Element rounding mode for `scaled_quantize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RoundMode {
+    /// Round to nearest, ties to even. The default, and the only mode OCP
+    /// requires to be available.
+    Rne,
+    /// Round toward zero.
+    Rtz,
+    /// Round to nearest, ties away from zero.
+    Rna,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1189,6 +1303,20 @@ pub enum ExprKind {
     /// Motivation section (`acc@6 <= fma(a,b,c)` silently NOT being
     /// retimed) cannot be written by accident.
     PipelinedCall(String, Vec<Expr>, u32),
+    /// `scaled_quantize<Fmt, policy, rounding>(v)` — quantize a
+    /// `Vec<FP32, N>` into a block of the EXPLICITLY named format.
+    ///
+    /// The format is spelled at the call site rather than inferred: a
+    /// `Vec<FP32,N>` argument says nothing about the element format or the
+    /// scale, so `MXFP4` and `MXFP8` are equally valid outputs and there is
+    /// nothing to infer from. Carrying a `TypeExpr` inside an expression is
+    /// why this needs its own variant — it is the first expression that can.
+    /// `scaled_quantize<Fmt[, policy, rounding]>(v)`. The policy is `None`
+    /// when the call site did not write one: the default depends on the
+    /// block's *scale type*, which the parser cannot resolve because `Fmt`
+    /// may be a type alias. `BlockScale::default_policy` settles it once the
+    /// type is known.
+    ScaledQuantize(Box<Expr>, Box<TypeExpr>, Option<ScalePolicy>, RoundMode),
     /// SVA delay-shift: `##N expr`. Inside an `assert`/`cover` body, shifts
     /// the cycle of `expr` forward by `N` (i.e. evaluates `expr` at cycle
     /// `t + N` when the surrounding property is checked at cycle `t`).
@@ -1264,6 +1392,11 @@ pub enum LitKind {
 pub enum FloatLitFmt {
     Fp32,
     Bf16,
+    E4m3,
+    E5m2,
+    E2m1,
+    E2m3,
+    E3m2,
 }
 
 impl FloatLitFmt {
@@ -1272,6 +1405,11 @@ impl FloatLitFmt {
         match self {
             FloatLitFmt::Fp32 => (8, 23),
             FloatLitFmt::Bf16 => (8, 7),
+            FloatLitFmt::E4m3 => (4, 3),
+            FloatLitFmt::E5m2 => (5, 2),
+            FloatLitFmt::E2m1 => (2, 1),
+            FloatLitFmt::E2m3 => (2, 3),
+            FloatLitFmt::E3m2 => (3, 2),
         }
     }
 
@@ -1280,6 +1418,11 @@ impl FloatLitFmt {
         match self {
             FloatLitFmt::Fp32 => 32,
             FloatLitFmt::Bf16 => 16,
+            FloatLitFmt::E4m3 => 8,
+            FloatLitFmt::E5m2 => 8,
+            FloatLitFmt::E2m1 => 4,
+            FloatLitFmt::E2m3 => 6,
+            FloatLitFmt::E3m2 => 6,
         }
     }
 }
@@ -1427,10 +1570,15 @@ impl Item {
             Item::Regfile(r) => r.common.is_interface,
             Item::Pipeline(p) => p.common.is_interface,
             Item::Linklist(l) => l.common.is_interface,
+            // `bus` has no `ConstructCommon`, but it *does* cross
+            // `.archi` boundaries — `arch build` emits a stub for every
+            // bus a design references — so it carries its own flag
+            // (arch#887).
+            Item::Bus(b) => b.is_interface,
             // The remaining variants (Domain, Struct, Enum, Function,
-            // Template, Synchronizer, Clkgate, Bus, Package, Use)
-            // either don't get instantiated across `.archi` boundaries
-            // or aren't `ConstructCommon`-bearing. No is_interface for
+            // Template, Synchronizer, Clkgate, Package, Use) either
+            // don't get instantiated across `.archi` boundaries or
+            // aren't `ConstructCommon`-bearing. No is_interface for
             // them today; extend if/when a new case appears.
             _ => false,
         }
@@ -1480,6 +1628,12 @@ impl Item {
             }
             Item::Linklist(l) => {
                 l.common.is_interface = val;
+                true
+            }
+            // See `is_interface`: `bus` crosses `.archi` boundaries and
+            // carries its own flag rather than a `ConstructCommon` one.
+            Item::Bus(b) => {
+                b.is_interface = val;
                 true
             }
             _ => false,
@@ -1732,10 +1886,14 @@ impl_construct_direct!(
     iface = crate::interface::emit_bus_interface,
     check = check_bus
 );
+// No `iface`: a package has no `.archi` form. Nothing can consume one —
+// `use` resolves only `<name>.arch`, and the `.archi`-aware `inst` / bus
+// lookups key on the *construct* filename, never the package's. A package
+// also cannot declare a module, so it never participates in the module-name
+// resolution `.archi` exists for. See #819.
 impl_construct_direct!(
     PackageDecl,
     "package",
-    iface = crate::interface::emit_package_interface,
     check = check_package,
     emit_sv = emit_package
 );
@@ -2438,6 +2596,13 @@ pub struct PackageDecl {
     pub structs: Vec<StructDecl>,
     pub buses: Vec<BusDecl>,
     pub functions: Vec<FunctionDecl>,
+    /// `type Name = TypeExpr;` declared in the package body.
+    ///
+    /// Published file-wide, exactly like the package's structs and enums —
+    /// a package is a grouping, not a namespace. This is what lets a shared
+    /// vocabulary of named formats (`MXFP4`, `MXFP8`, …) be written once
+    /// instead of redeclared in every module that mentions one.
+    pub aliases: Vec<TypeAliasDecl>,
     pub span: Span,
     pub doc: Option<String>,
     pub inner_doc: Option<String>,

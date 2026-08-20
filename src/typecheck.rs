@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diagnostics::{span_to_source_span, CompileError, CompileWarning};
@@ -15,9 +15,29 @@ pub enum Ty {
     FP32,
     /// bfloat16 (1+8+7 = 16 bits). Stored/carried as 16 bits.
     BF16,
+    /// OCP OFP8 E4M3 (1+4+3 = 8 bits): no infinities, sole NaN S.1111.111.
+    FP8E4M3,
+    /// FP8 E5M2 (1+5+2 = 8 bits): IEEE-style (5,3) with infinities.
+    FP8E5M2,
+    FP4E2M1,
+    FP6E2M3,
+    FP6E3M2,
+    /// The MX block scale type. Deliberately NOT a float: see `is_float`.
+    E8M0,
+    /// The NVFP4 block scale type. Like `E8M0` it is a SCALE, not a float —
+    /// but unlike E8M0 it has a mantissa (so its value is not a power of two)
+    /// and it has a zero. Numerically it is `FP8E4M3` restricted to sign 0.
+    UE4M3,
     Clock(String),                // domain name
     Reset(ResetKind, ResetLevel), // always concrete (Param resolved during elaboration)
     Vec(Box<Ty>, u32),
+    /// `ScaledVec<Elem, N, Scale>` — element type, block size, scale type.
+    ///
+    /// NOT an aggregate: this is one packed word of `scale_w + N*elem_w` bits
+    /// (proposal §3.2). It carries no arithmetic, no comparison, and no
+    /// indexing — OCP MX defines exactly one operation on blocks, so anything
+    /// else would be invented semantics.
+    ScaledVec(Box<Ty>, u32, Box<Ty>),
     Struct(String),
     Enum(String, u32), // name, bit width
     Bus(String),       // bus type name
@@ -27,8 +47,48 @@ pub enum Ty {
 
 impl Ty {
     /// True for the floating-point types (FP32, BF16).
+    /// Is this a floating-point *carrier*? True for every float format,
+    /// including (in future) storage-only ones. Gates conversions, width
+    /// rules and assignability — everything that works on the bit pattern
+    /// regardless of whether operators exist.
     pub fn is_float(&self) -> bool {
-        matches!(self, Ty::FP32 | Ty::BF16)
+        matches!(
+            self,
+            Ty::FP32
+                | Ty::BF16
+                | Ty::FP8E4M3
+                | Ty::FP8E5M2
+                | Ty::FP4E2M1
+                | Ty::FP6E2M3
+                | Ty::FP6E3M2
+        )
+    }
+
+    /// Does this float carry an arithmetic surface (`+ - *`, `fma`,
+    /// compares)?
+    ///
+    /// Split out from [`Ty::is_float`] because the two are about to diverge:
+    /// the sub-8-bit OCP formats (E2M1/E2M3/E3M2) are storage-only — no
+    /// shipping ISA exposes scalar arithmetic on them, and E2M1 has no NaN
+    /// encoding at all. They must be *carriers* (conversions, literals) while
+    /// rejecting `a + b` at the type checker with a clean span, rather than
+    /// interpolating an `arch_e2m1_add` that no backend defines and failing
+    /// late in Verilator / z3 / g++.
+    ///
+    /// Every format shipped today is arithmetic-capable, so this is
+    /// currently equivalent to `is_float()` — deliberately inert until the
+    /// first storage-only format lands.
+    pub fn is_float_arith(&self) -> bool {
+        match self {
+            Ty::FP32 => crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32).arith,
+            Ty::BF16 => crate::fp_format::by_id(crate::fp_format::FpFormatId::Bf16).arith,
+            Ty::FP8E4M3 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E4m3).arith,
+            Ty::FP8E5M2 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E5m2).arith,
+            Ty::FP4E2M1 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E2m1).arith,
+            Ty::FP6E2M3 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E2m3).arith,
+            Ty::FP6E3M2 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E3m2).arith,
+            _ => false,
+        }
     }
 }
 
@@ -62,8 +122,16 @@ impl Ty {
             Ty::Bool => Some(1),
             Ty::FP32 => Some(32),
             Ty::BF16 => Some(16),
+            Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
+            Ty::FP4E2M1 => Some(4),
+            Ty::FP6E2M3 | Ty::FP6E3M2 => Some(6),
+            Ty::E8M0 | Ty::UE4M3 => Some(8),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => inner.width().map(|w| w * count),
+            // Packed block: scale in the high bits, N elements below.
+            Ty::ScaledVec(elem, n, scale) => {
+                Some(n.checked_mul(elem.width()?)?.checked_add(scale.width()?)?)
+            }
             Ty::Struct(_) | Ty::Bus(_) => None,
             Ty::Clock(_) | Ty::Reset(_, _) => Some(1),
             Ty::Todo | Ty::Error => None,
@@ -77,6 +145,13 @@ impl Ty {
             Ty::Bool => "Bool".to_string(),
             Ty::FP32 => "FP32".to_string(),
             Ty::BF16 => "BF16".to_string(),
+            Ty::FP8E4M3 => "FP8E4M3".to_string(),
+            Ty::FP8E5M2 => "FP8E5M2".to_string(),
+            Ty::FP4E2M1 => "FP4E2M1".to_string(),
+            Ty::FP6E2M3 => "FP6E2M3".to_string(),
+            Ty::FP6E3M2 => "FP6E3M2".to_string(),
+            Ty::E8M0 => "E8M0".to_string(),
+            Ty::UE4M3 => "UE4M3".to_string(),
             Ty::Clock(d) => format!("Clock<{d}>"),
             Ty::Reset(k, l) => format!(
                 "Reset<{}, {}>",
@@ -90,6 +165,9 @@ impl Ty {
                 },
             ),
             Ty::Vec(inner, n) => format!("Vec<{}, {n}>", inner.display()),
+            Ty::ScaledVec(elem, n, scale) => {
+                format!("ScaledVec<{}, {n}, {}>", elem.display(), scale.display())
+            }
             Ty::Struct(name) => name.clone(),
             Ty::Enum(name, _) => name.clone(),
             Ty::Bus(name) => format!("bus {name}"),
@@ -111,6 +189,9 @@ pub struct TypeChecker<'a> {
     /// constructs (`past(x, N)`, `a |=> b`) are only legal inside this
     /// scope; flagged as compile errors elsewhere.
     pub in_sva_context: bool,
+    /// Inside an `assert<bound_err>` property expression — the only place
+    /// the spec builtins `exact()`, `abs()`, `ulp()` are legal.
+    pub in_bound_err: bool,
     /// Per-module map of Vec-of-bus port names → element count. Populated
     /// at the start of check_module so check_stmt can expand indexed
     /// driver-tracking writes (`chans[i].sig = ...`) over all N copies
@@ -123,6 +204,11 @@ pub struct TypeChecker<'a> {
     /// current construct first. Falling back directly to the whole source file
     /// lets unrelated modules with the same local-param name collide.
     active_params: Vec<ParamDecl>,
+    /// Byte ranges of the original files concatenated into `source`.
+    /// Empty for single in-memory sources.
+    file_scopes: Vec<std::ops::Range<usize>>,
+    /// Package imports visible to the item currently being checked.
+    active_uses: HashSet<String>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -134,8 +220,67 @@ impl<'a> TypeChecker<'a> {
             warnings: Vec::new(),
             overload_map: HashMap::new(),
             in_sva_context: false,
+            in_bound_err: false,
             vec_of_bus_ports: HashMap::new(),
             active_params: Vec::new(),
+            file_scopes: Vec::new(),
+            active_uses: HashSet::new(),
+        }
+    }
+
+    pub fn with_file_scopes(mut self, scopes: Vec<std::ops::Range<usize>>) -> Self {
+        self.file_scopes = scopes;
+        self
+    }
+
+    fn uses_for_span(&self, span: Span) -> HashSet<String> {
+        let scope = if self.file_scopes.is_empty() {
+            None
+        } else {
+            self.file_scopes
+                .iter()
+                .find(|range| range.contains(&span.start))
+        };
+        self.source
+            .items
+            .iter()
+            .filter_map(|item| {
+                let in_scope = scope
+                    .map(|range| range.contains(&item.span().start))
+                    .unwrap_or(self.file_scopes.is_empty());
+                match item {
+                    Item::Use(u) if in_scope => Some(u.name.name.clone()),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Look up a global while honoring the file-scoped package imports for
+    /// the item currently being checked.
+    fn global_symbol(&self, name: &str) -> Option<&(Symbol, Span)> {
+        if self.package_member_hidden(name) {
+            return None;
+        }
+        self.symbols.globals.get(name)
+    }
+
+    fn package_member_hidden(&self, name: &str) -> bool {
+        !self.active_params.iter().any(|p| p.name.name == name)
+            && self
+                .symbols
+                .package_members
+                .get(name)
+                .is_some_and(|packages| packages.is_disjoint(&self.active_uses))
+    }
+
+    fn check_hidden_package_expr(&mut self, expr: &Expr) {
+        let mut names = HashSet::new();
+        crate::comb_graph::collect_expr_idents(expr, &mut names);
+        for name in names {
+            if self.package_member_hidden(&name) {
+                self.errors.push(CompileError::undefined(&name, expr.span));
+            }
         }
     }
 
@@ -147,6 +292,12 @@ impl<'a> TypeChecker<'a> {
         // Runs before per-item checks so reported errors sort naturally.
         self.check_const_div_zero();
         for item in self.source.items.clone().iter() {
+            self.active_uses = self.uses_for_span(item.span());
+            // A package's own declarations can refer to sibling members
+            // without importing the package that encloses them.
+            if let Item::Package(package) = item {
+                self.active_uses.insert(package.name.name.clone());
+            }
             let saved_params = std::mem::replace(&mut self.active_params, Self::item_params(item));
             item.as_construct().typecheck(&mut self);
             self.active_params = saved_params;
@@ -159,6 +310,7 @@ impl<'a> TypeChecker<'a> {
         // `doc/plan_regfile_latch.md` for the timing assumption.
         for item in &self.source.items {
             if let Item::Module(m) = item {
+                self.active_uses = self.uses_for_span(item.span());
                 self.check_latch_regfile_writes(m);
             }
         }
@@ -198,16 +350,22 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Issue #246 MVP: warn on every comb-feedback SCC found in the
-    /// whole-design instance-flat graph. Blessed-by-pragma SCCs are
-    /// silently suppressed.
+    /// Issue #246 MVP promoted to a hard error (2026-08): every unblessed
+    /// comb-feedback SCC found in the whole-design instance-flat graph is
+    /// now a `CompileError`, so `arch check`/`build`/`sim`/`formal` fail
+    /// with a nonzero exit. Blessed-by-pragma SCCs (`pragma
+    /// comb_loops_allowed;` on an owning module) remain the documented
+    /// escape hatch for intentional cycles and stay non-fatal — they are
+    /// silently suppressed here exactly as before (see
+    /// `comb_graph::analyze_whole_design`, which never adds a suppressed
+    /// SCC to `analysis.sccs` in the first place).
     fn check_whole_design_comb_loops(&mut self) {
         let analysis = crate::comb_graph::analyze_whole_design(self.source, self.symbols);
         if analysis.sccs.is_empty() && analysis.total_sccs == 0 {
             return;
         }
         for scc in &analysis.sccs {
-            // Pick a span for the warning: the span of the first owning
+            // Pick a span for the error: the span of the first owning
             // module in the SCC (top-level module if vec![]). Fall back
             // to the first item's span.
             let span: Span = scc
@@ -245,10 +403,18 @@ impl<'a> TypeChecker<'a> {
                 path_str.join(" -> "),
                 if path_str.is_empty() { String::new() } else { format!(" -> {}", path_str[0]) },
             );
-            self.warnings.push(CompileWarning { message: msg, span });
+            self.errors.push(CompileError::general(&msg, span));
         }
-        // Summary line emitted as a single warning so it shows up in the
-        // standard warning stream.
+        // Summary line: still non-fatal (a plain warning) when every SCC
+        // found was suppressed by the pragma — that's the "blessed, stay
+        // quiet" path. Once at least one SCC is unblessed the compile is
+        // already failing (per-SCC errors above), so the summary is
+        // pushed alongside them as an error too; note `TypeChecker::check`
+        // returns `Err(self.errors)` and drops `self.warnings` entirely in
+        // that branch, and only the *first* error in the Vec is surfaced
+        // by the CLI (arch#750, batch diagnostics), so this summary
+        // typically won't be the line printed to the user — it's kept for
+        // callers that inspect the full error list.
         if analysis.total_sccs > 0 {
             let span = self
                 .source
@@ -257,15 +423,24 @@ impl<'a> TypeChecker<'a> {
                 .map(|it| it.span())
                 .unwrap_or(Span { start: 0, end: 0 });
             let summary = format!(
-                "arch check: {} comb SCC(s) found; {} suppressed by pragma; {} unblessed (warnings)",
+                "arch check: {} comb SCC(s) found; {} suppressed by pragma; {} unblessed ({})",
                 analysis.total_sccs,
                 analysis.suppressed,
                 analysis.sccs.len(),
+                if analysis.sccs.is_empty() {
+                    "warnings"
+                } else {
+                    "errors"
+                },
             );
-            self.warnings.push(CompileWarning {
-                message: summary,
-                span,
-            });
+            if analysis.sccs.is_empty() {
+                self.warnings.push(CompileWarning {
+                    message: summary,
+                    span,
+                });
+            } else {
+                self.errors.push(CompileError::general(&summary, span));
+            }
         }
     }
 
@@ -515,19 +690,6 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&s.name);
         for field in &s.fields {
             self.check_snake_case(&field.name);
-            // v1: floats are only supported as scalar module signals. A float
-            // inside a struct would reach codegen via FieldAccess, which the
-            // float-op dispatch does not yet resolve — reject rather than
-            // silently emit integer arithmetic on the bit pattern.
-            if type_expr_contains_float(&field.ty) {
-                self.errors.push(CompileError::general(
-                    &format!(
-                        "floating-point types (FP32/BF16) are not supported in struct fields in v1 (field `{}` of `{}`)",
-                        field.name.name, s.name.name
-                    ),
-                    field.name.span,
-                ));
-            }
         }
     }
 
@@ -565,40 +727,28 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // `split` is a ScaledVec-only layout modifier. Checked here rather
+            // than in the parser because type aliases resolve after parsing —
+            // `port s: in split MXFP4;` is still `Named` at parse time.
+            if p.split && !matches!(p.ty, TypeExpr::ScaledVec(..)) {
+                self.errors.push(CompileError::general(
+                    "`split` is only valid on `ScaledVec<Elem, N, Scale>` ports",
+                    p.span,
+                ));
+            }
+            self.check_scaled_vec_members(&p.ty, p.span);
         }
-
-        // v1 float restriction: scalar FP32/BF16 signals are supported, but a
-        // float nested inside a Vec is not — `Vec<FP32,N>` element access
-        // (Index) is not yet resolved by the float-op dispatch, so it would
-        // silently emit integer arithmetic. Reject Vec-of-float on every
-        // declared signal type. (Scalar floats pass `is_float` but not the
-        // `Vec(...)` guard below.)
-        let mut float_decls: Vec<(&TypeExpr, Span, String)> = Vec::new();
-        for p in &m.ports {
-            float_decls.push((&p.ty, p.name.span, p.name.name.clone()));
-        }
+        // Same check for every other declaration that can name a block type.
         for item in &m.body {
             match item {
-                ModuleBodyItem::RegDecl(r) => {
-                    float_decls.push((&r.ty, r.name.span, r.name.name.clone()))
-                }
-                ModuleBodyItem::WireDecl(w) => {
-                    float_decls.push((&w.ty, w.name.span, w.name.name.clone()))
-                }
+                ModuleBodyItem::RegDecl(r) => self.check_scaled_vec_members(&r.ty, r.name.span),
+                ModuleBodyItem::WireDecl(w) => self.check_scaled_vec_members(&w.ty, w.name.span),
                 ModuleBodyItem::LetBinding(l) => {
-                    if let Some(t) = l.ty.as_ref() {
-                        float_decls.push((t, l.name.span, l.name.name.clone()));
+                    if let Some(ty) = &l.ty {
+                        self.check_scaled_vec_members(ty, l.name.span);
                     }
                 }
                 _ => {}
-            }
-        }
-        for (ty, span, name) in float_decls {
-            if matches!(ty, TypeExpr::Vec(..)) && type_expr_contains_float(ty) {
-                self.errors.push(CompileError::general(
-                    &format!("floating-point types (FP32/BF16) inside `Vec` are not supported in v1 (signal `{name}`)"),
-                    span,
-                ));
             }
         }
 
@@ -607,7 +757,7 @@ impl<'a> TypeChecker<'a> {
         // subnormal — almost never the intent). Catch the common foot-gun.
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
-                if matches!(r.ty, TypeExpr::FP32 | TypeExpr::BF16) {
+                if let Some(tn) = float_slot_type_name(&r.ty) {
                     let val = match &r.reset {
                         RegReset::Explicit(_, _, _, v) => Some(v),
                         RegReset::Inherit(_, v) => Some(v),
@@ -623,11 +773,6 @@ impl<'a> TypeChecker<'a> {
                                     | LitKind::Sized(_, _)
                             )
                         ) {
-                            let tn = if matches!(r.ty, TypeExpr::FP32) {
-                                "FP32"
-                            } else {
-                                "BF16"
-                            };
                             self.errors.push(CompileError::general(
                                 &format!("float `reg {}: {tn}` reset value must be a float literal (e.g. `=> 0.0`), not an integer literal", r.name.name),
                                 v.span,
@@ -647,14 +792,9 @@ impl<'a> TypeChecker<'a> {
             let mut int_lit_float_slots: Vec<(Span, &'static str, String)> = Vec::new();
             for item in &m.body {
                 if let ModuleBodyItem::RegDecl(r) = item {
-                    if matches!(r.ty, TypeExpr::FP32 | TypeExpr::BF16) {
+                    if let Some(tn) = float_slot_type_name(&r.ty) {
                         if let Some(v) = &r.init {
                             if is_bare_int_literal(v) {
-                                let tn = if matches!(r.ty, TypeExpr::FP32) {
-                                    "FP32"
-                                } else {
-                                    "BF16"
-                                };
                                 int_lit_float_slots.push((v.span, tn, r.name.name.clone()));
                             }
                         }
@@ -662,12 +802,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             for p in &m.ports {
-                if matches!(p.ty, TypeExpr::FP32 | TypeExpr::BF16) {
-                    let tn = if matches!(p.ty, TypeExpr::FP32) {
-                        "FP32"
-                    } else {
-                        "BF16"
-                    };
+                if let Some(tn) = float_slot_type_name(&p.ty) {
                     if let Some(ri) = &p.reg_info {
                         if let Some(v) = &ri.init {
                             if is_bare_int_literal(v) {
@@ -739,7 +874,7 @@ impl<'a> TypeChecker<'a> {
                 // Bus ports: validate bus exists, register as a special type
                 if let Some(ref bi) = p.bus_info {
                     if let Some((crate::resolve::Symbol::Bus(_), _)) =
-                        self.symbols.globals.get(&bi.bus_name.name)
+                        self.global_symbol(&bi.bus_name.name)
                     {
                         local_types.insert(p.name.name.clone(), Ty::Bus(bi.bus_name.name.clone()));
                         // Bus params are overridden at the port declaration
@@ -791,7 +926,7 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                             if let Some((crate::resolve::Symbol::Struct(info), _)) =
-                                self.symbols.globals.get(sname)
+                                self.global_symbol(sname).cloned()
                             {
                                 for bind in &l.destructure_fields {
                                     if let Some((_, fty)) =
@@ -940,7 +1075,7 @@ impl<'a> TypeChecker<'a> {
                             continue;
                         }
                         let Some((crate::resolve::Symbol::Struct(info), _)) =
-                            self.symbols.globals.get(sname).cloned()
+                            self.global_symbol(sname).cloned()
                         else {
                             continue;
                         };
@@ -1155,6 +1290,7 @@ impl<'a> TypeChecker<'a> {
                     for gi in items {
                         if let crate::ast::GenItem::Inst(inst) = gi {
                             self.check_inst_param_constraints(inst);
+                            self.validate_inst_ports(inst);
                             // Look up the instantiated module's bus ports so we can
                             // mark per-bus-signal flat names for bus-typed inst-outputs
                             // (`inst_port -> outer_vec[loop_var]`), mirroring
@@ -1199,7 +1335,7 @@ impl<'a> TypeChecker<'a> {
                                     });
                                     if let Some(bi) = inst_bus_info {
                                         if let Some((crate::resolve::Symbol::Bus(info), _)) =
-                                            self.symbols.globals.get(&bi.bus_name.name)
+                                            self.global_symbol(&bi.bus_name.name)
                                         {
                                             let mut pm = info.default_param_map();
                                             for pa in &bi.params {
@@ -1248,6 +1384,18 @@ impl<'a> TypeChecker<'a> {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                    // The loop above walks the taken branch's items; a
+                    // `generate if` also carries an else-branch that no check
+                    // previously reached, so instances there escaped both the
+                    // `where`-constraint check and port validation.
+                    if let crate::ast::GenerateDecl::If(gen_if) = gen {
+                        for else_item in &gen_if.else_items {
+                            if let crate::ast::GenItem::Inst(inst) = else_item {
+                                self.check_inst_param_constraints(inst);
+                                self.validate_inst_ports(inst);
                             }
                         }
                     }
@@ -1352,8 +1500,12 @@ impl<'a> TypeChecker<'a> {
                     // Verify expr is Bool; require a Clock port. Resolve in
                     // SVA context so multi-cycle constructs (`past`, `|=>`)
                     // are legal inside this body and rejected elsewhere.
+                    // `assert<bound_err>` additionally unlocks the spec
+                    // builtins exact()/abs()/ulp().
                     self.in_sva_context = true;
+                    self.in_bound_err = a.engine == crate::ast::AssertEngine::BoundErr;
                     let ty = self.resolve_expr_type(&a.expr, &m.name.name, &local_types);
+                    self.in_bound_err = false;
                     self.in_sva_context = false;
                     if ty != Ty::Bool && ty != Ty::Error && ty != Ty::Todo {
                         self.errors.push(CompileError::general(
@@ -1398,9 +1550,7 @@ impl<'a> TypeChecker<'a> {
                 // Bus port: check each output signal is driven (flattened name: port_signal).
                 // For Vec<Bus,N> ports, check each of the N copies independently.
                 let bus_name = &bi.bus_name.name;
-                if let Some((crate::resolve::Symbol::Bus(info), _)) =
-                    self.symbols.globals.get(bus_name)
-                {
+                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.global_symbol(bus_name) {
                     let mut pm = info.default_param_map();
                     for pa in &bi.params {
                         pm.insert(pa.name.name.clone(), &pa.value);
@@ -1801,6 +1951,9 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Validate connections → ports (reverse direction) before driven marking.
+        self.validate_inst_ports(inst);
+
         // Base names of the child's Vec-of-bus ports (`port mm: ...
         // Vec<Bus, N>`). The parser flattens a per-element connection
         // `mm[k] <- ...` into port_name `mm_<k>`, so to credit the right
@@ -1879,9 +2032,7 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .find(|(pn, _)| *pn == conn_port_base)
             {
-                if let Some((crate::resolve::Symbol::Bus(info), _)) =
-                    self.symbols.globals.get(bus_name)
-                {
+                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.global_symbol(bus_name) {
                     // Find the inst's bus port perspective, params, and Vec count.
                     let inst_bus_info = self
                         .source
@@ -1995,7 +2146,7 @@ impl<'a> TypeChecker<'a> {
                 continue;
             };
             let Some(crate::resolve::Symbol::Bus(binfo)) =
-                self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
+                self.global_symbol(&bi.bus_name.name).map(|(s, _)| s)
             else {
                 continue;
             };
@@ -2788,12 +2939,18 @@ impl<'a> TypeChecker<'a> {
             Ty::Bool | Ty::Clock(_) | Ty::Reset(_, _) => Some(1),
             Ty::FP32 => Some(32),
             Ty::BF16 => Some(16),
+            Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
+            Ty::FP4E2M1 => Some(4),
+            Ty::FP6E2M3 | Ty::FP6E3M2 => Some(6),
+            Ty::E8M0 | Ty::UE4M3 => Some(8),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
+            Ty::ScaledVec(elem, n, scale) => Some(
+                n.checked_mul(self.type_total_width(elem)?)?
+                    .checked_add(self.type_total_width(scale)?)?,
+            ),
             Ty::Struct(name) => {
-                if let Some((crate::resolve::Symbol::Struct(info), _)) =
-                    self.symbols.globals.get(name)
-                {
+                if let Some((crate::resolve::Symbol::Struct(info), _)) = self.global_symbol(name) {
                     let mut total = 0u32;
                     for (_, field_ty) in &info.fields {
                         let w = self.type_expr_width(field_ty)?;
@@ -2809,6 +2966,41 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A `ScaledVec`'s element and scale must be types a block is actually
+    /// defined over. Unchecked, `ScaledVec<UInt<8>, 4, E8M0>` type-checked
+    /// clean and then emitted a 40-bit SV port against an 8-bit sim variable,
+    /// because the two width paths disagreed about whether an integer element
+    /// was legal. Rejecting it here removes the disagreement at the source.
+    fn check_scaled_vec_members(&mut self, ty: &TypeExpr, span: Span) {
+        let TypeExpr::ScaledVec(elem, n, scale) = ty else {
+            return;
+        };
+        if !crate::fp_format::is_block_element(elem) {
+            self.errors.push(CompileError::general(
+                "`ScaledVec` element must be a block element format \
+                 (`FP4E2M1`, `FP6E2M3`, `FP6E3M2`, `FP8E4M3`, `FP8E5M2`) — a \
+                 shared scale has no meaning over wider or integer elements",
+                span,
+            ));
+        }
+        if !crate::fp_format::is_block_scale(scale) {
+            self.errors.push(CompileError::general(
+                "`ScaledVec` scale must be `E8M0` (OCP MX) or `UE4M3` (NVFP4). \
+                 `FP8E4M3` is NOT a substitute for `UE4M3` — that one is \
+                 signed and its NaN is sign-agnostic",
+                span,
+            ));
+        }
+        let empty: HashMap<String, Ty> = HashMap::new();
+        if let Some(0) = self.eval_const_expr(n, &empty) {
+            self.errors.push(CompileError::general(
+                "`ScaledVec` block size N must be at least 1 — a block with no \
+                 elements is just a bare scale",
+                span,
+            ));
+        }
+    }
+
     /// Compute bit width directly from a TypeExpr without needing &mut self.
     fn type_expr_width(&self, ty: &TypeExpr) -> Option<u32> {
         match ty {
@@ -2816,14 +3008,22 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Some(1),
             TypeExpr::FP32 => Some(32),
             TypeExpr::BF16 => Some(16),
+            TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some(8),
+            TypeExpr::FP4E2M1 => Some(4),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => Some(8),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval_type_width_expr(size)?;
                 Some(iw * n)
             }
+            TypeExpr::ScaledVec(elem, size, scale) => {
+                let n = eval_type_width_expr(size)?;
+                crate::fp_format::scaled_vec_width(elem, n, scale)
+            }
             TypeExpr::Named(ident) => {
                 if let Some((crate::resolve::Symbol::Struct(info), _)) =
-                    self.symbols.globals.get(&ident.name)
+                    self.global_symbol(&ident.name)
                 {
                     let mut total = 0u32;
                     for (_, field_ty) in &info.fields {
@@ -2831,7 +3031,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     Some(total)
                 } else if let Some((crate::resolve::Symbol::Enum(info), _)) =
-                    self.symbols.globals.get(&ident.name)
+                    self.global_symbol(&ident.name)
                 {
                     Some(enum_width(info.variants.len()))
                 } else {
@@ -3039,7 +3239,7 @@ impl<'a> TypeChecker<'a> {
                 }
             })
             .collect();
-        if let Some((Symbol::Enum(info), _)) = self.symbols.globals.get(&enum_name).cloned() {
+        if let Some((Symbol::Enum(info), _)) = self.global_symbol(&enum_name).cloned() {
             let missing: Vec<String> = info
                 .variants
                 .iter()
@@ -3590,6 +3790,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Ty {
         match ty {
             TypeExpr::UInt(width_expr) => {
+                self.check_hidden_package_expr(width_expr);
                 if let Some(w) = self.eval_const_expr(width_expr, local_types) {
                     Ty::UInt(w as u32)
                 } else {
@@ -3597,6 +3798,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             TypeExpr::SInt(width_expr) => {
+                self.check_hidden_package_expr(width_expr);
                 if let Some(w) = self.eval_const_expr(width_expr, local_types) {
                     Ty::SInt(w as u32)
                 } else {
@@ -3607,18 +3809,43 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::Bit => Ty::UInt(1),
             TypeExpr::FP32 => Ty::FP32,
             TypeExpr::BF16 => Ty::BF16,
-            TypeExpr::Clock(domain) => Ty::Clock(domain.name.clone()),
+            TypeExpr::FP8E4M3 => Ty::FP8E4M3,
+            TypeExpr::FP8E5M2 => Ty::FP8E5M2,
+            TypeExpr::FP4E2M1 => Ty::FP4E2M1,
+            TypeExpr::FP6E2M3 => Ty::FP6E2M3,
+            TypeExpr::FP6E3M2 => Ty::FP6E3M2,
+            TypeExpr::E8M0 => Ty::E8M0,
+            TypeExpr::UE4M3 => Ty::UE4M3,
+            TypeExpr::Clock(domain) => {
+                if self.package_member_hidden(&domain.name) {
+                    self.errors
+                        .push(CompileError::undefined(&domain.name, domain.span));
+                    Ty::Error
+                } else {
+                    Ty::Clock(domain.name.clone())
+                }
+            }
             TypeExpr::Reset(kind, level) => Ty::Reset(*kind, *level),
             TypeExpr::Vec(inner, size_expr) => {
                 let inner_ty = self.resolve_type_expr(inner, _module_name, local_types);
+                self.check_hidden_package_expr(size_expr);
                 if let Some(n) = self.eval_const_expr(size_expr, local_types) {
                     Ty::Vec(Box::new(inner_ty), n as u32)
                 } else {
                     Ty::Error
                 }
             }
+            TypeExpr::ScaledVec(elem, size_expr, scale) => {
+                let elem_ty = self.resolve_type_expr(elem, _module_name, local_types);
+                let scale_ty = self.resolve_type_expr(scale, _module_name, local_types);
+                self.check_hidden_package_expr(size_expr);
+                match self.eval_const_expr(size_expr, local_types) {
+                    Some(n) => Ty::ScaledVec(Box::new(elem_ty), n as u32, Box::new(scale_ty)),
+                    None => Ty::Error,
+                }
+            }
             TypeExpr::Named(ident) => {
-                if let Some((sym, _)) = self.symbols.globals.get(&ident.name) {
+                if let Some((sym, _)) = self.global_symbol(&ident.name) {
                     match sym {
                         crate::resolve::Symbol::Struct(_) => Ty::Struct(ident.name.clone()),
                         crate::resolve::Symbol::Enum(info) => {
@@ -3658,6 +3885,8 @@ impl<'a> TypeChecker<'a> {
     fn expr_latency_tc(expr: &Expr) -> u32 {
         match &expr.kind {
             ExprKind::PipelinedCall(_, _, n) => *n,
+            // Combinational: the block quantizer adds no pipeline stages.
+            ExprKind::ScaledQuantize(_, _, _, _) => 0,
             ExprKind::LatencyAt(_, n) => *n,
             _ => 0,
         }
@@ -3672,6 +3901,8 @@ impl<'a> TypeChecker<'a> {
     fn expr_contains_pipelined_call(expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::PipelinedCall(_, _, _) => true,
+            // Not a pipelined call; recurse into the value being quantized.
+            ExprKind::ScaledQuantize(v, _, _, _) => Self::expr_contains_pipelined_call(v),
             ExprKind::Binary(_, a, b) => {
                 Self::expr_contains_pipelined_call(a) || Self::expr_contains_pipelined_call(b)
             }
@@ -3860,7 +4091,18 @@ impl<'a> TypeChecker<'a> {
         let profile = match ta {
             Ty::FP32 => "FP32",
             Ty::BF16 => "BF16",
-            _ => unreachable!("is_float() already restricted ta to FP32/BF16"),
+            // No fp8 registry rows exist (single-cycle fp8 fma closes timing
+            // comfortably — see tests/fp_v1/synth/nangate45); route through
+            // the registry lookup so the user gets the enumerated-miss error
+            // instead of a panic.
+            Ty::FP8E4M3 => "FP8E4M3",
+            Ty::FP8E5M2 => "FP8E5M2",
+            Ty::FP4E2M1 => "FP4E2M1",
+            Ty::FP6E2M3 => "FP6E2M3",
+            Ty::FP6E3M2 => "FP6E3M2",
+            Ty::E8M0 => "E8M0",
+            Ty::UE4M3 => "UE4M3",
+            _ => unreachable!("is_float() covers exactly the float Tys above"),
         };
         match crate::pipelined_ops::lookup(name, profile, stages) {
             Ok(_entry) => ta.clone(),
@@ -3944,6 +4186,96 @@ impl<'a> TypeChecker<'a> {
         local_types: &HashMap<String, Ty>,
     ) -> Ty {
         match &expr.kind {
+            // `scaled_quantize<Fmt, policy, rounding>(v)` — the output format
+            // is named at the call site, never inferred: a `Vec<FP32,N>`
+            // argument says nothing about the element format or scale.
+            ExprKind::ScaledQuantize(v, fmt, policy, rounding) => {
+                let vt = self.resolve_expr_type(v, module_name, local_types);
+                let n_in = match &vt {
+                    Ty::Vec(elem, n) if **elem == Ty::FP32 => Some(*n),
+                    Ty::Todo | Ty::Error => return Ty::Error,
+                    other => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`scaled_quantize` requires a `Vec<FP32, N>` operand, got {}",
+                                other.display()
+                            ),
+                            v.span,
+                        ));
+                        None
+                    }
+                };
+                // The named format must be a block, and its N must match the
+                // input length — quantizing 32 values into a 16-element block
+                // is a silent data loss otherwise.
+                self.check_scaled_vec_members(fmt, expr.span);
+                let out = self.resolve_type_expr(fmt, module_name, local_types);
+                match (&out, n_in) {
+                    (Ty::ScaledVec(_, n_out, _), Some(n_in)) if *n_out != n_in => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`scaled_quantize` block size mismatch: operand is \
+                                 `Vec<FP32, {n_in}>` but the named format holds {n_out} elements"
+                            ),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    (Ty::ScaledVec(..), _) => {}
+                    (Ty::Error, _) => return Ty::Error,
+                    (other, _) => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`scaled_quantize<Fmt, ...>` requires a `ScaledVec` format, got {}",
+                                other.display()
+                            ),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                }
+                // Only RNE narrowing is lowered. `rtz`/`rna` are refused HERE
+                // rather than at parse so the surface stays forward-compatible
+                // and the diagnostic can explain the actual blocker: the
+                // element narrow (`arch_f32_to_e2m1` and its siblings) is a
+                // single round-to-nearest-even rounder in each backend, each
+                // pinned by an exhaustive SMT miter, and the other two modes
+                // are separate rounders with genuinely different overflow
+                // behaviour (RTZ on E5M2 must give max-finite, not Inf). That
+                // is its own piece of work, not glue — see arch#890.
+                if *rounding != crate::ast::RoundMode::Rne {
+                    self.errors.push(CompileError::general(
+                        "`scaled_quantize` supports only `rne` rounding today (arch#890). \
+                         `rtz` and `rna` need their own element rounders in both backends — \
+                         each with its own overflow rule and equivalence proof — rather than \
+                         a flag on the existing one",
+                        expr.span,
+                    ));
+                    return Ty::Error;
+                }
+                // `exact` divides by the element maximum instead of snapping
+                // the scale to a power of two, so it only means anything for a
+                // scale that CAN hold a non-power-of-two value. Refused rather
+                // than silently treated as `floor_pow2`, which would quietly
+                // give a different block than the one asked for.
+                //
+                // `fmt` is concrete here: `resolve_type_aliases` substitutes
+                // and then removes every alias before typecheck runs, so
+                // `shape_of_type` sees through `type NVFP4 = ScaledVec<…>`.
+                if *policy == Some(crate::ast::ScalePolicy::Exact)
+                    && crate::fp_block::shape_of_type(fmt).is_some_and(|s| s.scale.is_pow2())
+                {
+                    self.errors.push(CompileError::general(
+                        "`exact` scale policy is meaningless for an `E8M0`-scaled block: \
+                         every value of that scale is already a power of two, so there is \
+                         no mantissa for it to use. Use `floor_pow2` (OCP §6.3) or \
+                         `ceil_pow2` here, or a `UE4M3`-scaled block for `exact`",
+                        expr.span,
+                    ));
+                    return Ty::Error;
+                }
+                out
+            }
             ExprKind::SvaNext(_, inner) => {
                 if !self.in_sva_context {
                     self.errors.push(CompileError::general(
@@ -3980,11 +4312,11 @@ impl<'a> TypeChecker<'a> {
                     TypeExpr::Bool | TypeExpr::Bit => Ty::Bool,
                     TypeExpr::Named(ident) => {
                         if let Some((crate::resolve::Symbol::Struct(_), _)) =
-                            self.symbols.globals.get(&ident.name)
+                            self.global_symbol(&ident.name)
                         {
                             Ty::Struct(ident.name.clone())
                         } else if let Some((crate::resolve::Symbol::Enum(info), _)) =
-                            self.symbols.globals.get(&ident.name)
+                            self.global_symbol(&ident.name)
                         {
                             Ty::Enum(ident.name.clone(), enum_width(info.variants.len()))
                         } else {
@@ -4029,11 +4361,19 @@ impl<'a> TypeChecker<'a> {
                 // (arch#622/#624) — take that type directly.
                 LitKind::TypedFloat(FloatLitFmt::Fp32, _) => Ty::FP32,
                 LitKind::TypedFloat(FloatLitFmt::Bf16, _) => Ty::BF16,
+                LitKind::TypedFloat(FloatLitFmt::E2m1, _) => Ty::FP4E2M1,
+                LitKind::TypedFloat(FloatLitFmt::E2m3, _) => Ty::FP6E2M3,
+                LitKind::TypedFloat(FloatLitFmt::E3m2, _) => Ty::FP6E3M2,
+                LitKind::TypedFloat(FloatLitFmt::E4m3, _) => Ty::FP8E4M3,
+                LitKind::TypedFloat(FloatLitFmt::E5m2, _) => Ty::FP8E5M2,
             },
             ExprKind::Bool(_) => Ty::Bool,
             ExprKind::Ident(name) => {
                 if let Some(ty) = local_types.get(name) {
                     ty.clone()
+                } else if self.package_member_hidden(name) {
+                    self.errors.push(CompileError::undefined(name, expr.span));
+                    Ty::Error
                 } else {
                     // Check param (treat as generic width)
                     Ty::Error
@@ -4125,19 +4465,34 @@ impl<'a> TypeChecker<'a> {
                     // Bit-select of a UInt/SInt produces a single bit; treat as Bool
                     // so it can be used directly in boolean expressions.
                     Ty::UInt(_) | Ty::SInt(_) => Ty::Bool,
+                    // A block is not an array. Without this arm the `_` below
+                    // would silently hand back UInt<1> — a wrong answer, not a
+                    // diagnostic. Indexing is deliberately absent: an element
+                    // read only has meaning as `X * P_i`, so the scale must be
+                    // applied, and `scaled_dequantize` is where that happens.
+                    Ty::ScaledVec(..) => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "cannot index a `{}` — a block is one packed value, not an array. \
+                                 Use `scaled_dequantize(b)[i]` to read element `i` as FP32.",
+                                base_ty.display()
+                            ),
+                            base.span,
+                        ));
+                        Ty::Error
+                    }
                     // Propagate errors — don't silently produce UInt<1> for unresolved base types.
                     Ty::Error | Ty::Todo => Ty::Error,
                     _ => Ty::UInt(1),
                 }
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                if !Self::is_portable_bit_slice_base(base) {
-                    self.errors.push(CompileError::general(
-                        "cannot bit-slice this expression directly; SystemVerilog backends cannot portably emit `(expr)[hi:lo]`. For same-width modular arithmetic, use wrapping operators such as `+%` or `-%`; otherwise assign the expression to a typed `let`/wire first and slice the named value.",
-                        base.span,
-                    ));
-                    return Ty::Error;
-                }
+                // No base-kind restriction (arch#813 P1). Any base that
+                // SystemVerilog can't select from directly is bound to a
+                // compiler-generated temp by codegen's `hoist_slice_base`,
+                // including one that reads a runtime `for`-loop iterator
+                // (arch#861) — so there is nothing left for the type
+                // checker to refuse. See spec §3.2.1.
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 let hi_val = self.eval_const_expr(hi, local_types);
                 let lo_val = self.eval_const_expr(lo, local_types);
@@ -4153,23 +4508,25 @@ impl<'a> TypeChecker<'a> {
                     _ => Ty::Error,
                 }
             }
-            ExprKind::PartSelect(base, _start, width, _up) => {
-                if !Self::is_portable_bit_slice_base(base) {
-                    self.errors.push(CompileError::general(
-                        "cannot part-select this expression directly; SystemVerilog backends cannot portably emit `(expr)[start +: width]` (or `-:`). For same-width modular arithmetic, use wrapping operators such as `+%` or `-%`; otherwise assign the expression to a typed `let`/wire first and part-select the named value.",
-                        base.span,
-                    ));
-                    return Ty::Error;
-                }
+            ExprKind::PartSelect(_base, _start, width, _up) => {
+                // No base-kind restriction — see the `BitSlice` arm above.
                 // width is const; result type is UInt<width>
                 match self.eval_const_expr(width, local_types) {
                     Some(w) if w > 0 => Ty::UInt(w as u32),
                     _ => Ty::Error,
                 }
             }
-            ExprKind::StructLiteral(name, _) => Ty::Struct(name.name.clone()),
+            ExprKind::StructLiteral(name, _) => {
+                if self.package_member_hidden(&name.name) {
+                    self.errors
+                        .push(CompileError::undefined(&name.name, name.span));
+                    Ty::Error
+                } else {
+                    Ty::Struct(name.name.clone())
+                }
+            }
             ExprKind::EnumVariant(name, _) => {
-                if let Some((sym, _)) = self.symbols.globals.get(&name.name) {
+                if let Some((sym, _)) = self.global_symbol(&name.name) {
                     match sym {
                         crate::resolve::Symbol::Enum(info) => {
                             let bits = enum_width(info.variants.len());
@@ -4181,6 +4538,9 @@ impl<'a> TypeChecker<'a> {
                         }
                         _ => {}
                     }
+                } else if self.package_member_hidden(&name.name) {
+                    self.errors
+                        .push(CompileError::undefined(&name.name, name.span));
                 }
                 Ty::Error
             }
@@ -4314,6 +4674,131 @@ impl<'a> TypeChecker<'a> {
                 Ty::Bool
             }
             ExprKind::FunctionCall(name, call_args) => {
+                // Spec builtins for `assert<bound_err>` error-bound
+                // properties: `exact(x)` (the real-valued evaluation of
+                // x's cone), `abs(x)`, `ulp(x)`. Typed as their float
+                // argument; illegal outside bound_err properties.
+                if matches!(name.as_str(), "exact" | "abs" | "ulp") {
+                    if !self.in_bound_err {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`{name}()` is a spec builtin, legal only inside `assert<bound_err>` properties"
+                            ),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    if call_args.len() != 1 {
+                        self.errors.push(CompileError::general(
+                            &format!("`{name}(x)` takes 1 argument"),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let t = self.resolve_expr_type(&call_args[0], module_name, local_types);
+                    if !t.is_float() && !matches!(t, Ty::Todo | Ty::Error) {
+                        self.errors.push(CompileError::general(
+                            &format!("`{name}(x)` requires a float operand, got {}", t.display()),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    return t;
+                }
+                // `scaled_dequantize(b) -> Vec<FP32, N>` — the whole block,
+                // scale already applied (`v_i = X * P_i`). Fully inferable:
+                // N comes from the block type. This is also the ONLY way to
+                // read an element, which is why indexing a block is refused.
+                if name == "scaled_dequantize" {
+                    if call_args.len() != 1 {
+                        self.errors.push(CompileError::general(
+                            "`scaled_dequantize(b)` takes exactly 1 argument (the block)",
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let bt = self.resolve_expr_type(&call_args[0], module_name, local_types);
+                    return match bt {
+                        Ty::ScaledVec(_, n, _) => Ty::Vec(Box::new(Ty::FP32), n),
+                        Ty::Todo | Ty::Error => Ty::Error,
+                        other => {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`scaled_dequantize(b)` requires a `ScaledVec` operand, got {}",
+                                    other.display()
+                                ),
+                                expr.span,
+                            ));
+                            Ty::Error
+                        }
+                    };
+                }
+                // `scaled_dot(a, b) -> FP32` — the block dot product, the one
+                // operation OCP MX §6.2 defines normatively. Needs no type
+                // annotation: both operand types are fully known, and the
+                // result is always FP32 (the spec's accumulate precision is
+                // implementation-defined and ARCH picks FP32).
+                if name == "scaled_dot" {
+                    if call_args.len() != 2 {
+                        self.errors.push(CompileError::general(
+                            "`scaled_dot(a, b)` takes exactly 2 arguments (two blocks)",
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let at = self.resolve_expr_type(&call_args[0], module_name, local_types);
+                    let bt = self.resolve_expr_type(&call_args[1], module_name, local_types);
+                    if matches!(at, Ty::Todo | Ty::Error) || matches!(bt, Ty::Todo | Ty::Error) {
+                        return Ty::Error;
+                    }
+                    for (t, e) in [(&at, &call_args[0]), (&bt, &call_args[1])] {
+                        if !matches!(t, Ty::ScaledVec(..)) {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`scaled_dot(a, b)` requires `ScaledVec` operands, got {}",
+                                    t.display()
+                                ),
+                                e.span,
+                            ));
+                            return Ty::Error;
+                        }
+                    }
+                    // Both blocks must be the SAME type. A dot over mismatched
+                    // element formats or block sizes has no spec meaning, and
+                    // silently widening one side would invent semantics — the
+                    // same reason `+` on blocks is refused outright.
+                    if at != bt {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`scaled_dot` requires matching block types: left is {}, \
+                                 right is {}",
+                                at.display(),
+                                bt.display()
+                            ),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    return Ty::FP32;
+                }
+                // A bare `scaled_quantize(v)` reaches the generic call path
+                // because the parser only builds `ExprKind::ScaledQuantize`
+                // when `<` follows the name. That form has no meaning: the
+                // output format is spelled, never inferred, since a
+                // `Vec<FP32,N>` operand says nothing about which element
+                // format or scale to quantize into — `MXFP4` and `MXFP8` are
+                // equally valid results.
+                if name == "scaled_quantize" {
+                    self.errors.push(CompileError::general(
+                        "`scaled_quantize` needs its output format named: \
+                         `scaled_quantize<MXFP4>(v)`. The format cannot be inferred from a \
+                         `Vec<FP32, N>` operand — every block format holds FP32 inputs. \
+                         Optional selectors follow it: \
+                         `scaled_quantize<MXFP4, ceil_pow2, rne>(v)`",
+                        expr.span,
+                    ));
+                    return Ty::Error;
+                }
                 // Built-in float intrinsics. `fma(a, b, c)` is a single-rounded
                 // fused multiply-add (a*b + c); all three operands must be the
                 // same float type, result is that type. `is_nan(x)` → Bool.
@@ -4331,7 +4816,11 @@ impl<'a> TypeChecker<'a> {
                     if ta == Ty::Error || tb == Ty::Error || tc == Ty::Error {
                         return Ty::Error;
                     }
-                    if !ta.is_float() || tb != ta || tc != ta {
+                    // `is_float_arith`, not `is_float`: a storage-only float
+                    // is a carrier with no operators, so `fma` on one must be
+                    // a clean type error rather than a dangling
+                    // `arch_<tag>_fma` reference discovered by a backend.
+                    if !ta.is_float_arith() || tb != ta || tc != ta {
                         self.errors.push(CompileError::general(
                             &format!("`fma` requires three operands of the same float type, got {}, {}, {}",
                                 ta.display(), tb.display(), tc.display()),
@@ -4354,11 +4843,31 @@ impl<'a> TypeChecker<'a> {
                         return Ty::Error;
                     }
                     let tx = self.resolve_expr_type(&call_args[0], module_name, local_types);
-                    if tx != Ty::Error && !tx.is_float() {
-                        self.errors.push(CompileError::general(
-                            &format!("`is_nan(x)` requires a float operand, got {}", tx.display()),
-                            call_args[0].span,
-                        ));
+                    // `is_float_arith` gates this too: a format with no NaN
+                    // encoding (OCP E2M1/E2M3/E3M2) cannot answer `is_nan`
+                    // meaningfully, and a constant `false` would mislead.
+                    // E8M0 is not a float, but it DOES have a NaN code
+                    // (0xFF), which is exactly how MX marks a NaN block.
+                    // Allow the question there.
+                    if tx != Ty::Error && !tx.is_float_arith() && tx != Ty::E8M0 && tx != Ty::UE4M3
+                    {
+                        // Distinguish "not a float" from "a float with no NaN
+                        // encoding". Reporting E2M1 as a non-float would be
+                        // actively misleading — it IS a float; the concept of
+                        // NaN simply does not exist in it, which is why a
+                        // constant `false` would be the wrong answer too.
+                        let msg = if tx.is_float() {
+                            format!(
+                                "`is_nan(x)` is not available on {} — the format has no NaN \
+                                 encoding, so the question has no answer. Convert with \
+                                 `.to_fp32()` if you need to test a widened value",
+                                tx.display()
+                            )
+                        } else {
+                            format!("`is_nan(x)` requires a float operand, got {}", tx.display())
+                        };
+                        self.errors
+                            .push(CompileError::general(&msg, call_args[0].span));
                         return Ty::Error;
                     }
                     return Ty::Bool;
@@ -4437,7 +4946,7 @@ impl<'a> TypeChecker<'a> {
                     // Result type matches the inner expression.
                     return self.resolve_expr_type(&call_args[0], module_name, local_types);
                 }
-                if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
+                if let Some((Symbol::Function(overloads), _)) = self.global_symbol(name).cloned() {
                     // Resolve argument types first.
                     let arg_tys: Vec<Ty> = call_args
                         .iter()
@@ -4448,7 +4957,6 @@ impl<'a> TypeChecker<'a> {
                         .collect();
 
                     // Find matching overload: same arity, compatible types.
-                    let overloads = overloads.clone(); // detach borrow so we can call &mut self methods
                     let chosen = overloads.iter().enumerate().find(|(_, ov)| {
                         if ov.arg_types.len() != arg_tys.len() {
                             return false;
@@ -4511,29 +5019,6 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-    }
-
-    /// Bases that SystemVerilog backends (Verilator/iverilog) accept as the
-    /// target of a bit-slice `[hi:lo]` or part-select `[start +: w]` without
-    /// needing to be bound to a named `let` first. `BitSlice`, `PartSelect`,
-    /// `Bool`, and `EnumVariant` were removed from this list — chained
-    /// bit-select (`(a[7:4])[1:0]`) and slicing/part-selecting a literal
-    /// bool/enum-variant produce SV that Verilator/iverilog reject even when
-    /// parenthesized, so those bases must be rejected here rather than
-    /// allowed through to codegen. See issue #653.
-    fn is_portable_bit_slice_base(base: &Expr) -> bool {
-        matches!(
-            base.kind,
-            ExprKind::Ident(_)
-                | ExprKind::SynthIdent(_, _)
-                | ExprKind::Literal(_)
-                | ExprKind::Index(_, _)
-                | ExprKind::FieldAccess(_, _)
-                | ExprKind::Concat(_)
-                | ExprKind::Repeat(_, _)
-                | ExprKind::FunctionCall(_, _)
-                | ExprKind::MethodCall(_, _, _)
-        )
     }
 
     /// Find the port-site `<P=expr>` bus-param overrides for a bus field
@@ -4617,7 +5102,7 @@ impl<'a> TypeChecker<'a> {
                     };
                 }
             }
-            if let Some((sym, _)) = self.symbols.globals.get(name) {
+            if let Some((sym, _)) = self.global_symbol(name).cloned() {
                 if let crate::resolve::Symbol::Struct(info) = sym {
                     for (fname, fty) in &info.fields {
                         if fname == &field.name {
@@ -4628,7 +5113,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Ty::Bus(name) = &base_ty {
-            if let Some((sym, _)) = self.symbols.globals.get(name) {
+            if let Some((sym, _)) = self.global_symbol(name) {
                 if let crate::resolve::Symbol::Bus(info) = sym {
                     // Port-site `<P=expr>` overrides, when the base names a
                     // bus port (or a `Vec<Bus,N>` element) of the enclosing
@@ -4781,6 +5266,27 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     Ty::BF16
                 };
+                // fp8 -> fp32 widens exactly; fp8 -> bf16 is also EXACT
+                // (≤4-bit significands fit bf16's 8, and both fp8 exponent
+                // ranges sit inside bf16's) — implemented as widen-to-f32
+                // then narrow, both steps exact.
+                // FP4E2M1 joins the same family: widening to f32 is exact
+                // (a 2-bit significand fits trivially), and E2M1 -> bf16 is
+                // exact for the same reason the fp8 cases are.
+                // E8M0 joins this family: `.to_fp32()` yields the SCALE
+                // VALUE 2^(e-127), exact for every code.
+                if matches!(
+                    base_ty,
+                    Ty::FP8E4M3
+                        | Ty::FP8E5M2
+                        | Ty::FP4E2M1
+                        | Ty::FP6E2M3
+                        | Ty::FP6E3M2
+                        | Ty::E8M0
+                        | Ty::UE4M3
+                ) {
+                    return target;
+                }
                 match &base_ty {
                     Ty::FP32 | Ty::BF16 | Ty::UInt(_) | Ty::SInt(_) | Ty::Bool => {
                         if base_ty == target {
@@ -4796,6 +5302,111 @@ impl<'a> TypeChecker<'a> {
                         }
                         target
                     }
+                    Ty::Todo => Ty::Todo,
+                    Ty::Error => Ty::Error,
+                    _ => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                ".{}() requires a float or integer operand, got {}",
+                                method.name,
+                                base_ty.display()
+                            ),
+                            method.span,
+                        ));
+                        Ty::Error
+                    }
+                }
+            }
+            // fp8 conversions: FP32/BF16/integer -> fp8. All routes go
+            // through f32 and are provably correctly rounded: BF16->f32 and
+            // fp8-relevant integers (far below 2^24) are exact in f32, so
+            // the final f32->fp8 RNE is the ONLY rounding. Profile-dependent
+            // overflow applies (riscv non-saturating / cuda satfinite).
+            // Cross-fp8 (e4m3 <-> e5m2) also composes exactly: the widen is
+            // exact, one narrow rounds.
+            // `.to_e8m0()` extracts the binary exponent as an MX block
+            // scale. Not part of the float-narrowing family above: E8M0 is
+            // a scale type, so this floors to a power of two rather than
+            // rounding a significand.
+            "to_e8m0" => match &base_ty {
+                Ty::E8M0 => {
+                    self.errors.push(CompileError::general(
+                        ".to_e8m0() on an E8M0 value is a no-op — remove the cast",
+                        method.span,
+                    ));
+                    Ty::Error
+                }
+                t if t.is_float() => Ty::E8M0,
+                Ty::Todo => Ty::Todo,
+                Ty::Error => Ty::Error,
+                _ => {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            ".to_e8m0() requires a float operand, got {} — an MX \
+                                 block scale is the binary exponent of a float value",
+                            base_ty.display()
+                        ),
+                        method.span,
+                    ));
+                    Ty::Error
+                }
+            },
+            // `.to_ue4m3()` — the NVFP4 block scale. Unlike `.to_e8m0()` it
+            // rounds a significand rather than extracting an exponent, which
+            // is exactly why an NVFP4 scale is not a power of two.
+            "to_ue4m3" => match &base_ty {
+                Ty::UE4M3 => {
+                    self.errors.push(CompileError::general(
+                        ".to_ue4m3() on a UE4M3 value is a no-op — remove the cast",
+                        method.span,
+                    ));
+                    Ty::Error
+                }
+                t if t.is_float() => Ty::UE4M3,
+                Ty::Todo => Ty::Todo,
+                Ty::Error => Ty::Error,
+                _ => {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            ".to_ue4m3() requires a float operand, got {} — an NVFP4 \
+                             block scale is a rounded magnitude of a float value",
+                            base_ty.display()
+                        ),
+                        method.span,
+                    ));
+                    Ty::Error
+                }
+            },
+            "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" | "to_fp6e2m3" | "to_fp6e3m2" => {
+                let target = match method.name.as_str() {
+                    "to_fp8e4m3" => Ty::FP8E4M3,
+                    "to_fp4e2m1" => Ty::FP4E2M1,
+                    "to_fp6e2m3" => Ty::FP6E2M3,
+                    "to_fp6e3m2" => Ty::FP6E3M2,
+                    _ => Ty::FP8E5M2,
+                };
+                match &base_ty {
+                    t if *t == target => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                ".{}() on a {} value is a no-op — remove the cast",
+                                method.name,
+                                target.display()
+                            ),
+                            method.span,
+                        ));
+                        Ty::Error
+                    }
+                    Ty::FP32
+                    | Ty::BF16
+                    | Ty::FP8E4M3
+                    | Ty::FP8E5M2
+                    | Ty::FP4E2M1
+                    | Ty::FP6E2M3
+                    | Ty::FP6E3M2
+                    | Ty::UInt(_)
+                    | Ty::SInt(_)
+                    | Ty::Bool => target,
                     Ty::Todo => Ty::Todo,
                     Ty::Error => Ty::Error,
                     _ => {
@@ -5104,16 +5715,96 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error;
         }
 
+        // A block is not a number. OCP MX §6 defines exactly ONE operation on
+        // blocks — the dot product — and no add, multiply, or compare. Without
+        // this guard `a + b` would fall through to the INTEGER arms below and
+        // silently add two packed {scale, elements} words, which denotes
+        // nothing at all: it would carry element overflow into the scale field.
+        if matches!(lt, Ty::ScaledVec(..)) || matches!(rt, Ty::ScaledVec(..)) {
+            // `==` / `!=` ARE allowed: they are a bit compare on the packed
+            // storage word, exactly as they already are for `Vec` and struct
+            // (both lower to a plain SV `==`). Without them no formal property
+            // or testbench check could mention a block at all.
+            //
+            // NOTE the semantics, which differ from `Vec<UInt<N>,K>`: this is
+            // ENCODING equality, not value equality. Equal bits always mean
+            // equal values, but unequal bits do NOT mean unequal values — the
+            // same numbers can be encoded with a different (scale, element)
+            // split, and a NaN block (scale 0xFF) ignores its element bits on
+            // load per the spec's decision #4.
+            if matches!(op, BinOp::Eq | BinOp::Neq) {
+                if lt != rt {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "block comparison `{}` requires matching types, got {} and {}",
+                            op,
+                            lt.display(),
+                            rt.display()
+                        ),
+                        _span,
+                    ));
+                    return Ty::Error;
+                }
+                return Ty::Bool;
+            }
+            let blk = if matches!(lt, Ty::ScaledVec(..)) {
+                lt
+            } else {
+                rt
+            };
+            // Everything else — arithmetic and ORDERED compares. Ordered
+            // compares are refused for the same reason as arithmetic: `<` on
+            // packed {scale, elements} words compares encodings, and an
+            // encoding order is not a value order.
+            self.errors.push(CompileError::general(
+                &format!(
+                    "operator `{}` is not supported on {} — a block-scaled vector has no \
+                     arithmetic or ordering in the OCP MX spec (only the block dot \
+                     product); `==` / `!=` are available as an encoding compare. Use \
+                     `scaled_dequantize(...)` to obtain `Vec<FP32, N>`, compute there, \
+                     and `scaled_quantize(...)` to come back",
+                    op,
+                    blk.display()
+                ),
+                _span,
+            ));
+            return Ty::Error;
+        }
+
         // Floating-point operands: comparisons → Bool; `+ - *` → the same float
         // type (no widening). The two operands must be the identical float type;
         // there is no implicit float conversion (use `.to_fp32()`/`.to_bf16()`).
+        // E8M0 is a SCALE type, not a number you compute with. It is not a
+        // float, so without this it would fall through to the INTEGER
+        // arithmetic arms below and silently add exponent CODES — e.g.
+        // 2^3 + 2^5 becoming "code 130", which denotes nothing. Convert to
+        // FP32 to compute.
+        if matches!(lt, Ty::E8M0 | Ty::UE4M3) || matches!(rt, Ty::E8M0 | Ty::UE4M3) {
+            let (name, value) = if matches!(lt, Ty::UE4M3) || matches!(rt, Ty::UE4M3) {
+                ("UE4M3", "the scale value")
+            } else {
+                ("E8M0", "the scale value 2^(e-127)")
+            };
+            self.errors.push(CompileError::general(
+                &format!(
+                    "operator `{}` is not supported on {} — it is a block \
+                     SCALE type, not an arithmetic type. Use `.to_fp32()` to \
+                     obtain {} and compute on that",
+                    op, name, value
+                ),
+                _span,
+            ));
+            return Ty::Error;
+        }
         if lt.is_float() || rt.is_float() {
             // Render the real operator (`/`, `%`, `<<`, …) for the diagnostics
             // below, including the unsupported-op arm — never a `<op>` placeholder.
             let sym = op.to_string();
             match op {
                 BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
-                    if lt != rt {
+                    // Inside `assert<bound_err>` the comparison is over ℝ
+                    // (spec-level), so cross-format compares are fine.
+                    if lt != rt && !self.in_bound_err {
                         self.errors.push(CompileError::general(
                             &format!(
                                 "floating-point comparison `{sym}` requires matching types, got {} and {}",
@@ -5123,14 +5814,52 @@ impl<'a> TypeChecker<'a> {
                         ));
                         return Ty::Error;
                     }
+                    // Storage-only formats are carriers with no operators —
+                    // spec §3.9. Refuse a compare here, with a span, rather
+                    // than letting each backend interpolate an `arch_<tag>_lt`
+                    // / `arch_<tag>_eq` that nothing defines — those failures
+                    // surface in Verilator / z3 / g++ with no source location.
+                    // (E8M0 is already caught by the gate above, so this arm
+                    // only reaches genuine storage-only floats here.)
+                    let carrier = if lt.is_float() { &lt } else { &rt };
+                    if !carrier.is_float_arith() {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "operator `{sym}` is not supported on {} — it is a storage-only \
+                                 float format (conversions and literals only). Convert with \
+                                 `.to_fp32()`, compute, then convert back",
+                                carrier.display()
+                            ),
+                            _span,
+                        ));
+                        return Ty::Error;
+                    }
                     return Ty::Bool;
                 }
                 BinOp::Add | BinOp::Sub | BinOp::Mul => {
-                    if lt != rt {
+                    if lt != rt && !self.in_bound_err {
                         self.errors.push(CompileError::general(
                             &format!(
                                 "type mismatch in floating-point `{sym}`: {} vs {} (no implicit float conversion; use .to_fp32()/.to_bf16())",
                                 lt.display(), rt.display()
+                            ),
+                            _span,
+                        ));
+                        return Ty::Error;
+                    }
+                    // Storage-only formats are carriers with no operators.
+                    // Refuse here, with a span, rather than letting each
+                    // backend interpolate an `arch_<tag>_add` that nothing
+                    // defines — those failures surface in Verilator / z3 /
+                    // g++ with no source location at all.
+                    let carrier = if lt.is_float() { &lt } else { &rt };
+                    if !carrier.is_float_arith() {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "operator `{sym}` is not supported on {} — it is a storage-only \
+                                 float format (conversions and literals only). Convert with \
+                                 `.to_fp32()`, compute, then convert back",
+                                carrier.display()
                             ),
                             _span,
                         ));
@@ -6643,10 +7372,88 @@ impl<'a> TypeChecker<'a> {
     }
 
     // Naming convention checks removed — style is a convention (LLM defaults
-    // to snake_case), not a compiler-enforced rule.
-    pub(crate) fn check_pascal_case(&mut self, _ident: &Ident) {}
-    pub(crate) fn check_snake_case(&mut self, _ident: &Ident) {}
-    pub(crate) fn check_upper_snake(&mut self, _ident: &Ident) {}
+    // to snake_case), not a compiler-enforced rule. All three still funnel
+    // through `check_not_sv_reserved`, which is *not* a style check: every
+    // declared ARCH name reaches one of these three calls (module/construct
+    // names -> pascal, ports/signals/insts -> snake, params -> upper_snake),
+    // so this is the one place that sees the full set of names the compiler
+    // is about to emit verbatim as SV identifiers.
+    pub(crate) fn check_pascal_case(&mut self, ident: &Ident) {
+        self.check_not_sv_reserved(ident);
+    }
+    pub(crate) fn check_snake_case(&mut self, ident: &Ident) {
+        self.check_not_sv_reserved(ident);
+    }
+    pub(crate) fn check_upper_snake(&mut self, ident: &Ident) {
+        self.check_not_sv_reserved(ident);
+    }
+
+    /// Reject an ARCH identifier that collides with an IEEE 1800-2017
+    /// SystemVerilog reserved word. ARCH performs no renaming pass — a
+    /// declared name is emitted as an SV identifier of the same spelling —
+    /// so an SV keyword used as an ARCH name produces SV that no frontend
+    /// can parse, regardless of how well-typed the ARCH source is. Mirrors
+    /// `Parser::expect_ident`'s ARCH-keyword-collision diagnostic
+    /// (parser.rs) in both severity (hard error) and message shape, but
+    /// necessarily lives here instead: ARCH's own keywords get a dedicated
+    /// lexer `TokenKind` and so never reach `expect_ident`'s `Ident` arm at
+    /// all, while SV keywords are ordinary ARCH `Ident` tokens — some of
+    /// which are legitimately used ARCH *value* tokens in non-declaration
+    /// position (e.g. `policy priority;`, where `priority` is an SV
+    /// keyword but is matched and discarded, never stored as a declared
+    /// name). Gating on the naming-convention call sites — which by
+    /// construction only ever see identifiers already stored as a
+    /// declared name in the AST — keeps the check scoped to names that
+    /// actually reach codegen, without flagging value-position tokens.
+    /// (arch#827 P4.2: `reg table: ...` in `examples/reset_init_on.arch`
+    /// reached codegen untouched and emitted `logic [3:0][7:0] table;`,
+    /// rejected by both Verilator and Icarus — `table`/`endtable` are the
+    /// SV user-defined-primitive keywords.)
+    pub(crate) fn check_not_sv_reserved(&mut self, ident: &Ident) {
+        if is_sv_reserved_word(&ident.name) {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "'{}' is a reserved SystemVerilog keyword (IEEE 1800-2017) and cannot be \
+                     used as an identifier here — ARCH emits it verbatim as an SV identifier. \
+                     Rename it (e.g. '{}_', 's_{}', or 'my_{}').",
+                    ident.name, ident.name, ident.name, ident.name
+                ),
+                ident.span,
+            ));
+        }
+    }
+
+    /// Same check as `check_not_sv_reserved`, but for a `ports[N] array_name
+    /// ... sig: dir Type; ... end ports array_name` sub-signal (arbiter/
+    /// regfile/RAM/template port groups). The sub-signal's own name is
+    /// never emitted as a standalone SV identifier — codegen always
+    /// flattens it with the array's own name first (`{array}_{signal}`,
+    /// e.g. `emit_arbiter`/`emit_regfile`/`emit_ram`: `request` + `release`
+    /// -> `request_release`), so checking the bare sub-name against the SV
+    /// reserved-word list produces false positives on names that are
+    /// perfectly safe once flattened. Concretely: `synthesize_lock_arbiter`
+    /// (elaborate/threads.rs) generates a `release` sub-signal for every
+    /// `mutex`/`semaphore` lowering — bare `release` collides with SV's
+    /// `release` keyword, but the emitted `request_release` does not, and
+    /// all 29 lock/mutex/semaphore fixtures in the corpus already sit at
+    /// iverilog+verilator `OK` in `tests/portability_baseline.tsv` (arch#827
+    /// P4.2 sweep caught this as 29 false-positive regressions before this
+    /// flattened-name check replaced the bare one).
+    pub(crate) fn check_array_signal_not_sv_reserved(&mut self, array_name: &Ident, sig: &Ident) {
+        let flattened = format!("{}_{}", array_name.name, sig.name);
+        if is_sv_reserved_word(&flattened) {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "'{}' (ports[] signal `{}` in array `{}`) is a reserved SystemVerilog \
+                     keyword (IEEE 1800-2017) once flattened to its emitted SV name — ARCH \
+                     emits it verbatim as an SV identifier. Rename the array or the signal \
+                     (e.g. '{}_evt', 's_{}', or 'my_{}').",
+                    flattened, sig.name, array_name.name, sig.name, sig.name, sig.name
+                ),
+                sig.span,
+            ));
+        }
+    }
 
     /// Check that a WidthConst param's default value fits in the declared width.
     pub(crate) fn check_width_const_overflow(&mut self, p: &ParamDecl) {
@@ -6751,7 +7558,7 @@ impl<'a> TypeChecker<'a> {
     /// Find the top-level construct item declaring `name` (module, fsm,
     /// fifo, ram, arbiter, pipeline, bus, ...). Used by the instantiation-
     /// site `where` check to look up the target's `ParamDecl` list.
-    fn find_item_by_name(&self, name: &str) -> Option<&Item> {
+    fn find_item_by_name(&self, name: &str) -> Option<&'a Item> {
         self.source.items.iter().find(|item| match item {
             Item::Module(m) => m.name.name == name,
             Item::Fsm(f) => f.name.name == name,
@@ -6769,6 +7576,332 @@ impl<'a> TypeChecker<'a> {
             Item::Template(t) => t.name.name == name,
             _ => false,
         })
+    }
+
+    fn child_ports(&self, child_name: &str) -> Option<&'a [PortDecl]> {
+        let item = self.find_item_by_name(child_name)?;
+        match item {
+            Item::Module(m) => Some(&m.ports),
+            Item::Fsm(f) => Some(&f.ports),
+            Item::Pipeline(p) => Some(&p.ports),
+            Item::Fifo(f) => Some(&f.ports),
+            Item::Ram(r) => Some(&r.ports),
+            Item::Cam(c) => Some(&c.ports),
+            Item::Counter(c) => Some(&c.ports),
+            Item::Arbiter(a) => Some(&a.ports),
+            Item::Regfile(r) => Some(&r.ports),
+            Item::Linklist(l) => Some(&l.ports),
+            _ => None,
+        }
+    }
+
+    fn levenshtein(a: &str, b: &str) -> usize {
+        let a_chars: Vec<char> = a.chars().collect();
+        let b_chars: Vec<char> = b.chars().collect();
+        let n = a_chars.len();
+        let m = b_chars.len();
+        // Two rolling rows rather than the full (n+1)x(m+1) matrix.
+        let mut prev: Vec<usize> = (0..=m).collect();
+        let mut cur = vec![0usize; m + 1];
+        for i in 1..=n {
+            cur[0] = i;
+            for j in 1..=m {
+                let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
+                cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            }
+            std::mem::swap(&mut prev, &mut cur);
+        }
+        prev[m]
+    }
+
+    /// Closest candidate within edit distance 3, or None.
+    ///
+    /// Ties resolve to the lexicographically smallest candidate so the rendered
+    /// diagnostic is byte-identical across runs — `candidates` is built from
+    /// `BTreeSet`s for the same reason. See #756 for the class of bug this
+    /// avoids.
+    fn did_you_mean(target: &str, candidates: &[String]) -> Option<String> {
+        candidates
+            .iter()
+            .map(|c| (Self::levenshtein(target, c), c))
+            .filter(|(d, _)| *d > 0 && *d <= 3)
+            .min_by(|(da, ca), (db, cb)| da.cmp(db).then_with(|| ca.cmp(cb)))
+            .map(|(_, c)| c.clone())
+    }
+
+    /// `cname.strip_prefix(&format!("{base}_"))` without building the prefix.
+    ///
+    /// `validate_inst_ports` runs this per (connection x candidate base) across
+    /// several passes, and children like `e203_biu` carry 124 ports, so the
+    /// throwaway `String` per comparison is worth avoiding.
+    fn strip_base_prefix<'s>(cname: &'s str, base: &str) -> Option<&'s str> {
+        cname.strip_prefix(base)?.strip_prefix('_')
+    }
+
+    /// Split `"<idx>_<signal>"` for the flattened per-element bus shapes:
+    /// `chans_0_valid` -> `(0, "valid")`. Signal names contain underscores of
+    /// their own, so only the first one splits. The index is returned so
+    /// callers can bounds-check it against the element count.
+    fn split_idx_signal(rest: &str) -> Option<(u32, &str)> {
+        let (idx, signal) = rest.split_once('_')?;
+        Some((idx.parse::<u32>().ok()?, signal))
+    }
+
+    fn validate_inst_ports(&mut self, inst: &InstDecl) {
+        let Some(ports) = self.child_ports(&inst.module_name.name) else {
+            return;
+        };
+
+        // Build lookups.
+        let base_names: BTreeSet<String> = ports.iter().map(|p| p.name.name.clone()).collect();
+
+        let mut bus_map: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
+        for p in ports {
+            if let Some(bi) = &p.bus_info {
+                let bus_name = &bi.bus_name.name;
+                if let Some((Symbol::Bus(info), _)) = self.global_symbol(bus_name) {
+                    let mut param_map = info.default_param_map();
+                    for pa in &bi.params {
+                        param_map.insert(pa.name.name.clone(), &pa.value);
+                    }
+                    let eff = info.effective_signals(&param_map);
+                    let signals: Vec<String> = eff.into_iter().map(|(s, _, _)| s).collect();
+                    let permissive = !info.handshakes.is_empty()
+                        || !info.credit_channels.is_empty()
+                        || !info.tlm_methods.is_empty()
+                        || signals.is_empty();
+                    bus_map.insert(p.name.name.clone(), (signals, permissive));
+                } else {
+                    bus_map.insert(p.name.name.clone(), (Vec::new(), true));
+                }
+            }
+        }
+
+        let mut vec_scalar_bases: BTreeMap<String, Option<u32>> = BTreeMap::new();
+        for p in ports {
+            if p.bus_info.is_none() {
+                if let TypeExpr::Vec(_, size_expr) = &p.ty {
+                    let count = self
+                        .eval_const_expr(size_expr, &HashMap::new())
+                        .map(|v| v as u32);
+                    vec_scalar_bases.insert(p.name.name.clone(), count);
+                }
+            }
+        }
+
+        let mut vob_bases: BTreeMap<String, (Option<u32>, Vec<String>, bool)> = BTreeMap::new();
+        for p in ports {
+            if let Some(bi) = &p.bus_info {
+                if let Some(count_expr) = &bi.count {
+                    let count = self
+                        .eval_const_expr(count_expr, &HashMap::new())
+                        .map(|v| v as u32);
+                    let (signals, permissive) = bus_map
+                        .get(&p.name.name)
+                        .cloned()
+                        .unwrap_or((Vec::new(), true));
+                    vob_bases.insert(p.name.name.clone(), (count, signals, permissive));
+                }
+            }
+        }
+
+        // Port-array bases for Arbiter / Regfile `ports[N]` style: `request[N] valid/ready` → `request0_valid`.
+        // These are not `Vec` nor `Bus` but `PortArrayDecl`.
+        let mut port_array_bases: BTreeMap<String, (Option<u32>, Vec<String>)> = BTreeMap::new();
+        if let Some(item) = self.find_item_by_name(&inst.module_name.name) {
+            match item {
+                Item::Arbiter(a) => {
+                    for pa in &a.port_arrays {
+                        let count = self
+                            .eval_const_expr(&pa.count_expr, &HashMap::new())
+                            .map(|v| v as u32);
+                        let sigs: Vec<String> =
+                            pa.signals.iter().map(|s| s.name.name.clone()).collect();
+                        port_array_bases.insert(pa.name.name.clone(), (count, sigs));
+                    }
+                }
+                Item::Regfile(r) => {
+                    for pa_opt in [&r.read_ports, &r.write_ports] {
+                        if let Some(pa) = pa_opt {
+                            let count = self
+                                .eval_const_expr(&pa.count_expr, &HashMap::new())
+                                .map(|v| v as u32);
+                            let sigs: Vec<String> =
+                                pa.signals.iter().map(|s| s.name.name.clone()).collect();
+                            port_array_bases.insert(pa.name.name.clone(), (count, sigs));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Linklist op ports: `op insert_tail { port req_valid }` → `insert_tail_req_valid`.
+        let mut linklist_op_ports: BTreeSet<String> = BTreeSet::new();
+        if let Some(Item::Linklist(l)) = self.find_item_by_name(&inst.module_name.name) {
+            for op in &l.ops {
+                for p in &op.ports {
+                    linklist_op_ports.insert(format!("{}_{}", op.name.name, p.name.name));
+                }
+            }
+        }
+
+        // Ram port groups: `ports rd_port ... end ports rd_port` → `rd_port_addr`.
+        let mut ram_port_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        if let Some(Item::Ram(r)) = self.find_item_by_name(&inst.module_name.name) {
+            // A `.archi` ram stub loses its `ports` groups — `arch build` does
+            // not round-trip them — so every group pin (`rd_addr`, `rd_en`, …)
+            // would look unknown. Skipping the whole instance is deliberate:
+            // narrowing this to "leave ram_port_groups empty" would stack one
+            // bogus error per group pin.
+            //
+            // Unreachable without an existing error, since a ram with no port
+            // groups is already rejected outright ("ram `X` has no port
+            // groups"); this only keeps that diagnostic from being buried.
+            if r.is_interface && r.port_groups.is_empty() {
+                return;
+            }
+            for pg in &r.port_groups {
+                let sigs: Vec<String> = pg.signals.iter().map(|s| s.name.name.clone()).collect();
+                ram_port_groups.insert(pg.name.name.clone(), sigs);
+            }
+        }
+
+        // Candidate pool for did_you_mean: base names + flattened bus signals (scalar, non-permissive).
+        let mut candidates_set: BTreeSet<String> = base_names.clone();
+        candidates_set.extend(linklist_op_ports.iter().cloned());
+        for (base, signals) in &ram_port_groups {
+            for sig in signals {
+                candidates_set.insert(format!("{}_{}", base, sig));
+            }
+        }
+        for (base, (signals, permissive)) in &bus_map {
+            if *permissive {
+                continue;
+            }
+            if vob_bases.contains_key(base) {
+                continue;
+            }
+            for sig in signals {
+                candidates_set.insert(format!("{}_{}", base, sig));
+            }
+        }
+        let candidates: Vec<String> = candidates_set.into_iter().collect();
+
+        for conn in &inst.connections {
+            let cname = conn.port_name.name.as_str();
+            let mut is_valid = false;
+            if base_names.contains(cname) || linklist_op_ports.contains(cname) {
+                is_valid = true;
+            } else {
+                // Scalar bus per-field.
+                for (base, (signals, permissive)) in &bus_map {
+                    if vob_bases.contains_key(base) {
+                        continue;
+                    }
+                    if let Some(suffix) = Self::strip_base_prefix(cname, base) {
+                        if *permissive || signals.iter().any(|s| s == suffix) {
+                            is_valid = true;
+                            break;
+                        }
+                    }
+                }
+                // Vec scalar per-element: `data_0` for `port data: Vec<T, N>`.
+                // When N is a compile-time constant the index is bounds-checked
+                // here — `data_9` into a `Vec<T, 4>` names no port, and nothing
+                // downstream catches it (verified: it reaches Verilator as a
+                // bogus pin). When N is not const-evaluable, accept any numeric
+                // index rather than risk a false positive.
+                if !is_valid {
+                    for (base, count_opt) in &vec_scalar_bases {
+                        let Some(suffix) = Self::strip_base_prefix(cname, base) else {
+                            continue;
+                        };
+                        let Ok(idx) = suffix.parse::<u32>() else {
+                            continue;
+                        };
+                        if (*count_opt).is_none_or(|n| idx < n) {
+                            is_valid = true;
+                            break;
+                        }
+                    }
+                }
+                // Vec<Bus>, in all three flattened shapes:
+                //   `mm_0`            whole element
+                //   `mm_0_cmd_valid`  element + signal
+                //   `mm_cmd_valid`    whole vector, one signal
+                // Element indices are bounds-checked on the same terms as the
+                // scalar-Vec case above: strict when the count is const,
+                // permissive otherwise.
+                if !is_valid {
+                    for (base, (count_opt, signals, permissive)) in &vob_bases {
+                        let known = |sig: &str| *permissive || signals.iter().any(|s| s == sig);
+                        let in_range = |idx: u32| count_opt.is_none_or(|n| idx < n);
+                        if let Some(rest) = Self::strip_base_prefix(cname, base) {
+                            let whole_element = rest.parse::<u32>().is_ok_and(in_range);
+                            let element_signal = Self::split_idx_signal(rest)
+                                .is_some_and(|(idx, sig)| in_range(idx) && known(sig));
+                            if whole_element || element_signal || known(rest) {
+                                is_valid = true;
+                                break;
+                            }
+                        }
+                        // `mm0_cmd_valid` — no underscore before the index, as
+                        // produced by `chans[0].valid`.
+                        if cname
+                            .strip_prefix(base)
+                            .and_then(Self::split_idx_signal)
+                            .is_some_and(|(idx, sig)| in_range(idx) && known(sig))
+                        {
+                            is_valid = true;
+                            break;
+                        }
+                    }
+                }
+                // Arbiter / Regfile `ports[N]` groups: `request_valid` (whole
+                // vector) and `request0_valid` (indexed).
+                if !is_valid {
+                    for (base, (_count_opt, signals)) in &port_array_bases {
+                        let known = |sig: &str| signals.iter().any(|s| s == sig);
+                        if Self::strip_base_prefix(cname, base).is_some_and(known)
+                            || cname
+                                .strip_prefix(base)
+                                .and_then(Self::split_idx_signal)
+                                .is_some_and(|(_, sig)| known(sig))
+                        {
+                            is_valid = true;
+                            break;
+                        }
+                    }
+                }
+                // Ram port groups: `rd_port_addr`.
+                if !is_valid {
+                    for (base, signals) in &ram_port_groups {
+                        if Self::strip_base_prefix(cname, base)
+                            .is_some_and(|sig| signals.iter().any(|s| s == sig))
+                        {
+                            is_valid = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !is_valid {
+                let span = if conn.port_name.span.start != 0 || conn.port_name.span.end != 0 {
+                    conn.port_name.span
+                } else {
+                    conn.span
+                };
+                let mut msg = format!(
+                    "inst `{}` connects `{}`, which is not a port of `{}`",
+                    inst.name.name, conn.port_name.name, inst.module_name.name
+                );
+                if let Some(sugg) = Self::did_you_mean(cname, &candidates) {
+                    msg.push_str(&format!(" (did you mean `{}`?)", sugg));
+                }
+                self.errors.push(CompileError::general(&msg, span));
+            }
+        }
     }
 
     /// Instantiation-site `where` clause check (issue #600). Evaluates
@@ -7132,7 +8265,7 @@ impl<'a> TypeChecker<'a> {
         for pg in &r.port_groups {
             self.check_snake_case(&pg.name);
             for s in &pg.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&pg.name, &s.name);
             }
         }
         // Require at least one port group
@@ -7177,8 +8310,12 @@ impl<'a> TypeChecker<'a> {
         }
         // ROM validation
         if r.kind == crate::ast::RamKind::Rom {
-            // ROM must have init
-            if r.init.is_none() {
+            // ROM must have init — but the contents are implementation data,
+            // not interface. An `.archi` stub deliberately omits them (a
+            // `file(...)` path would not even resolve from the consumer's
+            // directory), so requiring one here made every rom unusable
+            // through separate compilation.
+            if r.init.is_none() && !r.common.is_interface {
                 self.errors.push(CompileError::general(
                     &format!("rom `{}` must have an init clause", r.name.name),
                     r.name.span,
@@ -7472,7 +8609,7 @@ impl<'a> TypeChecker<'a> {
         for pa in &a.port_arrays {
             self.check_snake_case(&pa.name);
             for s in &pa.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&pa.name, &s.name);
             }
         }
         // Validate latency
@@ -7484,17 +8621,21 @@ impl<'a> TypeChecker<'a> {
         }
         // Validate hook for custom policy
         if let ArbiterPolicy::Custom(ref fn_ident) = a.policy {
-            if a.hook.is_none() {
-                self.errors.push(CompileError::general(
-                    &format!(
-                        "custom policy `{}` requires a `hook grant_select` declaration",
-                        fn_ident.name
-                    ),
-                    fn_ident.span,
-                ));
+            // The hook binds a policy function defined alongside the arbiter
+            // body; an `.archi` stub carries neither, and emitting the hook
+            // would only move the failure to "unknown function".
+            let Some(hook) = a.hook.as_ref() else {
+                if !a.common.is_interface {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "custom policy `{}` requires a `hook grant_select` declaration",
+                            fn_ident.name
+                        ),
+                        fn_ident.span,
+                    ));
+                }
                 return;
-            }
-            let hook = a.hook.as_ref().unwrap();
+            };
             // Verify the hook's bound function name matches the policy name
             if hook.fn_name.name != fn_ident.name {
                 self.errors.push(CompileError::general(
@@ -7539,14 +8680,46 @@ impl<'a> TypeChecker<'a> {
                     ));
                 }
             }
+            // Codegen only ever substitutes two hook-parameter names with a
+            // real signal: `req_mask` -> the requester valid vector, and
+            // `last_grant` -> the fairness state register (see
+            // `emit_arbiter_custom` in codegen/arbiter.rs). Any other
+            // argument in the `= FnName(...)` binding is emitted into the
+            // generated SV *verbatim* as a bare identifier, so it must
+            // already be the name of a real signal — an arbiter port or
+            // param — not the hook's own declared parameter name. The hook
+            // parameter list is only the expected signature; echoing one of
+            // its (non-req_mask/last_grant) names back in the binding
+            // produces an identifier with no SV declaration anywhere
+            // (arch#827 P4.3: `examples/arbiter_custom_hook.arch` did
+            // exactly this with a hook-only `qos_in` instead of its actual
+            // `qos` port — undetected by `arch check`, a Verilator/iverilog
+            // "can't find definition" downstream).
             for arg in &hook.fn_args {
-                if !hook_param_names.contains(&arg.name.as_str())
-                    && !port_names.contains(&arg.name.as_str())
-                    && !param_names.contains(&arg.name.as_str())
+                let is_reserved_internal = arg.name == "req_mask" || arg.name == "last_grant";
+                if is_reserved_internal
+                    || port_names.contains(&arg.name.as_str())
+                    || param_names.contains(&arg.name.as_str())
                 {
+                    continue;
+                }
+                if hook_param_names.contains(&arg.name.as_str()) {
                     self.errors.push(CompileError::general(
                         &format!(
-                            "hook argument `{}` is not a hook parameter, port, or param",
+                            "hook argument `{}` names a hook parameter, not a signal — hook \
+                             parameters other than `req_mask`/`last_grant` only declare the \
+                             expected signature and have no SV net of their own. Pass the \
+                             arbiter port or param that supplies the value instead (its own \
+                             name, not the hook parameter name).",
+                            arg.name
+                        ),
+                        arg.span,
+                    ));
+                } else {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "hook argument `{}` is not `req_mask`, `last_grant`, or a declared \
+                             arbiter port/param",
                             arg.name
                         ),
                         arg.span,
@@ -7575,13 +8748,13 @@ impl<'a> TypeChecker<'a> {
         if let Some(rp) = &r.read_ports {
             self.check_snake_case(&rp.name);
             for s in &rp.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&rp.name, &s.name);
             }
         }
         if let Some(wp) = &r.write_ports {
             self.check_snake_case(&wp.name);
             for s in &wp.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&wp.name, &s.name);
             }
         }
     }
@@ -7760,6 +8933,15 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn check_pipeline(&mut self, p: &PipelineDecl) {
         self.check_pascal_case(&p.name);
+
+        // An `.archi` stub has no stages, so the body-driven checks below
+        // (every output driven, every stage registered) would reject a
+        // perfectly good interface. Same short-circuit as `check_module` and
+        // `check_fsm`; the port signature is still recorded for parent-side
+        // instantiation checking.
+        if p.common.is_interface {
+            return;
+        }
 
         for param in &p.params {
             self.check_upper_snake(&param.name);
@@ -8174,7 +9356,7 @@ impl<'a> TypeChecker<'a> {
         for pa in &t.port_arrays {
             self.check_snake_case(&pa.name);
             for s in &pa.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&pa.name, &s.name);
             }
         }
         for h in &t.hooks {
@@ -8437,24 +9619,6 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&f.name);
         for arg in &f.args {
             self.check_snake_case(&arg.name);
-        }
-        // v1: floats are not supported in module-local functions — function
-        // params/locals are not added to the backend float-op dispatch scope,
-        // so a float `x + y` inside a function would silently emit integer
-        // arithmetic. Reject float signatures rather than miscompile.
-        for arg in &f.args {
-            if type_expr_contains_float(&arg.ty) {
-                self.errors.push(CompileError::general(
-                    &format!("floating-point types (FP32/BF16) are not supported in function parameters in v1 (parameter `{}` of `{}`)", arg.name.name, f.name.name),
-                    arg.name.span,
-                ));
-            }
-        }
-        if type_expr_contains_float(&f.ret_ty) {
-            self.errors.push(CompileError::general(
-                &format!("floating-point types (FP32/BF16) are not supported as a function return type in v1 (function `{}`)", f.name.name),
-                f.name.span,
-            ));
         }
 
         // Build local type environment with args
@@ -9026,6 +10190,716 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
     }
 }
 
+/// IEEE 1800-2017 SystemVerilog reserved words (LRM Annex B, "Keywords").
+/// Used by `check_not_sv_reserved` to hard-reject an ARCH identifier that
+/// collides with one — unlike the naming-convention *lint* just below
+/// (opt-in, warning-only, casing-only), this check is unconditional and
+/// severity-matches the ARCH-keyword-collision error in
+/// `Parser::expect_ident`: ARCH performs no renaming pass, so a name on
+/// this list reaching codegen is not a style problem, it is SV that no
+/// frontend can parse. Only currently-reserved keywords are listed (not
+/// Annex C's "reserved for future use" set, which no shipping frontend
+/// actually rejects today).
+fn is_sv_reserved_word(name: &str) -> bool {
+    matches!(
+        name,
+        "accept_on"
+            | "alias"
+            | "always"
+            | "always_comb"
+            | "always_ff"
+            | "always_latch"
+            | "and"
+            | "assert"
+            | "assign"
+            | "assume"
+            | "automatic"
+            | "before"
+            | "begin"
+            | "bind"
+            | "bins"
+            | "binsof"
+            | "bit"
+            | "break"
+            | "buf"
+            | "bufif0"
+            | "bufif1"
+            | "byte"
+            | "case"
+            | "casex"
+            | "casez"
+            | "cell"
+            | "chandle"
+            | "checker"
+            | "class"
+            | "clocking"
+            | "cmos"
+            | "config"
+            | "const"
+            | "constraint"
+            | "context"
+            | "continue"
+            | "cover"
+            | "covergroup"
+            | "coverpoint"
+            | "cross"
+            | "deassign"
+            | "default"
+            | "defparam"
+            | "design"
+            | "disable"
+            | "dist"
+            | "do"
+            | "edge"
+            | "else"
+            | "end"
+            | "endcase"
+            | "endchecker"
+            | "endclass"
+            | "endclocking"
+            | "endconfig"
+            | "endfunction"
+            | "endgenerate"
+            | "endgroup"
+            | "endinterface"
+            | "endmodule"
+            | "endpackage"
+            | "endprimitive"
+            | "endprogram"
+            | "endproperty"
+            | "endspecify"
+            | "endsequence"
+            | "endtable"
+            | "endtask"
+            | "enum"
+            | "event"
+            | "eventually"
+            | "expect"
+            | "export"
+            | "extends"
+            | "extern"
+            | "final"
+            | "first_match"
+            | "for"
+            | "force"
+            | "foreach"
+            | "forever"
+            | "fork"
+            | "forkjoin"
+            | "function"
+            | "generate"
+            | "genvar"
+            | "global"
+            | "highz0"
+            | "highz1"
+            | "if"
+            | "iff"
+            | "ifnone"
+            | "ignore_bins"
+            | "illegal_bins"
+            | "implements"
+            | "implies"
+            | "import"
+            | "incdir"
+            | "include"
+            | "initial"
+            | "inout"
+            | "input"
+            | "inside"
+            | "instance"
+            | "int"
+            | "integer"
+            | "interconnect"
+            | "interface"
+            | "intersect"
+            | "join"
+            | "join_any"
+            | "join_none"
+            | "large"
+            | "let"
+            | "liblist"
+            | "library"
+            | "local"
+            | "localparam"
+            | "logic"
+            | "longint"
+            | "macromodule"
+            | "matches"
+            | "medium"
+            | "modport"
+            | "module"
+            | "nand"
+            | "negedge"
+            | "nettype"
+            | "new"
+            | "nexttime"
+            | "nmos"
+            | "nor"
+            | "noshowcancelled"
+            | "not"
+            | "notif0"
+            | "notif1"
+            | "null"
+            | "or"
+            | "output"
+            | "package"
+            | "packed"
+            | "parameter"
+            | "pmos"
+            | "posedge"
+            | "primitive"
+            | "priority"
+            | "program"
+            | "property"
+            | "protected"
+            | "pull0"
+            | "pull1"
+            | "pulldown"
+            | "pullup"
+            | "pulsestyle_ondetect"
+            | "pulsestyle_onevent"
+            | "pure"
+            | "rand"
+            | "randc"
+            | "randcase"
+            | "randsequence"
+            | "rcmos"
+            | "real"
+            | "realtime"
+            | "ref"
+            | "reg"
+            | "reject_on"
+            | "release"
+            | "repeat"
+            | "restrict"
+            | "return"
+            | "rnmos"
+            | "rpmos"
+            | "rtran"
+            | "rtranif0"
+            | "rtranif1"
+            | "s_always"
+            | "s_eventually"
+            | "s_nexttime"
+            | "s_until"
+            | "s_until_with"
+            | "scalared"
+            | "sequence"
+            | "shortint"
+            | "shortreal"
+            | "showcancelled"
+            | "signed"
+            | "small"
+            | "soft"
+            | "solve"
+            | "specify"
+            | "specparam"
+            | "static"
+            | "string"
+            | "strong"
+            | "strong0"
+            | "strong1"
+            | "struct"
+            | "super"
+            | "supply0"
+            | "supply1"
+            | "sync_accept_on"
+            | "sync_reject_on"
+            | "table"
+            | "tagged"
+            | "task"
+            | "this"
+            | "throughout"
+            | "time"
+            | "timeprecision"
+            | "timeunit"
+            | "tran"
+            | "tranif0"
+            | "tranif1"
+            | "tri"
+            | "tri0"
+            | "tri1"
+            | "triand"
+            | "trior"
+            | "trireg"
+            | "type"
+            | "typedef"
+            | "union"
+            | "unique"
+            | "unique0"
+            | "unsigned"
+            | "until"
+            | "until_with"
+            | "untyped"
+            | "use"
+            | "uwire"
+            | "var"
+            | "vectored"
+            | "virtual"
+            | "void"
+            | "wait"
+            | "wait_order"
+            | "wand"
+            | "weak"
+            | "weak0"
+            | "weak1"
+            | "while"
+            | "wildcard"
+            | "wire"
+            | "with"
+            | "within"
+            | "wor"
+            | "xnor"
+            | "xor"
+    )
+}
+
+// ── Naming-convention lint (issue #648, opt-in via `--lint-naming`) ───────────
+//
+// Spec §2.1's naming table is documented as "recommended, not
+// compiler-enforced" and a standing maintainer decision keeps it that way —
+// this pass is purely opt-in, warning-only, and never runs unless the CLI
+// flag is passed. Absent the flag, `arch check`/`arch build` behavior and
+// emitted output are completely unchanged (this function is never called).
+//
+// Casing classification is pure string logic — no type information needed —
+// so, like `check_precedence`, this walks the *parsed* `SourceFile` before
+// elaboration. That timing isn't just a performance shortcut: it structurally
+// avoids ever seeing a compiler-synthesized identifier (thread-lowering's
+// `_threads` submodules, `__ri0`-style internal regs, credit-channel dispatch
+// wires, generate-expanded `w_0`/`w_1` suffixes, ...), because none of those
+// exist yet at this stage — they're all inserted by passes in `elaborate.rs`
+// that run *after* this one. The single exception is the parser's own
+// `_destructure` placeholder name on struct-destructuring `let` bindings
+// (`LetBinding::destructure_fields`) — that placeholder is synthesized by
+// `parser.rs` itself and so *is* present pre-elaboration; it's explicitly
+// skipped in `check_let_binding_naming` below (its real user-written names
+// live in `destructure_fields`, which are checked individually instead).
+
+/// PascalCase: `FetchUnit`, `AluOp`, `AXIBridge` (acronym prefix),
+/// `Axi4Bridge` (digit mid-word). First char uppercase; every char
+/// alphanumeric (no separators).
+fn is_pascal_case(name: &str) -> bool {
+    matches!(name.chars().next(), Some(c) if c.is_ascii_uppercase())
+        && name.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// snake_case: `pc_next`, `req_valid`, `fifo2_ptr` (digit mid-word). First
+/// char lowercase; every char lowercase/digit/underscore.
+fn is_snake_case(name: &str) -> bool {
+    matches!(name.chars().next(), Some(c) if c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// UPPER_SNAKE: `XLEN`, `CACHE_DEPTH`. First char uppercase; every char
+/// uppercase/digit/underscore.
+fn is_upper_snake(name: &str) -> bool {
+    matches!(name.chars().next(), Some(c) if c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Best-effort PascalCase rewrite, used only for the diagnostic's suggested
+/// name. Underscore-joined input (`MODULE_FOO`) is split on `_` and each
+/// part is title-cased unless it looks like an acronym (all-caps/digits,
+/// kept verbatim). No-underscore input (`moduleFoo`) is left alone except
+/// for capitalizing the first character, which preserves intentional
+/// internal capitalization (`moduleFoo` -> `ModuleFoo`, not `Modulefoo`).
+fn suggest_pascal_case(name: &str) -> String {
+    if name.contains('_') {
+        name.split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                if part.chars().all(|c| !c.is_ascii_lowercase()) {
+                    part.to_string()
+                } else {
+                    capitalize_first(part)
+                }
+            })
+            .collect()
+    } else {
+        capitalize_first(name)
+    }
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Best-effort snake_case rewrite: inserts `_` at lower->upper and
+/// upper-run->upper+lower boundaries (so `AXIBridge` -> `axi_bridge`, not
+/// `a_x_i_bridge`), lowercases everything, and collapses/trims `_` runs.
+fn suggest_snake_case(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    let mut out = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '_' {
+            if !out.is_empty() && !out.ends_with('_') {
+                out.push('_');
+            }
+            continue;
+        }
+        if c.is_ascii_uppercase() {
+            let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+            let next = chars.get(i + 1).copied();
+            let boundary = match prev {
+                Some(p) => {
+                    p.is_ascii_lowercase()
+                        || p.is_ascii_digit()
+                        || (p.is_ascii_uppercase() && next.is_some_and(|n| n.is_ascii_lowercase()))
+                }
+                None => false,
+            };
+            if boundary && !out.is_empty() && !out.ends_with('_') {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// Best-effort UPPER_SNAKE rewrite: same word-boundary logic as
+/// `suggest_snake_case`, upper-cased.
+fn suggest_upper_snake(name: &str) -> String {
+    suggest_snake_case(name).to_ascii_uppercase()
+}
+
+fn naming_warning(
+    warnings: &mut Vec<CompileWarning>,
+    category: &str,
+    ident: &Ident,
+    convention: &str,
+    suggestion: String,
+) {
+    warnings.push(CompileWarning {
+        message: format!(
+            "{category} `{}` should be {convention} (e.g. `{suggestion}`) — see naming conventions",
+            ident.name
+        ),
+        span: ident.span,
+    });
+}
+
+fn check_pascal_naming(warnings: &mut Vec<CompileWarning>, category: &str, ident: &Ident) {
+    if !is_pascal_case(&ident.name) {
+        naming_warning(
+            warnings,
+            category,
+            ident,
+            "PascalCase",
+            suggest_pascal_case(&ident.name),
+        );
+    }
+}
+
+fn check_snake_naming(warnings: &mut Vec<CompileWarning>, category: &str, ident: &Ident) {
+    if !is_snake_case(&ident.name) {
+        naming_warning(
+            warnings,
+            category,
+            ident,
+            "snake_case",
+            suggest_snake_case(&ident.name),
+        );
+    }
+}
+
+fn check_upper_snake_naming(warnings: &mut Vec<CompileWarning>, category: &str, ident: &Ident) {
+    if !is_upper_snake(&ident.name) {
+        naming_warning(
+            warnings,
+            category,
+            ident,
+            "UPPER_SNAKE",
+            suggest_upper_snake(&ident.name),
+        );
+    }
+}
+
+fn check_params_naming(warnings: &mut Vec<CompileWarning>, params: &[ParamDecl]) {
+    for p in params {
+        check_upper_snake_naming(warnings, "param", &p.name);
+    }
+}
+
+fn check_ports_naming(warnings: &mut Vec<CompileWarning>, ports: &[PortDecl]) {
+    for p in ports {
+        check_snake_naming(warnings, "port", &p.name);
+    }
+}
+
+/// `let` bindings: the ordinary single-name form is checked directly; the
+/// struct-destructuring form (`let {a, b, c} = expr;`) carries a
+/// parser-synthesized `_destructure` placeholder in `name` (see the module
+/// comment above) — skip that and check the real user-written names in
+/// `destructure_fields` instead.
+fn check_let_binding_naming(warnings: &mut Vec<CompileWarning>, l: &LetBinding) {
+    if l.destructure_fields.is_empty() {
+        check_snake_naming(warnings, "let binding", &l.name);
+    } else {
+        for f in &l.destructure_fields {
+            check_snake_naming(warnings, "let binding", f);
+        }
+    }
+}
+
+fn check_function_naming(warnings: &mut Vec<CompileWarning>, f: &FunctionDecl) {
+    for a in &f.args {
+        check_snake_naming(warnings, "function arg", &a.name);
+    }
+    check_function_body_naming(warnings, &f.body);
+}
+
+fn check_function_body_naming(warnings: &mut Vec<CompileWarning>, body: &[FunctionBodyItem]) {
+    for item in body {
+        match item {
+            FunctionBodyItem::Let(l) => check_let_binding_naming(warnings, l),
+            FunctionBodyItem::IfElse(ie) => {
+                check_function_body_naming(warnings, &ie.then_body);
+                check_function_body_naming(warnings, &ie.else_body);
+            }
+            FunctionBodyItem::For(fl) => check_function_body_naming(warnings, &fl.body),
+            FunctionBodyItem::Return(_) | FunctionBodyItem::Assign(_) => {}
+        }
+    }
+}
+
+fn check_gen_items_naming(warnings: &mut Vec<CompileWarning>, items: &[GenItem]) {
+    for item in items {
+        match item {
+            GenItem::Port(p) => check_snake_naming(warnings, "port", &p.name),
+            GenItem::Wire(w) => check_snake_naming(warnings, "wire", &w.name),
+            GenItem::Inst(_)
+            | GenItem::TlmConnect(_)
+            | GenItem::Thread(_)
+            | GenItem::Assert(_)
+            | GenItem::Seq(_)
+            | GenItem::Comb(_) => {}
+        }
+    }
+}
+
+fn check_generate_naming(warnings: &mut Vec<CompileWarning>, g: &GenerateDecl) {
+    match g {
+        GenerateDecl::For(gf) => check_gen_items_naming(warnings, &gf.items),
+        GenerateDecl::If(gi) => {
+            check_gen_items_naming(warnings, &gi.then_items);
+            check_gen_items_naming(warnings, &gi.else_items);
+        }
+    }
+}
+
+/// Walk a module (or pipeline stage) body for reg/wire/let naming —
+/// shared by `Item::Module` and `PipelineDecl`'s per-stage bodies, both of
+/// which are `Vec<ModuleBodyItem>`.
+fn check_module_body_naming(warnings: &mut Vec<CompileWarning>, body: &[ModuleBodyItem]) {
+    for item in body {
+        match item {
+            ModuleBodyItem::RegDecl(r) => check_snake_naming(warnings, "reg", &r.name),
+            ModuleBodyItem::WireDecl(w) => check_snake_naming(warnings, "wire", &w.name),
+            ModuleBodyItem::PipeRegDecl(p) => check_snake_naming(warnings, "reg", &p.name),
+            ModuleBodyItem::LetBinding(l) => check_let_binding_naming(warnings, l),
+            ModuleBodyItem::Function(f) => check_function_naming(warnings, f),
+            ModuleBodyItem::Generate(g) => check_generate_naming(warnings, g),
+            ModuleBodyItem::RegBlock(_)
+            | ModuleBodyItem::LatchBlock(_)
+            | ModuleBodyItem::CombBlock(_)
+            | ModuleBodyItem::Inst(_)
+            | ModuleBodyItem::Thread(_)
+            | ModuleBodyItem::Resource(_)
+            | ModuleBodyItem::Assert(_)
+            | ModuleBodyItem::TlmConnect(_)
+            | ModuleBodyItem::TypeAlias(_) => {}
+        }
+    }
+}
+
+/// Walk one top-level `Item` for naming-convention violations. See the
+/// module comment above for scope/timing rationale.
+///
+/// Construct-name (PascalCase) coverage matches issue #648's enumerated
+/// list exactly: module, fsm, fifo, ram, cam, counter, arbiter, regfile,
+/// pipeline, linklist, bus, synchronizer, clkgate, struct, enum, package,
+/// domain. `function` and `template` aren't in that list (no documented
+/// casing convention for either), so their own names aren't checked here —
+/// but their params/ports/args are still real `param`/`port`/signal
+/// declarations, so those nested categories are still checked.
+///
+/// `.archi` interface stubs (`is_interface == true`) are skipped entirely:
+/// they're compiler-emitted mirrors of a construct already declared (and
+/// already linted) in its originating `.arch` file, so linting the stub too
+/// would just double-report the same violation.
+fn check_naming_in_item(item: &Item, warnings: &mut Vec<CompileWarning>) {
+    match item {
+        Item::Domain(d) => check_pascal_naming(warnings, "domain", &d.name),
+        Item::Struct(s) => check_pascal_naming(warnings, "struct", &s.name),
+        Item::Enum(e) => check_pascal_naming(warnings, "enum", &e.name),
+        Item::Module(m) => {
+            if m.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "module", &m.name);
+            check_params_naming(warnings, &m.params);
+            check_ports_naming(warnings, &m.ports);
+            check_module_body_naming(warnings, &m.body);
+        }
+        Item::Fsm(f) => {
+            if f.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "fsm", &f.name);
+            check_params_naming(warnings, &f.params);
+            check_ports_naming(warnings, &f.ports);
+            for r in &f.regs {
+                check_snake_naming(warnings, "reg", &r.name);
+            }
+            for w in &f.wires {
+                check_snake_naming(warnings, "wire", &w.name);
+            }
+            for l in &f.lets {
+                check_let_binding_naming(warnings, l);
+            }
+        }
+        Item::Fifo(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "fifo", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Ram(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "ram", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+            for pg in &x.port_groups {
+                check_ports_naming(warnings, &pg.signals);
+            }
+        }
+        Item::Cam(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "cam", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Counter(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "counter", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Arbiter(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "arbiter", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+            for pa in &x.port_arrays {
+                check_ports_naming(warnings, &pa.signals);
+            }
+        }
+        Item::Regfile(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "regfile", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+            if let Some(rp) = &x.read_ports {
+                check_ports_naming(warnings, &rp.signals);
+            }
+            if let Some(wp) = &x.write_ports {
+                check_ports_naming(warnings, &wp.signals);
+            }
+        }
+        Item::Pipeline(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "pipeline", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+            for stage in &x.stages {
+                check_module_body_naming(warnings, &stage.body);
+            }
+        }
+        Item::Linklist(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "linklist", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Function(f) => check_function_naming(warnings, f),
+        Item::Template(t) => {
+            check_params_naming(warnings, &t.params);
+            check_ports_naming(warnings, &t.ports);
+            for pa in &t.port_arrays {
+                check_ports_naming(warnings, &pa.signals);
+            }
+        }
+        Item::Synchronizer(x) => {
+            check_pascal_naming(warnings, "synchronizer", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Clkgate(x) => {
+            check_pascal_naming(warnings, "clkgate", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Bus(x) => {
+            check_pascal_naming(warnings, "bus", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.signals);
+            for g in &x.generates {
+                check_ports_naming(warnings, &g.then_signals);
+                check_ports_naming(warnings, &g.else_signals);
+            }
+            for cc in &x.credit_channels {
+                check_params_naming(warnings, &cc.params);
+            }
+        }
+        Item::Package(x) => {
+            check_pascal_naming(warnings, "package", &x.name);
+            check_params_naming(warnings, &x.params);
+        }
+        Item::Use(_) | Item::ExternPackage(_) => {}
+    }
+}
+
+/// Run the naming-convention lint (issue #648) on a parsed `SourceFile`,
+/// pre-elaboration. Opt-in only — callers gate this behind `--lint-naming`;
+/// it is never invoked otherwise. Warning-only: naming conventions remain
+/// "recommended, not compiler-enforced" per spec §2.1, so this never
+/// produces a hard error regardless of how many violations are found.
+pub fn check_naming(source: &SourceFile) -> Vec<CompileWarning> {
+    let mut warnings = Vec::new();
+    for item in &source.items {
+        check_naming_in_item(item, &mut warnings);
+    }
+    warnings
+}
+
 /// Evaluate a simple literal type-width expression (e.g. the `8` in `UInt<8>`).
 /// Returns `None` for non-literal expressions (params, arithmetic, etc.).
 fn eval_type_width_expr(e: &Expr) -> Option<u32> {
@@ -9036,16 +10910,22 @@ fn eval_type_width_expr(e: &Expr) -> Option<u32> {
     }
 }
 
-/// Returns true if `actual` is assignable to `expected` without an explicit cast.
-/// In hardware, narrower unsigned values zero-extend to wider wires.
-/// True if a TypeExpr is, or contains (via Vec nesting), a float type.
-/// Used to reject FP32/BF16 in positions the v1 float-op dispatch can't
-/// resolve (Vec elements, struct fields, function signatures).
-fn type_expr_contains_float(ty: &TypeExpr) -> bool {
+/// Float-format name of a scalar float type, seeing through one Vec level
+/// (`Vec<FP32,N>` -> "FP32"): used by the integer-literal-in-float-slot
+/// foot-gun guards so they cover fp8 and Vec-of-float uniformly.
+fn float_slot_type_name(ty: &TypeExpr) -> Option<&'static str> {
+    // Scalar names come from the canonical table. A float type missing from
+    // a hand-written list here would silently disable this guard, letting an
+    // integer literal land in a float slot and be stored as integer bits —
+    // the arch#620/#623 miscompile class. The Vec arm stays local: seeing
+    // through one level of composite is this function's own rule, not a
+    // property of any format.
+    if let Some(f) = crate::fp_format::by_type_expr(ty) {
+        return Some(f.type_name);
+    }
     match ty {
-        TypeExpr::FP32 | TypeExpr::BF16 => true,
-        TypeExpr::Vec(inner, _) => type_expr_contains_float(inner),
-        _ => false,
+        TypeExpr::Vec(elem, _) => float_slot_type_name(elem),
+        _ => None,
     }
 }
 
@@ -9061,6 +10941,8 @@ fn is_bare_int_literal(e: &Expr) -> bool {
     )
 }
 
+/// Returns true if `actual` is assignable to `expected` without an explicit cast.
+/// In hardware, narrower unsigned values zero-extend to wider wires.
 fn types_compatible(expected: &Ty, actual: &Ty) -> bool {
     match (expected, actual) {
         (Ty::UInt(em), Ty::UInt(am)) => am <= em,
@@ -9071,6 +10953,8 @@ fn types_compatible(expected: &Ty, actual: &Ty) -> bool {
         // Floating-point: same type only — no implicit FP32↔BF16 conversion.
         (Ty::FP32, Ty::FP32) => true,
         (Ty::BF16, Ty::BF16) => true,
+        (Ty::FP8E4M3, Ty::FP8E4M3) => true,
+        (Ty::FP8E5M2, Ty::FP8E5M2) => true,
         _ => false,
     }
 }

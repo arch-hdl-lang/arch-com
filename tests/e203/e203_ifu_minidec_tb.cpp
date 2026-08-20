@@ -1,171 +1,168 @@
-#include "VIfuMinidec.h"
+// ARCH sim testbench for e203_ifu_minidec — E203 IFU mini-decoder.
+// minidec wraps e203_exu_decode with fetch-time constants (pc=0, no
+// prdt/misalgn/buserr) and exposes only the BPU-relevant subset. This tb
+// checks that subset over real RV32IMC encodings (assembly noted per test):
+// rs1/rs2 enable+index extraction, the six muldiv flags, rv32/bjp/jal/jalr/
+// bxx classification, dec_jalr_rs1idx selection, and bjp_imm generation.
+// Deep decoder behavior (info bus, illegal detection, every RVC format) is
+// covered by e203_exu_decode_tb.cpp; known fixture divergences (SRAI/SRLI
+// keying on instr[31], simplified RVC immediates, c.j not flagged dec_jal)
+// are documented there and asserted as-implemented here.
+//
+// NOTE: this replaces a stale tb (VIfuMinidec.h) that targeted an earlier
+// revision of this fixture; the fixture was renamed to `e203_ifu_minidec`
+// when the e203 corpus was rewritten and the old tb has not compiled since.
+//
+// Run with:
+//   arch sim tests/e203/e203_ifu_minidec.arch tests/e203/e203_exu_decode.arch \
+//            --tb tests/e203/e203_ifu_minidec_tb.cpp
+
+#include "Ve203_ifu_minidec.h"
 #include <cstdio>
-#include <cstdlib>
 #include <cstdint>
 
-static VIfuMinidec* dut;
 static int fail_count = 0;
 
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { printf("FAIL: %s\n", msg); fail_count++; } \
+#define CHECK(cond, fmt, ...) do { \
+    if (!(cond)) { \
+        printf("  FAIL: " fmt "\n", ##__VA_ARGS__); \
+        fail_count++; \
+    } \
 } while(0)
 
-// RV32I instruction builders
-static uint32_t rv_jal(int rd, int32_t imm) {
-    // J-type: imm[20|10:1|11|19:12] rd opcode
-    uint32_t w = 0x6F | ((rd & 0x1F) << 7);
-    w |= ((imm >> 12) & 0xFF) << 12;   // imm[19:12]
-    w |= ((imm >> 11) & 0x1)  << 20;   // imm[11]
-    w |= ((imm >> 1)  & 0x3FF) << 21;  // imm[10:1]
-    w |= ((imm >> 20) & 0x1)  << 31;   // imm[20]
-    return w;
-}
+static Ve203_ifu_minidec* dut;
 
-static uint32_t rv_jalr(int rd, int rs1, int32_t imm) {
-    // I-type: imm[11:0] rs1 000 rd 1100111
-    uint32_t w = 0x67 | ((rd & 0x1F) << 7) | ((rs1 & 0x1F) << 15);
-    w |= (imm & 0xFFF) << 20;
-    return w;
-}
-
-static uint32_t rv_branch(int funct3, int rs1, int rs2, int32_t imm) {
-    // B-type: imm[12|10:5] rs2 rs1 funct3 imm[4:1|11] opcode
-    uint32_t w = 0x63;
-    w |= ((imm >> 11) & 0x1) << 7;     // imm[11]
-    w |= ((imm >> 1)  & 0xF) << 8;     // imm[4:1]
-    w |= (funct3 & 0x7)      << 12;
-    w |= ((rs1 & 0x1F))      << 15;
-    w |= ((rs2 & 0x1F))      << 20;
-    w |= ((imm >> 5) & 0x3F) << 25;    // imm[10:5]
-    w |= ((imm >> 12) & 0x1) << 31;    // imm[12]
-    return w;
-}
-
-static uint32_t rv_lui(int rd, uint32_t imm20) {
-    return 0x37 | ((rd & 0x1F) << 7) | (imm20 << 12);
-}
-
-static uint32_t rv_auipc(int rd, uint32_t imm20) {
-    return 0x17 | ((rd & 0x1F) << 7) | (imm20 << 12);
-}
-
-static uint32_t rv_addi(int rd, int rs1, int32_t imm) {
-    return 0x13 | ((rd & 0x1F) << 7) | ((rs1 & 0x1F) << 15) | ((imm & 0xFFF) << 20);
-}
-
-static void eval(uint32_t instr) {
+static void decode(uint32_t instr) {
     dut->instr = instr;
     dut->eval();
 }
 
-// Sign-extend helper: from N bits to int32_t
-static int32_t sext(uint32_t val, int bits) {
-    uint32_t sign = 1u << (bits - 1);
-    return (int32_t)((val ^ sign) - sign);
-}
-
 int main() {
-    dut = new VIfuMinidec;
+    dut = new Ve203_ifu_minidec;
 
-    // Test 1: JAL rd=1, imm=+0x100 (256)
-    {
-        eval(rv_jal(1, 0x100));
-        CHECK(dut->o_is_jal,  "JAL: o_is_jal");
-        CHECK(dut->o_is_bjp,  "JAL: o_is_bjp");
-        CHECK(!dut->o_is_jalr,"JAL: !o_is_jalr");
-        CHECK(!dut->o_is_bxx, "JAL: !o_is_bxx");
-        int32_t imm = sext(dut->o_bjp_imm & 0x1FFFFF, 21);
-        CHECK(imm == 0x100, "JAL: imm == 0x100");
-        printf("JAL +256: imm=%d, is_jal=%d OK\n", imm, dut->o_is_jal);
-    }
+    // ── Test 1: Plain ALU op — no branch, both regs read ─────────────
+    printf("Test 1: add x3,x1,x2\n");
+    decode(0x002081B3);
+    CHECK(dut->dec_rv32 == 1, "rv32 should be 1, got %d", dut->dec_rv32);
+    CHECK(dut->dec_rs1en == 1 && dut->dec_rs2en == 1, "add reads rs1+rs2, got %d/%d",
+          dut->dec_rs1en, dut->dec_rs2en);
+    CHECK(dut->dec_rs1idx == 1, "rs1idx should be 1, got %d", dut->dec_rs1idx);
+    CHECK(dut->dec_rs2idx == 2, "rs2idx should be 2, got %d", dut->dec_rs2idx);
+    CHECK(dut->dec_bjp == 0, "add is not a bjp, got %d", dut->dec_bjp);
+    CHECK(dut->dec_mul == 0 && dut->dec_mulhsu == 0 && dut->dec_div == 0 &&
+          dut->dec_rem == 0 && dut->dec_divu == 0 && dut->dec_remu == 0,
+          "add sets no muldiv flag");
 
-    // Test 2: JAL negative offset (-128)
-    {
-        eval(rv_jal(1, -128));
-        CHECK(dut->o_is_jal, "JAL neg: o_is_jal");
-        int32_t imm = sext(dut->o_bjp_imm & 0x1FFFFF, 21);
-        CHECK(imm == -128, "JAL neg: imm == -128");
-        printf("JAL -128: imm=%d OK\n", imm);
-    }
+    // ── Test 2: JAL ──────────────────────────────────────────────────
+    printf("Test 2: jal x1,+0x100\n");
+    decode(0x100000EF);
+    CHECK(dut->dec_bjp == 1 && dut->dec_jal == 1, "jal classification, got bjp=%d jal=%d",
+          dut->dec_bjp, dut->dec_jal);
+    CHECK(dut->dec_jalr == 0 && dut->dec_bxx == 0, "jal is not jalr/bxx, got %d/%d",
+          dut->dec_jalr, dut->dec_bxx);
+    CHECK(dut->dec_bjp_imm == 0x100, "jal imm should be +0x100, got 0x%08x", dut->dec_bjp_imm);
+    CHECK(dut->dec_rs1en == 0, "jal reads no rs1, got %d", dut->dec_rs1en);
+    CHECK(dut->dec_jalr_rs1idx == 0, "non-jalr rs1idx should be 0, got %d", dut->dec_jalr_rs1idx);
 
-    // Test 3: JALR rs1=5, imm=+64
-    {
-        eval(rv_jalr(1, 5, 64));
-        CHECK(dut->o_is_jalr, "JALR: o_is_jalr");
-        CHECK(dut->o_is_bjp,  "JALR: o_is_bjp");
-        CHECK(!dut->o_is_jal, "JALR: !o_is_jal");
-        CHECK(dut->o_rs1_idx == 5, "JALR: rs1_idx == 5");
-        int32_t imm = sext(dut->o_bjp_imm & 0x1FFFFF, 21);
-        CHECK(imm == 64, "JALR: imm == 64");
-        printf("JALR rs1=5 +64: imm=%d, rs1=%d OK\n", imm, dut->o_rs1_idx);
-    }
+    printf("Test 2b: jal x0,-4\n");
+    decode(0xFFDFF06F);
+    CHECK(dut->dec_bjp_imm == 0xFFFFFFFCu, "jal -4 imm should sign-extend, got 0x%08x",
+          dut->dec_bjp_imm);
 
-    // Test 4: JALR negative imm (-4)
-    {
-        eval(rv_jalr(1, 3, -4));
-        CHECK(dut->o_is_jalr, "JALR neg: o_is_jalr");
-        int32_t imm = sext(dut->o_bjp_imm & 0x1FFFFF, 21);
-        CHECK(imm == -4, "JALR neg: imm == -4");
-        printf("JALR -4: imm=%d OK\n", imm);
-    }
+    // ── Test 3: JALR ─────────────────────────────────────────────────
+    printf("Test 3: jalr x1,-16(x5)\n");
+    decode(0xFF0280E7);
+    CHECK(dut->dec_bjp == 1 && dut->dec_jalr == 1, "jalr classification, got bjp=%d jalr=%d",
+          dut->dec_bjp, dut->dec_jalr);
+    CHECK(dut->dec_jalr_rs1idx == 5, "jalr rs1idx should be 5, got %d", dut->dec_jalr_rs1idx);
+    CHECK(dut->dec_bjp_imm == 0xFFFFFFF0u, "jalr imm should be -16, got 0x%08x", dut->dec_bjp_imm);
+    CHECK(dut->dec_rs1en == 1 && dut->dec_rs1idx == 5, "jalr reads rs1=x5, got en=%d idx=%d",
+          dut->dec_rs1en, dut->dec_rs1idx);
 
-    // Test 5: BEQ (funct3=0) rs1=2, rs2=3, imm=+8
-    {
-        eval(rv_branch(0, 2, 3, 8));
-        CHECK(dut->o_is_bxx,   "BEQ: o_is_bxx");
-        CHECK(dut->o_is_bjp,   "BEQ: o_is_bjp");
-        CHECK(!dut->o_is_jal,  "BEQ: !o_is_jal");
-        CHECK(!dut->o_is_jalr, "BEQ: !o_is_jalr");
-        int32_t imm = sext(dut->o_bjp_imm & 0x1FFFFF, 21);
-        CHECK(imm == 8, "BEQ: imm == 8");
-        printf("BEQ +8: imm=%d OK\n", imm);
-    }
+    // ── Test 4: Conditional branches ─────────────────────────────────
+    printf("Test 4: beq x1,x2,-8 / bne x3,x4,+16\n");
+    decode(0xFE208CE3);
+    CHECK(dut->dec_bjp == 1 && dut->dec_bxx == 1, "beq classification, got bjp=%d bxx=%d",
+          dut->dec_bjp, dut->dec_bxx);
+    CHECK(dut->dec_jal == 0 && dut->dec_jalr == 0, "beq is not jal/jalr, got %d/%d",
+          dut->dec_jal, dut->dec_jalr);
+    CHECK(dut->dec_bjp_imm == 0xFFFFFFF8u, "beq -8 imm should sign-extend, got 0x%08x",
+          dut->dec_bjp_imm);
+    CHECK(dut->dec_rs1en == 1 && dut->dec_rs2en == 1, "beq reads rs1+rs2, got %d/%d",
+          dut->dec_rs1en, dut->dec_rs2en);
+    CHECK(dut->dec_rs1idx == 1 && dut->dec_rs2idx == 2, "beq regs x1/x2, got %d/%d",
+          dut->dec_rs1idx, dut->dec_rs2idx);
+    decode(0x00419863);
+    CHECK(dut->dec_bxx == 1, "bne classification, got %d", dut->dec_bxx);
+    CHECK(dut->dec_bjp_imm == 0x10, "bne +16 imm, got 0x%08x", dut->dec_bjp_imm);
 
-    // Test 6: BNE (funct3=1) negative offset (-16)
-    {
-        eval(rv_branch(1, 4, 5, -16));
-        CHECK(dut->o_is_bxx, "BNE neg: o_is_bxx");
-        int32_t imm = sext(dut->o_bjp_imm & 0x1FFFFF, 21);
-        CHECK(imm == -16, "BNE neg: imm == -16");
-        printf("BNE -16: imm=%d OK\n", imm);
-    }
+    // ── Test 5: M-extension flags ────────────────────────────────────
+    printf("Test 5: muldiv flags\n");
+    decode(0x027302B3);               // mul x5,x6,x7
+    CHECK(dut->dec_mul == 1 && dut->dec_mulhsu == 0, "mul flag, got mul=%d mulhsu=%d",
+          dut->dec_mul, dut->dec_mulhsu);
+    CHECK(dut->dec_rs1en == 1 && dut->dec_rs2en == 1, "mul reads rs1+rs2, got %d/%d",
+          dut->dec_rs1en, dut->dec_rs2en);
+    decode(0x023110B3);               // mulh x1,x2,x3
+    // dec_mulhsu is the shared "high half" flag: mulh|mulhsu|mulhu.
+    CHECK(dut->dec_mulhsu == 1 && dut->dec_mul == 0, "mulh flag, got mulhsu=%d mul=%d",
+          dut->dec_mulhsu, dut->dec_mul);
+    decode(0x027342B3);               // div x5,x6,x7
+    CHECK(dut->dec_div == 1 && dut->dec_divu == 0, "div flag, got div=%d divu=%d",
+          dut->dec_div, dut->dec_divu);
+    decode(0x027352B3);               // divu x5,x6,x7
+    CHECK(dut->dec_divu == 1 && dut->dec_div == 0, "divu flag, got divu=%d div=%d",
+          dut->dec_divu, dut->dec_div);
+    decode(0x027362B3);               // rem x5,x6,x7
+    CHECK(dut->dec_rem == 1 && dut->dec_remu == 0, "rem flag, got rem=%d remu=%d",
+          dut->dec_rem, dut->dec_remu);
+    decode(0x027372B3);               // remu x5,x6,x7
+    CHECK(dut->dec_remu == 1 && dut->dec_rem == 0, "remu flag, got remu=%d rem=%d",
+          dut->dec_remu, dut->dec_rem);
 
-    // Test 7: LUI
-    {
-        eval(rv_lui(5, 0xDEAD));
-        CHECK(dut->o_is_lui,    "LUI: o_is_lui");
-        CHECK(!dut->o_is_bjp,   "LUI: !o_is_bjp");
-        CHECK(!dut->o_is_auipc, "LUI: !o_is_auipc");
-        printf("LUI: is_lui=%d OK\n", dut->o_is_lui);
-    }
+    // ── Test 6: Compressed branches/jumps ────────────────────────────
+    printf("Test 6: RVC bjp subset\n");
+    decode(0xC401);                   // c.beqz x8, . (fixture imm = 2)
+    CHECK(dut->dec_rv32 == 0, "c.beqz is 16-bit, got rv32=%d", dut->dec_rv32);
+    CHECK(dut->dec_bjp == 1 && dut->dec_bxx == 1, "c.beqz classification, got bjp=%d bxx=%d",
+          dut->dec_bjp, dut->dec_bxx);
+    CHECK(dut->dec_rs1en == 1 && dut->dec_rs1idx == 8, "c.beqz reads x8, got en=%d idx=%d",
+          dut->dec_rs1en, dut->dec_rs1idx);
+    // Simplified fixture RVC immediate (see decode tb header): this encoding -> 2.
+    CHECK(dut->dec_bjp_imm == 2, "c.beqz fixture imm should be 2, got 0x%08x", dut->dec_bjp_imm);
 
-    // Test 8: AUIPC
-    {
-        eval(rv_auipc(6, 0x12345));
-        CHECK(dut->o_is_auipc, "AUIPC: o_is_auipc");
-        CHECK(!dut->o_is_bjp,  "AUIPC: !o_is_bjp");
-        CHECK(!dut->o_is_lui,  "AUIPC: !o_is_lui");
-        printf("AUIPC: is_auipc=%d OK\n", dut->o_is_auipc);
-    }
+    decode(0xA001);                   // c.j .
+    CHECK(dut->dec_bjp == 1, "c.j is a bjp, got %d", dut->dec_bjp);
+    // Fixture quirk (pinned in decode tb): c.j does NOT set dec_jal.
+    CHECK(dut->dec_jal == 0, "fixture: c.j does not flag dec_jal, got %d", dut->dec_jal);
 
-    // Test 9: ADDI (non-branch) — all flags false
-    {
-        eval(rv_addi(1, 2, 42));
-        CHECK(!dut->o_is_bjp,   "ADDI: !o_is_bjp");
-        CHECK(!dut->o_is_jal,   "ADDI: !o_is_jal");
-        CHECK(!dut->o_is_jalr,  "ADDI: !o_is_jalr");
-        CHECK(!dut->o_is_bxx,   "ADDI: !o_is_bxx");
-        CHECK(!dut->o_is_lui,   "ADDI: !o_is_lui");
-        CHECK(!dut->o_is_auipc, "ADDI: !o_is_auipc");
-        printf("ADDI: all flags false OK\n");
-    }
+    decode(0x2001);                   // c.jal .
+    CHECK(dut->dec_jal == 1 && dut->dec_rv32 == 0, "c.jal flags dec_jal, got jal=%d rv32=%d",
+          dut->dec_jal, dut->dec_rv32);
 
-    if (fail_count == 0) {
-        printf("\n=== ALL %d TESTS PASSED ===\n", 9);
-    } else {
-        printf("\n=== %d FAILURES ===\n", fail_count);
-    }
+    decode(0x9282);                   // c.jalr x5
+    CHECK(dut->dec_jalr == 1, "c.jalr flags dec_jalr, got %d", dut->dec_jalr);
+    CHECK(dut->dec_jalr_rs1idx == 5, "c.jalr rs1idx should be 5, got %d", dut->dec_jalr_rs1idx);
 
-    delete dut;
+    decode(0x8082);                   // c.jr x1 (ret)
+    CHECK(dut->dec_jalr == 1, "c.jr flags dec_jalr, got %d", dut->dec_jalr);
+    CHECK(dut->dec_rs1idx == 1, "c.jr reads x1, got %d", dut->dec_rs1idx);
+    // Fixture quirk: dec_jalr_rs1idx only covers rv32 jalr and c.jalr, so
+    // c.jr reports 0 here (asserted as-implemented, consistent with the
+    // decode tb's coverage of rs1_idx instead).
+    CHECK(dut->dec_jalr_rs1idx == 0, "fixture: c.jr jalr_rs1idx is 0, got %d",
+          dut->dec_jalr_rs1idx);
+
+    // ── Test 7: Non-branch RVC op routes register fields ─────────────
+    printf("Test 7: c.add x10,x11\n");
+    decode(0x952E);                   // c.add x10,x11 (rd=10, rs2=11, bit12=1)
+    CHECK(dut->dec_rv32 == 0 && dut->dec_bjp == 0, "c.add is 16-bit non-bjp, got rv32=%d bjp=%d",
+          dut->dec_rv32, dut->dec_bjp);
+    CHECK(dut->dec_rs1en == 1 && dut->dec_rs2en == 1, "c.add reads rs1+rs2, got %d/%d",
+          dut->dec_rs1en, dut->dec_rs2en);
+    CHECK(dut->dec_rs1idx == 10, "c.add rs1 (=rd) should be 10, got %d", dut->dec_rs1idx);
+    CHECK(dut->dec_rs2idx == 11, "c.add rs2 should be 11, got %d", dut->dec_rs2idx);
+
+    printf("\n=== e203_ifu_minidec: %d failure(s) ===\n", fail_count);
     return fail_count ? 1 : 0;
 }

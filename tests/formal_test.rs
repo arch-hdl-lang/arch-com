@@ -13,6 +13,88 @@ fn z3_available() -> bool {
         .unwrap_or(false)
 }
 
+/// The in-repo Lean proof project (`ArchConstructProof` + `ArchThreadLoweringProof`).
+const LEAN_PROJECT_DIR: &str = "proofs/lean_thread_lowering";
+
+/// Locate `lake`: PATH first, then the standard elan install location.
+fn find_lake() -> Option<std::path::PathBuf> {
+    if Command::new("lake")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Some(std::path::PathBuf::from("lake"));
+    }
+    let home = std::env::var_os("HOME")?;
+    let home_lake = std::path::PathBuf::from(home).join(".elan/bin/lake");
+    home_lake.exists().then_some(home_lake)
+}
+
+/// Make sure the in-repo Lean proof library is built before any replay test
+/// runs, and report whether Lean testing is possible at all.
+///
+/// Why this exists: `proofs/lean_thread_lowering/.lake/` is build output and
+/// is gitignored, so a fresh clone — or, far more often, a fresh
+/// `git worktree add`, which is the standard way to work this repo — has
+/// none. Every Lean replay test then fails with
+///
+/// ```text
+/// error: unknown module prefix 'ArchConstructProof'
+/// No directory 'ArchConstructProof' or file 'ArchConstructProof.olean' ...
+/// ```
+///
+/// which reads exactly like a proof regression but is only a missing build.
+/// The project has no external dependencies (no Mathlib), so a cold build is
+/// ~5s — cheap enough to just do here, once per test binary, instead of
+/// leaving a phantom failure for whoever runs `cargo test` next.
+///
+/// Returns `false` when `lake` is not installed at all — callers then skip,
+/// matching the repo-wide "skip cleanly when the external tool is absent"
+/// convention CI depends on (`.github/workflows/test.yml` installs no Lean
+/// toolchain, so these tests skip there and run on dev machines).
+fn lean_project_ready() -> bool {
+    static READY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *READY.get_or_init(|| {
+        let Some(lake) = find_lake() else {
+            eprintln!("skipping Lean replay tests: `lake` not found on PATH or in ~/.elan/bin");
+            return false;
+        };
+        // Already built? `lake build` is a fast no-op, but skipping the
+        // process spawn keeps the warm path free.
+        if std::path::Path::new(LEAN_PROJECT_DIR)
+            .join(".lake/build/lib/lean/ArchConstructProof.olean")
+            .exists()
+        {
+            return true;
+        }
+        eprintln!(
+            "building the Lean proof library in {LEAN_PROJECT_DIR} \
+             (first run in this checkout; ~5s, no external deps)"
+        );
+        match Command::new(&lake)
+            .arg("build")
+            .current_dir(LEAN_PROJECT_DIR)
+            .output()
+        {
+            Ok(o) if o.status.success() => true,
+            Ok(o) => {
+                eprintln!(
+                    "skipping Lean replay tests: `lake build` failed in {LEAN_PROJECT_DIR}\n\
+                     stdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                false
+            }
+            Err(e) => {
+                eprintln!("skipping Lean replay tests: could not run `lake build`: {e}");
+                false
+            }
+        }
+    })
+}
+
 fn solver_available(name: &str) -> bool {
     Command::new(name)
         .arg("--help")
@@ -390,6 +472,11 @@ end arbiter BusArbiter
 
 #[test]
 fn construct_proof_lean_finds_home_elan_when_lake_not_on_path() {
+    if !lean_project_ready() {
+        return;
+    }
+    // This test is specifically about the ~/.elan fallback, so it needs lake
+    // installed *there* — a PATH-only lake would not exercise it.
     let Some(home) = std::env::var_os("HOME") else {
         eprintln!("skipping: HOME not set");
         return;
@@ -444,15 +531,10 @@ end fifo TxQueue
 
 #[test]
 fn construct_proof_lean_non_power_two_fifo_catches_depth_wrap_bug() {
-    let Some(home) = std::env::var_os("HOME") else {
-        eprintln!("skipping: HOME not set");
-        return;
-    };
-    let home_lake = std::path::PathBuf::from(home).join(".elan/bin/lake");
-    if !home_lake.exists() {
-        eprintln!("skipping: ~/.elan/bin/lake not installed");
+    if !lean_project_ready() {
         return;
     }
+    let lake = find_lake().expect("lean_project_ready() already found lake");
 
     let td = tempfile::tempdir().expect("tempdir");
     let arch_path = td.path().join("NonPow2Fifo.arch");
@@ -516,7 +598,7 @@ end fifo NonPow2Queue
     );
     std::fs::write(&bad_proof_path, bad_proof).expect("write bad proof");
 
-    let output = Command::new(&home_lake)
+    let output = Command::new(&lake)
         .arg("env")
         .arg("lean")
         .arg(&bad_proof_path)
@@ -597,4 +679,217 @@ fn formal_sva_phase2_refutes() {
     let (code, out) = run_formal("tests/formal/sva_phase2_refutes.arch", &["--bound", "8"]);
     assert_eq!(code, 1, "expected exit 1 (REFUTED); got {code}\n{out}");
     assert!(out.contains("REFUTED"), "expected REFUTED:\n{out}");
+}
+
+#[test]
+fn formal_vacuity_guard_rejects_contradictory_assumes() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    // Contradictory assumes → VACUOUS (exit 1), never a false PROVED. This
+    // is a general arch-formal soundness guard, exercised here on an
+    // integer-only design to make its flow-level scope explicit.
+    let (code, out) = run_formal("tests/formal/vacuous_assumes.arch", &["--bound", "2"]);
+    assert!(out.contains("VACUOUS"), "expected VACUOUS:\n{out}");
+    assert!(!out.contains("PROVED"), "must not report PROVED:\n{out}");
+    assert_eq!(
+        code, 1,
+        "vacuous proof must be a hard failure (exit 1); got {code}\n{out}"
+    );
+
+    // A satisfiable assume must still prove normally — no false vacuity.
+    let (code, out) = run_formal("tests/formal/satisfiable_assumes.arch", &["--bound", "2"]);
+    assert_eq!(
+        code, 0,
+        "satisfiable-assume proof should pass; got {code}\n{out}"
+    );
+    assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
+    assert!(
+        !out.contains("VACUOUS"),
+        "satisfiable assume must not be flagged vacuous:\n{out}"
+    );
+}
+
+#[test]
+fn formal_vacuity_guard_rejects_unreachable_antecedent() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    // Implication with an unreachable antecedent proves vacuously — flagged
+    // VACUOUS (exit 1), even though it needs no `assume` and its consequent
+    // is false. This is a distinct vacuity class from unsatisfiable assumes.
+    let (code, out) = run_formal("tests/formal/vacuous_implication.arch", &["--bound", "2"]);
+    assert!(out.contains("VACUOUS"), "expected VACUOUS:\n{out}");
+    assert!(
+        out.contains("antecedent is unreachable"),
+        "reason should name the cause:\n{out}"
+    );
+    assert!(!out.contains("PROVED"), "must not report PROVED:\n{out}");
+    assert_eq!(
+        code, 1,
+        "vacuous implication must be a hard failure (exit 1); got {code}\n{out}"
+    );
+
+    // Reachable antecedent + true consequent proves normally.
+    let (code, out) = run_formal("tests/formal/reachable_implication.arch", &["--bound", "2"]);
+    assert_eq!(
+        code, 0,
+        "reachable-antecedent proof should pass; got {code}\n{out}"
+    );
+    assert!(
+        out.contains("PROVED") && !out.contains("VACUOUS"),
+        "expected clean PROVED:\n{out}"
+    );
+}
+
+#[test]
+fn formal_replay_confirms_genuine_refutations() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    // Counterexample replay (the sat-side dual of the vacuity guard) runs on
+    // every REFUTED result. On a genuine violation it must CONFIRM: the
+    // report stays a plain REFUTED (exit 1) with no inconclusive note and no
+    // ENCODING UNSOUND flag. The CONTRADICTED verdict can only be exercised
+    // by unit tests (src/formal.rs) — no fixture can make the real encoder
+    // emit an unsound query.
+    for (fixture, bound) in [
+        ("tests/formal/sva_phase2_refutes.arch", "8"),
+        ("tests/formal/replay_float_refutes.arch", "2"),
+    ] {
+        let (code, out) = run_formal(fixture, &["--bound", bound]);
+        assert_eq!(
+            code, 1,
+            "{fixture}: expected exit 1 (REFUTED); got {code}\n{out}"
+        );
+        assert!(
+            out.contains("REFUTED"),
+            "{fixture}: expected REFUTED:\n{out}"
+        );
+        assert!(
+            !out.contains("ENCODING UNSOUND"),
+            "{fixture}: replay must not false-flag a genuine refutation:\n{out}"
+        );
+        assert!(
+            !out.contains("replay could not decide"),
+            "{fixture}: replay should CONFIRM (decidable property), not go inconclusive:\n{out}"
+        );
+    }
+
+    // Kill-switch: ARCH_FORMAL_NO_REPLAY=1 skips replay entirely — same
+    // REFUTED verdict, pre-replay behavior.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_arch"));
+    cmd.arg("formal")
+        .arg("tests/formal/replay_float_refutes.arch")
+        .args(["--bound", "2"])
+        .env("ARCH_FORMAL_NO_REPLAY", "1");
+    let out = cmd.output().expect("failed to spawn arch");
+    let merged = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let code = out.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 1,
+        "kill-switch run should still REFUTE; got {code}\n{merged}"
+    );
+    assert!(merged.contains("REFUTED"), "expected REFUTED:\n{merged}");
+    assert!(
+        !merged.contains("ENCODING UNSOUND") && !merged.contains("replay"),
+        "kill-switch must disable all replay output:\n{merged}"
+    );
+}
+
+/// Issue #821: a sub-module `port reg` output was silently dropped during
+/// flattening, leaving the parent wire declared but unconstrained — a free
+/// variable that produced a SPURIOUS REFUTED on a trivially-true property.
+///
+/// The pair matters more than either half: a fix that modelled the carried
+/// register as a constant, or that declared it without landing the `seq`
+/// write, would make the "proves" case pass while silently breaking the
+/// "refutes" case. Both directions are asserted.
+#[test]
+fn formal_hier_port_reg_is_modelled_not_dropped() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    // `o` holds 0 (reset) or 7, so `w <= 7` is true and must PROVE.
+    let (code, out) = run_formal(
+        "tests/formal/hier_port_reg_proves.arch",
+        &["--top", "HierPortReg", "--bound", "4"],
+    );
+    assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
+    assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
+
+    // The register genuinely reaches 7, so `w <= 6` is false and must
+    // REFUTE — at cycle 1, since cycle 0 is held at the reset value 0.
+    // This is the half that catches a fix which merely flips the verdict.
+    let (code, out) = run_formal(
+        "tests/formal/hier_port_reg_refutes.arch",
+        &["--top", "HierPortRegBad", "--bound", "4"],
+    );
+    assert_eq!(code, 1, "expected exit 1 (REFUTED); got {code}\n{out}");
+    assert!(out.contains("REFUTED"), "expected REFUTED:\n{out}");
+    assert!(
+        out.contains("at cycle 1"),
+        "expected the violation at cycle 1 (cycle 0 is reset-held):\n{out}"
+    );
+}
+
+/// Issue #818: a write to a plain (non-credit_channel) bus signal used to
+/// panic in `emit_base` on `self.sigs[tgt]` (exit 101). It must now be a
+/// clean "unsupported in v1" compile error.
+///
+/// Deliberately NOT z3-gated: `preprocess` rejects the design before any
+/// solver is invoked, so this runs everywhere.
+#[test]
+fn formal_plain_bus_field_write_errors_cleanly() {
+    let (code, out) = run_formal("tests/formal/bus_field_unsupported.arch", &["--bound", "4"]);
+    assert_ne!(code, 101, "arch formal must not panic (issue #818):\n{out}");
+    assert!(
+        !out.contains("panicked") && !out.contains("no entry found for key"),
+        "expected a clean diagnostic, not a panic:\n{out}"
+    );
+    assert_eq!(
+        code, 1,
+        "expected exit 1 (compile error); got {code}\n{out}"
+    );
+    // miette word-wraps the message, so normalize whitespace before
+    // matching rather than depending on the wrap points.
+    let flat: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("assignment to bus signal `m.valid`"),
+        "error should name the FIRST offending write in source order:\n{out}"
+    );
+    assert!(
+        flat.contains("is not supported by `arch formal` v1"),
+        "error should name the v1 scope:\n{out}"
+    );
+    assert!(
+        flat.contains("only `credit_channel` signals on a bus port are modelled"),
+        "error should say what IS supported:\n{out}"
+    );
+}
+
+/// E8M0 in `arch formal`: the scale type is not a float, so every
+/// float-shaped path must recognise it explicitly. This property is a
+/// semantic cross-check — it only holds if `is_nan(s)` tests the 0xFF code
+/// AND `s.to_fp32()` widens to a genuine NaN there and to a finite scale
+/// everywhere else. Three separate dispatch bugs were caught by it:
+/// the FP helper preamble not being requested, `to_fp32` returning the raw
+/// 8 bits, and `is_nan` falling through to the f32 bit test.
+#[test]
+fn formal_e8m0_nan_scale_proves() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    let (code, out) = run_formal("tests/formal/e8m0_nan_scale.arch", &["--bound", "2"]);
+    assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
+    assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
 }

@@ -6,6 +6,8 @@ pub mod construct_proof_cert;
 pub mod diagnostics;
 pub mod elaborate;
 pub mod formal;
+pub mod fp_block;
+pub mod fp_format;
 pub mod fp_ir;
 pub mod fp_lit;
 pub mod fp_ops;

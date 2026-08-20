@@ -1,0 +1,63 @@
+// arch#846 regression fixture: slice/index hoist temps synthesized from
+// *inside* a procedural scope. Before the fix, the `logic` declaration and
+// its `assign` were drained at whatever scope `line()` happened to be
+// emitting, so they landed inside the `always_ff` / `always_comb` block (a
+// procedural continuous assignment, which Icarus refuses to synthesize —
+// and a hard syntax error on both frontends as soon as a second hoist made
+// the declaration follow a statement) or inside the `function automatic`
+// body (a continuous assign to an automatic-lifetime variable, rejected
+// outright by both frontends).
+//
+// Covers all three hoist paths (Concat/MethodCall base via
+// `hoist_slice_base`, arithmetic base via the `Index` emitter) and all
+// three scopes (`seq` -> always_ff, `comb`-with-`if` -> always_comb,
+// `function` body). See tests/integration_test.rs's
+// `test_seq_slice_hoist_behavioral_equivalence_verilator_and_iverilog`.
+function PickHi(x: UInt<8>, q: UInt<8>) -> UInt<4>
+  return {x, q}[9:6];
+end function PickHi
+
+module SeqSliceHoist
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port w: in UInt<16>;
+  port sel: in Bool;
+  port y_seq_concat: out UInt<4>;
+  port y_seq_trunc: out UInt<4>;
+  port y_seq_idx: out Bit;
+  port y_comb_concat: out UInt<4>;
+  port y_fn_concat: out UInt<4>;
+
+  reg r_concat: UInt<4> reset rst => 0;
+  reg r_trunc: UInt<4> reset rst => 0;
+  reg r_idx: Bit reset rst => 0;
+  wire cw: UInt<4>;
+
+  // Three hoists inside one always_ff — the second and third are what
+  // turned the old emission from "iverilog warning" into a hard syntax
+  // error on both frontends (a declaration may not follow a statement
+  // inside a begin/end block).
+  seq on clk rising
+    r_concat <= {w, w}[5:2];
+    r_trunc <= w.trunc<8>()[7:4];
+    r_idx <= (w - 1)[3];
+  end seq
+
+  // Hoist inside an always_comb, nested one `begin`/`end` deeper.
+  comb
+    if sel
+      cw = {a, a}[9:6];
+    else
+      cw = 0;
+    end if
+  end comb
+
+  comb
+    y_seq_concat = r_concat;
+    y_seq_trunc = r_trunc;
+    y_seq_idx = r_idx;
+    y_comb_concat = cw;
+    y_fn_concat = PickHi(a, a);
+  end comb
+end module SeqSliceHoist

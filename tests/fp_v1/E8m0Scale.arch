@@ -1,0 +1,25 @@
+// OCP MX E8M0 — the block SCALE type, not a float.
+//
+// 8 bits of unsigned biased exponent (bias 127) denoting 2^(e-127). No
+// sign, no mantissa, no infinity, and — the easy thing to get wrong — NO
+// ZERO: 0x00 is the MINIMUM SCALE 2^-127. 0xFF is NaN, which at block
+// level marks the whole block NaN.
+//
+// Because it is not a float, `+ - *` and float compares are rejected; it
+// carries conversions and the NaN test only.
+module E8m0Scale
+  port s: in E8M0;
+  port x: in FP32;
+
+  port value:  out FP32;   // the scale VALUE 2^(e-127)
+  port extract: out E8M0;  // floor(log2(|x|)) as a scale
+  port nan_blk: out Bool;  // 0xFF marks a NaN block
+
+  let sv: FP32 = s.to_fp32();
+
+  comb
+    value   = sv;
+    extract = x.to_e8m0();
+    nan_blk = is_nan(s);
+  end comb
+end module E8m0Scale

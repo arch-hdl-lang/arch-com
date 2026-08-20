@@ -1,0 +1,51 @@
+// arch#780 regression anchor: a GENUINE cross-instance combinational
+// feedback loop (two instances whose comb outputs feed each other's
+// inputs, no register anywhere on the path) must remain flagged by
+// `arch check`'s whole-design comb-loop analysis after the #780
+// fold-artifact filter — that filter is scoped to same-comb-block
+// sequential collapsing (see `GraphBuilder::is_fold_artifact`); edges
+// added across an instance boundary are always "not grounded" (see
+// `GraphBuilder::add_edge`), so a real cross-instance SCC can never be
+// misclassified as an artifact.
+//
+// Independently attested as a REAL loop (not just an `arch check`
+// self-check) via Verilator: `verilator --lint-only --assert` on the
+// generated SV for `CrossInstanceLoop` fires `UNOPTFLAT` on the
+// w1/w2 cycle — see test_cross_instance_comb_loop_780_verilator_confirms_real
+// in tests/integration_test.rs.
+module LoopCellA
+  port i: in UInt<1>;
+  port o: out UInt<1>;
+  comb
+    o = i;
+  end comb
+end module LoopCellA
+
+module LoopCellB
+  port i: in UInt<1>;
+  port o: out UInt<1>;
+  comb
+    o = i;
+  end comb
+end module LoopCellB
+
+module CrossInstanceLoop
+  port s: in UInt<1>;
+  port q: out UInt<1>;
+  wire w1: UInt<1>;
+  wire w2: UInt<1>;
+
+  inst a: LoopCellA
+    i <- w2;
+    o -> w1;
+  end inst a
+
+  inst b: LoopCellB
+    i <- w1;
+    o -> w2;
+  end inst b
+
+  comb
+    q = w1;
+  end comb
+end module CrossInstanceLoop

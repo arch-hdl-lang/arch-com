@@ -1,0 +1,76 @@
+// NVFP4 blocks — a `UE4M3` block scale (phase 5b, arch#905).
+//
+// The point of this fixture is the scale that is NOT a power of two. Every
+// E8M0 block op divides by the scale using an exact reciprocal (`2^-(c-127)`
+// is itself a scale code); UE4M3 carries three mantissa bits and has no such
+// identity, so `scaled_quantize` here uses the division-free kernel instead:
+// two ladders of constant thresholds, with every `scale x boundary` product
+// exact in FP32 so each element still rounds exactly once.
+//
+// Run through BOTH backends against one testbench and byte-compared, like
+// ScaledQuant.arch — that is the §8 gate. The blocks below deliberately span:
+//   - the real NVFP4 shape (E2M1 x 16), whose element format is all-finite;
+//   - an E4M3-element block, which DOES have somewhere to overflow to and so
+//     exercises the profile-dependent overflow rung;
+//   - all three scale policies, including `exact`, which only means anything
+//     for a non-power-of-two scale.
+
+package Nv
+  type NVFP4 = ScaledVec<FP4E2M1, 16, UE4M3>;   // 8 + 16*4 = 72 bits (wide)
+  type NV8   = ScaledVec<FP8E4M3, 8, UE4M3>;    // 8 + 8*8  = 72 bits
+  type MX4   = ScaledVec<FP4E2M1, 16, E8M0>;    // same shape, pow2 scale
+end package Nv
+
+module Nvfp4Quant
+  port v:  in Vec<FP32, 16>;
+  port v8: in Vec<FP32, 8>;
+
+  // `exact` is the default for a UE4M3-scaled block, so `q_def` and
+  // `q_exact` must come out bit-identical. A regression that quietly
+  // restored the global `floor_pow2` default would show up right here.
+  port q_def:   out NVFP4;
+  port q_exact: out NVFP4;
+  port q_floor: out NVFP4;
+  port q_ceil:  out NVFP4;
+
+  // Same element vector, same block size, power-of-two scale — the
+  // side-by-side that shows what the mantissa bits buy.
+  port q_mx: out MX4;
+
+  port q8: out NV8;
+
+  port back:    out Vec<FP32, 16>;
+  port back_mx: out Vec<FP32, 16>;
+  port back8:   out Vec<FP32, 8>;
+
+  port dot:   out FP32;
+  port dot_x: out FP32;
+  port dot8:  out FP32;
+
+  wire b:      NVFP4;
+  wire b_ceil: NVFP4;
+  wire bmx:    MX4;
+  wire b8:     NV8;
+
+  comb
+    b       = scaled_quantize<NVFP4>(v);
+    b_ceil  = scaled_quantize<NVFP4, ceil_pow2, rne>(v);
+    bmx     = scaled_quantize<MX4>(v);
+    b8      = scaled_quantize<NV8, exact, rne>(v8);
+
+    q_def   = b;
+    q_exact = scaled_quantize<NVFP4, exact, rne>(v);
+    q_floor = scaled_quantize<NVFP4, floor_pow2, rne>(v);
+    q_ceil  = b_ceil;
+    q_mx    = bmx;
+    q8      = b8;
+
+    back    = scaled_dequantize(b);
+    back_mx = scaled_dequantize(bmx);
+    back8   = scaled_dequantize(b8);
+
+    dot   = scaled_dot(b, b);
+    dot_x = scaled_dot(b, b_ceil);
+    dot8  = scaled_dot(b8, b8);
+  end comb
+end module Nvfp4Quant

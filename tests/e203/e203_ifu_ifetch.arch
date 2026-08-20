@@ -72,8 +72,11 @@ module e203_ifu_ifetch
   let ifu_ir_o_hsked: Bool = ifu_o_valid & ifu_o_ready;
 
   // ── Reset flag (synced rst_n) ────────────────────────────────────────
-  // Reference: sirv_gnrl_dffrs(1'b0, ...) — resets to 1, captures 0
-  reg reset_flag_r: Bool reset rst_n => false;
+  // Reference: sirv_gnrl_dffrs(1'b0, ...) — resets to 1, captures 0.
+  // Must reset to true: it is the one-shot that arms `reset_req_r`, which in
+  // turn selects `pc_rtvec` as the first fetch address and holds fetch off
+  // while reset is asserted. Resetting it to false left both dead (arch#800).
+  reg reset_flag_r: Bool reset rst_n => true;
   seq on clk rising
     reset_flag_r <= false;
   end seq

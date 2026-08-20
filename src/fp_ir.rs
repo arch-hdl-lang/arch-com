@@ -491,6 +491,165 @@ pub fn render_smt(funcs: &[FpFn]) -> String {
     funcs.iter().map(render_smt_fn).collect::<Vec<_>>().join("")
 }
 
+// ── Concrete interpreter ────────────────────────────────────────────────────
+//
+// Evaluates a `Bv` DAG to its concrete unsigned value — the fourth consumer of
+// the same IR the SV/SMT/Lean renderers derive from. `arch formal`'s
+// counterexample replay uses it to independently re-check a solver model
+// against the *identical* operator definitions the SMT query embedded, so the
+// check carries no cross-model (RTL-vs-SMT) equivalence assumption.
+//
+// Conservative by contract: anything the interpreter cannot decide — an
+// unbound `Var`, an unknown or arity/width-mismatched `Call`, a node wider
+// than 128 bits, call-depth blowout — returns `None`. Callers must treat
+// `None` as "inconclusive", never as a verdict. The 128-bit ceiling covers
+// every SMT-emitted operator today (widest intermediate ≈ 100 bits inside
+// `arch_fma_f32`'s normalizer); if a future op exceeds it, replay degrades to
+// inconclusive instead of silently wrapping.
+
+fn eval_mask(w: u32) -> u128 {
+    if w >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << w) - 1
+    }
+}
+
+/// Reinterpret the `w`-bit value `v` as a signed integer.
+fn eval_sext(v: u128, w: u32) -> i128 {
+    if w == 0 || w >= 128 || (v >> (w - 1)) & 1 == 0 {
+        v as i128
+    } else {
+        (v | !eval_mask(w)) as i128
+    }
+}
+
+/// Nested `Call` frames beyond this depth return `None`. The real call graph
+/// (fp8 → f32 core → rounder) is 3 deep; this is a cycle backstop, not a limit
+/// any legitimate operator approaches.
+const EVAL_MAX_CALL_DEPTH: u32 = 64;
+
+/// Evaluate a `Bv` DAG to its unsigned value, masked to the node width.
+///
+/// `env` binds `Var` names (`FpFn` parameters) to values; `fns` is the
+/// operator table (`fp_ops::fp_functions`) that `Call` nodes resolve against.
+/// Returns `None` — meaning the caller's check is INCONCLUSIVE, never a false
+/// verdict — on an unbound `Var`, an unknown/arity/width-mismatched `Call`,
+/// or any node wider than 128 bits.
+pub fn eval_bv(node: &Bv, env: &HashMap<String, u128>, fns: &[FpFn]) -> Option<u128> {
+    let mut memo = HashMap::new();
+    eval_go(node, env, fns, &mut memo, 0)
+}
+
+fn eval_go(
+    b: &Bv,
+    env: &HashMap<String, u128>,
+    fns: &[FpFn],
+    // Per-frame memo keyed by Rc pointer: the DAG shares subexpressions
+    // heavily (fma linearizes to 300+ nodes), so an unmemoized tree walk
+    // would be exponential. A frame = one (env, body) pair, so memoized
+    // values can never leak across different variable bindings.
+    memo: &mut HashMap<usize, u128>,
+    depth: u32,
+) -> Option<u128> {
+    let w = b.width();
+    if w > 128 {
+        return None;
+    }
+    let ptr = Rc::as_ptr(&b.0) as usize;
+    if let Some(v) = memo.get(&ptr) {
+        return Some(*v);
+    }
+    let v = match &b.0.kind {
+        Kind::Var(n) => *env.get(n)?,
+        Kind::Const { val } => val & eval_mask(w),
+        Kind::Extract { x, hi: _, lo } => (eval_go(x, env, fns, memo, depth)? >> lo) & eval_mask(w),
+        Kind::Concat(a, c) => {
+            (eval_go(a, env, fns, memo, depth)? << c.width()) | eval_go(c, env, fns, memo, depth)?
+        }
+        // Operand is already masked to its own (smaller) width.
+        Kind::ZeroExt { x, .. } => eval_go(x, env, fns, memo, depth)?,
+        Kind::Not(x) => !eval_go(x, env, fns, memo, depth)? & eval_mask(w),
+        Kind::Bin { op, a, b: c } => {
+            let x = eval_go(a, env, fns, memo, depth)?;
+            let y = eval_go(c, env, fns, memo, depth)?;
+            let r = match op {
+                Bin::Add => x.wrapping_add(y),
+                Bin::Sub => x.wrapping_sub(y),
+                Bin::Mul => x.wrapping_mul(y),
+                Bin::And => x & y,
+                Bin::Or => x | y,
+                Bin::Xor => x ^ y,
+                // bvshl/bvlshr: shift ≥ operand width yields 0 (the mask
+                // handles amounts in [w, 128); the guard handles ≥ 128,
+                // which would overflow the host shift).
+                Bin::Shl => {
+                    if y >= 128 {
+                        0
+                    } else {
+                        x << y
+                    }
+                }
+                Bin::Lshr => {
+                    if y >= 128 {
+                        0
+                    } else {
+                        x >> y
+                    }
+                }
+            };
+            r & eval_mask(w)
+        }
+        Kind::Cmp { op, a, b: c } => {
+            let wa = a.width();
+            let x = eval_go(a, env, fns, memo, depth)?;
+            let y = eval_go(c, env, fns, memo, depth)?;
+            let t = match op {
+                Cmp::Eq => x == y,
+                Cmp::Ne => x != y,
+                Cmp::Ult => x < y,
+                Cmp::Ule => x <= y,
+                Cmp::Ugt => x > y,
+                Cmp::Uge => x >= y,
+                Cmp::Slt => eval_sext(x, wa) < eval_sext(y, wa),
+                Cmp::Sle => eval_sext(x, wa) <= eval_sext(y, wa),
+                Cmp::Sgt => eval_sext(x, wa) > eval_sext(y, wa),
+                Cmp::Sge => eval_sext(x, wa) >= eval_sext(y, wa),
+            };
+            t as u128
+        }
+        // Short-circuit: don't force the dead arm — an undecidable
+        // subexpression there must not poison a decidable result.
+        Kind::Ite { c, t, e } => {
+            if eval_go(c, env, fns, memo, depth)? & 1 == 1 {
+                eval_go(t, env, fns, memo, depth)?
+            } else {
+                eval_go(e, env, fns, memo, depth)?
+            }
+        }
+        Kind::Call { name, args } => {
+            if depth >= EVAL_MAX_CALL_DEPTH {
+                return None;
+            }
+            let f = fns.iter().find(|f| f.name == *name)?;
+            if f.params.len() != args.len() {
+                return None;
+            }
+            let mut child_env = HashMap::new();
+            for ((pname, pwidth), arg) in f.params.iter().zip(args) {
+                if arg.width() != *pwidth {
+                    return None;
+                }
+                child_env.insert(pname.clone(), eval_go(arg, env, fns, memo, depth)?);
+            }
+            let mut child_memo = HashMap::new();
+            eval_go(&f.body, &child_env, fns, &mut child_memo, depth + 1)?
+        }
+    };
+    memo.insert(ptr, v);
+    Some(v)
+}
+
 // ── Lean 4 renderer ─────────────────────────────────────────────────────────
 //
 // Emits each helper as a Lean `def` over `BitVec` (Lean core `Init.Data.BitVec`
@@ -1135,5 +1294,188 @@ mod tests {
                 "Lean output missing {needle}:\n{lean}"
             );
         }
+    }
+
+    // ── eval_bv (concrete interpreter) ──────────────────────────────────────
+
+    fn ev(b: &Bv) -> Option<u128> {
+        eval_bv(b, &HashMap::new(), &[])
+    }
+
+    #[test]
+    fn eval_bv_primitives_and_masking() {
+        // Const masked to width.
+        assert_eq!(ev(&cst(0x1FF, 8)), Some(0xFF));
+        // Add/sub/mul wrap at the node width.
+        assert_eq!(ev(&add(&cst(0xFF, 8), &cst(1, 8))), Some(0));
+        assert_eq!(ev(&sub(&cst(0, 8), &cst(1, 8))), Some(0xFF));
+        assert_eq!(ev(&mul(&cst(16, 8), &cst(16, 8))), Some(0));
+        // Extract / concat / zext / not.
+        assert_eq!(ev(&extract(&cst(0b1011_0110, 8), 5, 2)), Some(0b1101));
+        assert_eq!(ev(&concat(&cst(0xA, 4), &cst(0x5, 4))), Some(0xA5));
+        assert_eq!(ev(&zext(&cst(0x80, 8), 16)), Some(0x80));
+        assert_eq!(ev(&bnot(&cst(0x0F, 8))), Some(0xF0));
+        // Bitwise binaries.
+        assert_eq!(ev(&band(&cst(0xCC, 8), &cst(0xAA, 8))), Some(0x88));
+        assert_eq!(ev(&bor(&cst(0xCC, 8), &cst(0xAA, 8))), Some(0xEE));
+        assert_eq!(ev(&bxor(&cst(0xCC, 8), &cst(0xAA, 8))), Some(0x66));
+        // Shifts: in-range, and amount ≥ width yields 0 (bvshl semantics).
+        assert_eq!(ev(&shl(&cst(1, 8), &cst(3, 8))), Some(8));
+        assert_eq!(ev(&shl(&cst(1, 8), &cst(9, 8))), Some(0));
+        assert_eq!(ev(&lshr(&cst(0x80, 8), &cst(7, 8))), Some(1));
+        assert_eq!(ev(&lshr(&cst(0x80, 8), &cst(9, 8))), Some(0));
+        // Ite selects on the 1-bit condition.
+        assert_eq!(ev(&ite(&cst(1, 1), &cst(3, 8), &cst(4, 8))), Some(3));
+        assert_eq!(ev(&ite(&cst(0, 1), &cst(3, 8), &cst(4, 8))), Some(4));
+        // Full-width (128-bit) masking doesn't overflow.
+        assert_eq!(
+            ev(&add(&cst(u128::MAX, 128), &cst(1, 128))),
+            Some(0),
+            "128-bit wrap"
+        );
+    }
+
+    #[test]
+    fn eval_bv_compares_signed_and_unsigned() {
+        let neg1 = cst(0xFF, 8); // -1 as signed 8-bit
+        let one = cst(0x01, 8);
+        // Unsigned: 0xFF > 1.
+        assert_eq!(ev(&ult(&neg1, &one)), Some(0));
+        assert_eq!(ev(&ugt(&neg1, &one)), Some(1));
+        // Signed: -1 < 1.
+        assert_eq!(ev(&slt(&neg1, &one)), Some(1));
+        assert_eq!(ev(&sgt(&neg1, &one)), Some(0));
+        assert_eq!(ev(&sle(&neg1, &neg1)), Some(1));
+        assert_eq!(ev(&sge(&one, &neg1)), Some(1));
+        assert_eq!(ev(&eq(&neg1, &neg1)), Some(1));
+        assert_eq!(ev(&ne(&neg1, &one)), Some(1));
+        assert_eq!(ev(&ule(&one, &neg1)), Some(1));
+        assert_eq!(ev(&uge(&one, &neg1)), Some(0));
+    }
+
+    /// Differential check against the host FPU on the real operator table —
+    /// this is what earns the interpreter the right to gate `arch formal`'s
+    /// counterexample replay. Finite inputs only: NaN canonicalization is
+    /// profile-dependent and host NaN bits differ, so NaN-producing cases
+    /// are pinned separately below.
+    #[test]
+    fn eval_bv_fp_functions_match_host_fpu() {
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let env = HashMap::new();
+        let f32c = |bits: u32| cst(bits as u128, 32);
+        // Interesting finite f32 patterns: zeros, one, subnormal min/max,
+        // normal min, max finite, an odd-mantissa value, big/small mix.
+        let pats: [u32; 10] = [
+            0x0000_0000, // +0
+            0x8000_0000, // -0
+            0x3F80_0000, // 1.0
+            0x0000_0001, // min subnormal
+            0x007F_FFFF, // max subnormal
+            0x0080_0000, // min normal
+            0x7F7F_FFFF, // max finite
+            0x4049_0FDB, // ~pi
+            0xC2C8_0000, // -100.0
+            0x3400_0000, // 2^-23
+        ];
+        for &a in &pats {
+            for &b in &pats {
+                let fa = f32::from_bits(a);
+                let fb = f32::from_bits(b);
+                for (name, host) in [
+                    ("arch_f32_add", fa + fb),
+                    ("arch_f32_sub", fa - fb),
+                    ("arch_f32_mul", fa * fb),
+                ] {
+                    let got = eval_bv(&call(name, &[f32c(a), f32c(b)], 32), &env, &fns)
+                        .unwrap_or_else(|| panic!("{name}({a:#X},{b:#X}) undecidable"));
+                    assert_eq!(
+                        got,
+                        host.to_bits() as u128,
+                        "{name}({a:#010X}, {b:#010X}): ir={got:#010X} host={:#010X}",
+                        host.to_bits()
+                    );
+                }
+                // Compares (finite operands, so no NaN-ordering ambiguity).
+                let cmp_got = eval_bv(&call("arch_f32_lt", &[f32c(a), f32c(b)], 1), &env, &fns);
+                assert_eq!(cmp_got, Some((fa < fb) as u128), "lt({a:#X},{b:#X})");
+            }
+        }
+        // Fused multiply-add over a few finite triples (host fmaf == RNE fused).
+        for (a, b, c) in [
+            (2.0f32, 3.0f32, 4.0f32),
+            (1.5, -2.5, 0.25),
+            (1e20, 1e20, -1e38),
+            (3.0, 7.0, 1e-40),
+        ] {
+            let got = eval_bv(
+                &call(
+                    "arch_fma_f32",
+                    &[f32c(a.to_bits()), f32c(b.to_bits()), f32c(c.to_bits())],
+                    32,
+                ),
+                &env,
+                &fns,
+            )
+            .expect("fma undecidable");
+            assert_eq!(got, a.mul_add(b, c).to_bits() as u128, "fma({a},{b},{c})");
+        }
+        // Nested call chain (bf16 widens to f32, ops, narrows): 1.0 + 2.0 = 3.0.
+        assert_eq!(
+            eval_bv(
+                &call("arch_bf16_add", &[cst(0x3F80, 16), cst(0x4000, 16)], 16),
+                &env,
+                &fns
+            ),
+            Some(0x4040)
+        );
+        // fp8 e4m3 (3-deep call chain): 1.0 (0x38) * 2.0 (0x40) = 2.0 (0x40).
+        assert_eq!(
+            eval_bv(
+                &call("arch_e4m3_mul", &[cst(0x38, 8), cst(0x40, 8)], 8),
+                &env,
+                &fns
+            ),
+            Some(0x40)
+        );
+    }
+
+    #[test]
+    fn eval_bv_conservative_none_paths() {
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let env = HashMap::new();
+        // Unbound Var → None; bound Var → value.
+        assert_eq!(eval_bv(&var("x", 8), &env, &fns), None);
+        let mut bound = HashMap::new();
+        bound.insert("x".to_string(), 5u128);
+        assert_eq!(eval_bv(&var("x", 8), &bound, &fns), Some(5));
+        // Unknown call name → None.
+        assert_eq!(
+            eval_bv(&call("arch_no_such_fn", &[cst(0, 32)], 32), &env, &fns),
+            None
+        );
+        // Arity mismatch → None.
+        assert_eq!(
+            eval_bv(&call("arch_f32_add", &[cst(0, 32)], 32), &env, &fns),
+            None
+        );
+        // Argument width mismatch → None.
+        assert_eq!(
+            eval_bv(
+                &call("arch_f32_add", &[cst(0, 16), cst(0, 32)], 32),
+                &env,
+                &fns
+            ),
+            None
+        );
+        // Node wider than 128 bits → None (degrade, don't wrap).
+        let wide = concat(&cst(0, 100), &cst(0, 100));
+        assert_eq!(eval_bv(&wide, &env, &fns), None);
+        // Undecidable dead Ite arm must not poison a decidable result
+        // (short-circuit contract).
+        let dead = ite(&cst(1, 1), &cst(7, 8), &var("unbound", 8));
+        assert_eq!(eval_bv(&dead, &env, &fns), Some(7));
+        // ...but the live arm being undecidable does.
+        let live = ite(&cst(0, 1), &cst(7, 8), &var("unbound", 8));
+        assert_eq!(eval_bv(&live, &env, &fns), None);
     }
 }

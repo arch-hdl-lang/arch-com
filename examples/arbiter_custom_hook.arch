@@ -9,14 +9,16 @@
 //! (plus any extra signals you wire) and returns a one-hot grant mask.
 
 /// Policy function: pick the lowest-set bit of `req_mask` with
-/// `last_grant` deprioritized — round-robin-style fairness with optional
-/// QoS hooks via the `qos` argument (currently unused, but threaded
-/// through to demonstrate extra-arg binding).
+/// `last_grant` deprioritized — round-robin-style fairness — unless `qos`'s
+/// top bit (0x80) marks the current cycle "urgent", in which case fairness
+/// is skipped outright and the lowest-numbered requester wins immediately.
 function QosGrant(req_mask: UInt<4>, last_grant: UInt<4>, qos: UInt<8>) -> UInt<4>
   // Isolate lowest set bit of (req_mask with last_grant deprioritized)
   // ~pick + 1 = two's complement negate; use XOR-with-mask to avoid width warnings
   let masked: UInt<4> = req_mask & (last_grant ^ 0xF);
-  let pick: UInt<4> = masked != 0 ? masked : req_mask;
+  let fair_pick: UInt<4> = masked != 0 ? masked : req_mask;
+  let urgent: Bool = (qos & 0x80) != 0;
+  let pick: UInt<4> = urgent ? req_mask : fair_pick;
   let pick_neg: UInt<5> = (pick ^ 0xF).zext<5>() + 1;
   return pick & pick_neg.trunc<4>();
 end function QosGrant
@@ -24,7 +26,12 @@ end function QosGrant
 /// 4-requester arbiter using the user-supplied `QosGrant` function as
 /// the granting policy. The `hook grant_select(...)` clause binds the
 /// arbiter's internal `req_mask` / `last_grant` signals plus the
-/// user-declared `qos` port to the function's formal arguments.
+/// user-declared `qos` port to the function's formal arguments. The hook's
+/// own formal names (`req_mask`, `last_grant`, `qos_in`) are only the
+/// declared signature — the `= QosGrant(...)` binding on the next line
+/// supplies the actual signals, and for anything other than the two
+/// well-known internal names that means using the real port/param name
+/// (`qos`, not `qos_in`).
 arbiter QosArbiter
   policy QosGrant;
   param NUM_REQ: const = 4;
@@ -38,5 +45,5 @@ arbiter QosArbiter
   port grant_valid: out Bool;
   port grant_requester: out UInt<2>;
   hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>, qos_in: UInt<8>) -> UInt<4>
-    = QosGrant(req_mask, last_grant, qos_in);
+    = QosGrant(req_mask, last_grant, qos);
 end arbiter QosArbiter

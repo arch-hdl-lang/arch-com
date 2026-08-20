@@ -11,6 +11,42 @@ use crate::ast::*;
 
 impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_pipeline(&self, p: &PipelineDecl) -> SimModel {
+        // Float formats for this pipeline's scope: ports, stage decls, and
+        // cross-stage `Stage.reg` compound keys. Drives float-op dispatch
+        // in pipeline_sim_expr — without it, FP32 stage math emitted
+        // integer ops on the bit patterns.
+        {
+            let mut fm: HashMap<String, FpFmt> = HashMap::new();
+            for port in &p.common.ports {
+                if let Some(f) = type_float_fmt(&port.ty) {
+                    fm.insert(port.name.name.clone(), f);
+                }
+            }
+            for st in &p.stages {
+                for bi in &st.body {
+                    match bi {
+                        ModuleBodyItem::RegDecl(r) => {
+                            if let Some(f) = type_float_fmt(&r.ty) {
+                                fm.insert(r.name.name.clone(), f);
+                                fm.insert(format!("{}.{}", st.name.name, r.name.name), f);
+                            }
+                        }
+                        ModuleBodyItem::WireDecl(w) => {
+                            if let Some(f) = type_float_fmt(&w.ty) {
+                                fm.insert(w.name.name.clone(), f);
+                            }
+                        }
+                        ModuleBodyItem::LetBinding(l) => {
+                            if let Some(f) = l.ty.as_ref().and_then(type_float_fmt) {
+                                fm.insert(l.name.name.clone(), f);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            *self.pipeline_float_names.borrow_mut() = fm;
+        }
         let name = &p.name.name;
         let class = format!("V{name}");
         let _enum_map = build_enum_map(self.symbols);
@@ -26,7 +62,10 @@ impl<'a> SimCodegen<'a> {
         struct StageReg {
             prefixed: String,
             ty: String,
-            reset_val: String,
+            init_val: String,
+            reset_val: Option<String>,
+            reset_cond: Option<String>,
+            reset_is_async: bool,
             bits: u32,
             is_let: bool,
         }
@@ -42,13 +81,32 @@ impl<'a> SimCodegen<'a> {
                         let prefixed = format!("{}_{}", prefix, r.name.name);
                         let ty = cpp_internal_type_with_params(&r.ty, &p.common.params);
                         let bits = type_bits_te_with_params(&r.ty, &p.common.params);
+                        let init_val = r
+                            .init
+                            .as_ref()
+                            .map(|expr| {
+                                Self::pipeline_value_expr(expr, &p.common.params, &_enum_map)
+                            })
+                            .unwrap_or_else(|| "0".to_string());
                         let reset_val =
-                            Self::pipeline_reset_value(&r.reset).unwrap_or("0".to_string());
+                            Self::pipeline_reset_value(&r.reset, &p.common.params, &_enum_map);
+                        let reset_info = resolve_reg_reset_info(&r.reset, &p.ports);
+                        let reset_cond = reset_info.as_ref().map(|(signal, _, is_low)| {
+                            if *is_low {
+                                format!("(!{signal})")
+                            } else {
+                                signal.clone()
+                            }
+                        });
+                        let reset_is_async = reset_info.is_some_and(|(_, is_async, _)| is_async);
                         names_set.insert(r.name.name.clone());
                         all_regs.push(StageReg {
                             prefixed,
                             ty,
+                            init_val,
                             reset_val,
+                            reset_cond,
+                            reset_is_async,
                             bits,
                             is_let: false,
                         });
@@ -73,7 +131,10 @@ impl<'a> SimCodegen<'a> {
                         all_regs.push(StageReg {
                             prefixed,
                             ty,
-                            reset_val: String::new(),
+                            init_val: String::new(),
+                            reset_val: None,
+                            reset_cond: None,
+                            reset_is_async: false,
                             bits,
                             is_let: true,
                         });
@@ -261,7 +322,7 @@ impl<'a> SimCodegen<'a> {
             })
             .collect();
 
-        let (rst_name, _is_async, is_low) = extract_reset_info(&p.ports);
+        let (rst_name, rst_is_async, is_low) = extract_reset_info(&p.ports);
         let rst_cond = if is_low {
             format!("(!{})", rst_name)
         } else {
@@ -319,7 +380,7 @@ impl<'a> SimCodegen<'a> {
         inits.push("_clk_prev(0)".to_string());
         for sr in &all_regs {
             if !sr.is_let {
-                inits.push(format!("_{}(0)", sr.prefixed));
+                inits.push(format!("_{}({})", sr.prefixed, sr.init_val));
             }
         }
         for prefix in &stage_prefixes {
@@ -394,16 +455,6 @@ impl<'a> SimCodegen<'a> {
 
         // reset()
         cpp.push_str(&format!("void {class}::_do_reset() {{\n"));
-        for sr in &all_regs {
-            if !sr.is_let {
-                let v = match sr.reset_val.as_str() {
-                    "false" | "1'b0" => "0",
-                    "true" | "1'b1" => "1",
-                    other => other,
-                };
-                cpp.push_str(&format!("  _{} = {v};\n", sr.prefixed));
-            }
-        }
         for prefix in &stage_prefixes {
             cpp.push_str(&format!("  _{}_valid_r = 0;\n", prefix));
         }
@@ -419,8 +470,25 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!(
             "  bool _rising = ({clk_name} && !_clk_prev);\n  _clk_prev = {clk_name};\n"
         ));
+        // Async resets take effect on assertion even when there is no clock
+        // edge. They are also emitted inside the rising-edge block below so
+        // reset keeps priority over normal stage updates on a coincident edge.
+        for sr in &all_regs {
+            if !sr.reset_is_async {
+                continue;
+            }
+            let (Some(cond), Some(value)) = (&sr.reset_cond, &sr.reset_val) else {
+                continue;
+            };
+            cpp.push_str(&format!(
+                "  if ({cond}) {{ _{} = {value}; }}\n",
+                sr.prefixed
+            ));
+        }
+        if rst_is_async {
+            cpp.push_str(&format!("  if ({rst_cond}) {{ _do_reset(); }}\n"));
+        }
         cpp.push_str("  if (_rising) {\n");
-        cpp.push_str(&format!("    if ({rst_cond}) {{ _do_reset(); }} else {{\n"));
 
         // Evaluate let bindings first (they are combinational and may be referenced in seq blocks)
         for (si, stage) in p.stages.iter().enumerate() {
@@ -629,7 +697,21 @@ impl<'a> SimCodegen<'a> {
             );
             cpp.push_str(&format!("      if ({cond}) {{ _{target}_valid_r = 0; }}\n"));
         }
-        cpp.push_str("    }\n  }\n}\n\n");
+        // Per-register reset semantics: normal stage updates occur on every
+        // rising edge, then each declared reset overrides only its register.
+        // `reset none` therefore continues updating during unrelated resets.
+        for sr in &all_regs {
+            let (Some(cond), Some(value)) = (&sr.reset_cond, &sr.reset_val) else {
+                continue;
+            };
+            cpp.push_str(&format!(
+                "    if ({cond}) {{ _{} = {value}; }}\n",
+                sr.prefixed
+            ));
+        }
+        // Generated valid/FSM state remains owned by the pipeline control reset.
+        cpp.push_str(&format!("    if ({rst_cond}) {{ _do_reset(); }}\n"));
+        cpp.push_str("  }\n}\n\n");
 
         // eval_comb()
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
@@ -1267,6 +1349,44 @@ impl<'a> SimCodegen<'a> {
         }
     }
 
+    /// Float format of a pipeline-scope expression (idents, `Stage.reg`
+    /// reads, float literals, and float arithmetic/fma over those).
+    fn pipeline_expr_float(&self, e: &Expr) -> Option<FpFmt> {
+        match &e.kind {
+            ExprKind::Ident(n) => self.pipeline_float_names.borrow().get(n.as_str()).copied(),
+            ExprKind::FieldAccess(base, f) => {
+                if let ExprKind::Ident(b) = &base.kind {
+                    self.pipeline_float_names
+                        .borrow()
+                        .get(&format!("{}.{}", b, f.name))
+                        .copied()
+                } else {
+                    None
+                }
+            }
+            ExprKind::Literal(LitKind::TypedFloat(fmtl, _)) => Some(match fmtl {
+                FloatLitFmt::Fp32 => FpFmt::Fp32,
+                FloatLitFmt::Bf16 => FpFmt::Bf16,
+                FloatLitFmt::E4m3 => FpFmt::E4m3,
+                FloatLitFmt::E5m2 => FpFmt::E5m2,
+                FloatLitFmt::E2m1 => FpFmt::E2m1,
+                FloatLitFmt::E2m3 => FpFmt::E2m3,
+                FloatLitFmt::E3m2 => FpFmt::E3m2,
+            }),
+            ExprKind::Literal(LitKind::Float(_)) => Some(FpFmt::Fp32),
+            ExprKind::Binary(op, l, r) => match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul => self
+                    .pipeline_expr_float(l)
+                    .or_else(|| self.pipeline_expr_float(r)),
+                _ => None,
+            },
+            ExprKind::FunctionCall(name, args) if name == "fma" => {
+                args.first().and_then(|a| self.pipeline_expr_float(a))
+            }
+            _ => None,
+        }
+    }
+
     fn pipeline_sim_expr(
         &self,
         expr: &Expr,
@@ -1311,6 +1431,9 @@ impl<'a> SimCodegen<'a> {
             coverage: None,
             params,
             vinit_regs: None,
+            decl_types: None,
+            struct_defs: None,
+            block_helpers: None,
         };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {
@@ -1387,6 +1510,28 @@ impl<'a> SimCodegen<'a> {
                     self.pipeline_sim_expr(rhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 if matches!(*op, BinOp::Implies | BinOp::ImpliesNext) {
                     return format!("(!{l} || {r})");
+                }
+                // Float operands dispatch to the _arch_fp helpers (mirrors
+                // the module-path binary dispatch in mod.rs).
+                if let Some(fmt) = self
+                    .pipeline_expr_float(lhs)
+                    .or_else(|| self.pipeline_expr_float(rhs))
+                {
+                    let fop = match op {
+                        BinOp::Add => Some("add"),
+                        BinOp::Sub => Some("sub"),
+                        BinOp::Mul => Some("mul"),
+                        BinOp::Eq => Some("eq"),
+                        BinOp::Neq => Some("ne"),
+                        BinOp::Lt => Some("lt"),
+                        BinOp::Gt => Some("gt"),
+                        BinOp::Lte => Some("le"),
+                        BinOp::Gte => Some("ge"),
+                        _ => None,
+                    };
+                    if let Some(fop) = fop {
+                        return format!("_arch_{}_{fop}({l}, {r})", fmt.helper_tag());
+                    }
                 }
                 let os = match op {
                     BinOp::Add | BinOp::AddWrap => "+",
@@ -1562,15 +1707,30 @@ impl<'a> SimCodegen<'a> {
         }
     }
 
-    fn pipeline_reset_value(reset: &RegReset) -> Option<String> {
+    fn pipeline_value_expr(
+        expr: &Expr,
+        params: &[ParamDecl],
+        enum_map: &HashMap<String, Vec<(String, u64)>>,
+    ) -> String {
+        let names = HashSet::new();
+        let widths = HashMap::new();
+        let ctx = Ctx::new(
+            &names, &names, &names, &names, &names, &widths, enum_map, &names,
+        )
+        .with_params(params);
+        cpp_expr(expr, &ctx)
+    }
+
+    fn pipeline_reset_value(
+        reset: &RegReset,
+        params: &[ParamDecl],
+        enum_map: &HashMap<String, Vec<(String, u64)>>,
+    ) -> Option<String> {
         match reset {
-            RegReset::Explicit(_, _, _, val) | RegReset::Inherit(_, val) => match &val.kind {
-                ExprKind::Literal(LitKind::Dec(v)) => Some(format!("{v}")),
-                ExprKind::Literal(LitKind::Hex(v)) => Some(format!("0x{v:X}")),
-                ExprKind::Bool(b) => Some(if *b { "1".to_string() } else { "0".to_string() }),
-                _ => Some("0".to_string()),
-            },
-            _ => Some("0".to_string()),
+            RegReset::Explicit(_, _, _, val) | RegReset::Inherit(_, val) => {
+                Some(Self::pipeline_value_expr(val, params, enum_map))
+            }
+            RegReset::None => None,
         }
     }
 }

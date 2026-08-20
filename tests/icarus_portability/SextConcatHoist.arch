@@ -1,0 +1,22 @@
+// arch#827 B2 regression fixture: `.sext<N>()`'s hand-emitted
+// `{{(w-sw){recv[sw-1]}}, recv}` expansion referenced a `Concat` receiver
+// bare, twice — `y = signed({a, b}).sext<32>()` emitted
+// `{{(32-12){{a, b}[12-1]}}, {a, b}}`, applying `[12-1]` directly to an
+// unparenthesized `{a, b}` literal, which is a syntax error on Icarus 12.0
+// (and would be on Verilator too outside its size-cast/replicate special
+// cases). Hit 5 of 6 `tests/e203` top modules in #827's sweep. Binding the
+// `Concat` to a temp first — the same fix `hoist_slice_base` already
+// applies to a `Concat`/`Repeat` `BitSlice`/`PartSelect` base (#807) —
+// makes it portable.
+//
+// See tests/integration_test.rs's
+// `test_sext_concat_hoist_behavioral_equivalence_verilator_and_iverilog`.
+module SextConcatHoist
+  port a: in UInt<6>;
+  port b: in UInt<6>;
+  port y: out SInt<32>;
+
+  comb
+    y = signed({a, b}).sext<32>();
+  end comb
+end module SextConcatHoist

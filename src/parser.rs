@@ -318,6 +318,9 @@ impl Parser {
             tlm_methods,
             doc: None,
             inner_doc,
+            // Default false; set post-parse for items loaded from `.archi`
+            // by main.rs's tagger, same as every other construct.
+            is_interface: false,
         })
     }
 
@@ -477,6 +480,7 @@ impl Parser {
             shared: None,
             unpacked: false,
             unpacked_ascending: false,
+            split: false,
             comb_deps: None,
             span: parent_span.merge(end_span),
         })
@@ -716,6 +720,7 @@ impl Parser {
             shared: None,
             unpacked: false,
             unpacked_ascending: false,
+            split: false,
             comb_deps: None,
             span: sp,
         };
@@ -971,6 +976,7 @@ impl Parser {
             shared: None,
             unpacked: false,
             unpacked_ascending: false,
+            split: false,
             comb_deps: None,
             span: sp,
         };
@@ -1251,7 +1257,7 @@ impl Parser {
                     // `default seq on <clk> rising|falling;`
                     self.parse_seq_default_decl()?;
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     body.push(ModuleBodyItem::Assert(self.parse_assert_decl()?));
                 }
                 Some(TokenKind::Function) => {
@@ -1348,6 +1354,13 @@ impl Parser {
                     | TokenKind::Bool
                     | TokenKind::FP32
                     | TokenKind::BF16
+                    | TokenKind::FP8E4M3
+                    | TokenKind::FP8E5M2
+                    | TokenKind::FP4E2M1
+                    | TokenKind::FP6E2M3
+                    | TokenKind::FP6E3M2
+                    | TokenKind::E8M0
+                    | TokenKind::UE4M3
             )
         ) {
             // Logic-typed value const: `param NAME: UInt<W> = <default>;`
@@ -1550,6 +1563,7 @@ impl Parser {
                 shared: None,
                 unpacked: false,
                 unpacked_ascending: false,
+                split: false,
                 comb_deps: None,
                 span: start.merge(end_span),
             });
@@ -1595,6 +1609,12 @@ impl Parser {
                 self.peek_span(),
             ));
         }
+        // Optional `split` modifier: `port b: in split ScaledVec<E,N,S>;`
+        // Emits two SV ports (`b_scale` / `b_elems`) instead of one packed
+        // word. Contextual like `unpacked`, so `split` stays usable as an
+        // ordinary identifier. Only legal on ScaledVec — validated below,
+        // after the type is parsed.
+        let split = self.eat_contextual("split");
 
         // `port X: out pipe_reg<T, N> [modifiers];` — same semantics as
         // `port reg X: out T ...` for N=1, N-stage output pipe for N>=2.
@@ -1767,6 +1787,10 @@ impl Parser {
                 start.merge(end_span),
             ));
         }
+        // NOTE: `split`'s "only on ScaledVec" rule is NOT checked here. Type
+        // aliases resolve after parsing, so `port s: in split MXFP4;` still
+        // looks like `TypeExpr::Named` at this point. The check lives in
+        // typecheck, where the alias has been substituted.
         Ok(PortDecl {
             name,
             direction,
@@ -1777,6 +1801,7 @@ impl Parser {
             shared,
             unpacked,
             unpacked_ascending,
+            split,
             comb_deps,
             span: start.merge(end_span),
         })
@@ -3615,12 +3640,34 @@ impl Parser {
                 self.advance();
                 AssertKind::Cover
             }
+            Some(TokenKind::Assume) => {
+                self.advance();
+                AssertKind::Assume
+            }
             _ => {
                 return Err(CompileError::general(
-                    "expected assert or cover",
+                    "expected assert, assume, or cover",
                     self.peek_span(),
                 ))
             }
+        };
+        // Optional engine tag: `assert<bound_err> name: expr;`
+        let engine = if kind == AssertKind::Assert && self.peek_kind() == Some(TokenKind::Lt) {
+            self.advance();
+            let tag = self.expect_ident()?;
+            if tag.name != "bound_err" {
+                return Err(CompileError::general(
+                    &format!(
+                        "unknown assert engine tag `{}` — the only supported tag is `bound_err`",
+                        tag.name
+                    ),
+                    tag.span,
+                ));
+            }
+            self.expect(TokenKind::Gt)?;
+            AssertEngine::BoundErr
+        } else {
+            AssertEngine::Solver
         };
 
         // Optional label: `name :` where `:` is not followed by another `:`
@@ -3639,6 +3686,7 @@ impl Parser {
         let end = self.expect(TokenKind::Semi)?.span;
         Ok(AssertDecl {
             kind,
+            engine,
             name,
             expr,
             span: start.merge(end),
@@ -3993,7 +4041,7 @@ impl Parser {
                     items.push(GenItem::TlmConnect(self.parse_tlm_connect()?));
                 }
                 Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
                 }
                 Some(TokenKind::Seq) => {
@@ -4067,7 +4115,7 @@ impl Parser {
                     items.push(GenItem::TlmConnect(self.parse_tlm_connect()?));
                 }
                 Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
                 }
                 Some(TokenKind::Wire) => items.push(GenItem::Wire(self.parse_wire_decl()?)),
@@ -4142,14 +4190,14 @@ impl Parser {
                 self.advance();
                 self.expect(TokenKind::Lt)?;
                 let width = self.parse_type_arg_expr()?;
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::UInt(Box::new(width)))
             }
             Some(TokenKind::SInt) => {
                 self.advance();
                 self.expect(TokenKind::Lt)?;
                 let width = self.parse_type_arg_expr()?;
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::SInt(Box::new(width)))
             }
             Some(TokenKind::Bool) => {
@@ -4164,6 +4212,34 @@ impl Parser {
                 self.advance();
                 Ok(TypeExpr::BF16)
             }
+            Some(TokenKind::FP8E4M3) => {
+                self.advance();
+                Ok(TypeExpr::FP8E4M3)
+            }
+            Some(TokenKind::FP6E2M3) => {
+                self.advance();
+                Ok(TypeExpr::FP6E2M3)
+            }
+            Some(TokenKind::E8M0) => {
+                self.advance();
+                Ok(TypeExpr::E8M0)
+            }
+            Some(TokenKind::UE4M3) => {
+                self.advance();
+                Ok(TypeExpr::UE4M3)
+            }
+            Some(TokenKind::FP6E3M2) => {
+                self.advance();
+                Ok(TypeExpr::FP6E3M2)
+            }
+            Some(TokenKind::FP4E2M1) => {
+                self.advance();
+                Ok(TypeExpr::FP4E2M1)
+            }
+            Some(TokenKind::FP8E5M2) => {
+                self.advance();
+                Ok(TypeExpr::FP8E5M2)
+            }
             Some(TokenKind::Bit) => {
                 self.advance();
                 Ok(TypeExpr::Bit)
@@ -4172,7 +4248,7 @@ impl Parser {
                 self.advance();
                 self.expect(TokenKind::Lt)?;
                 let domain = self.expect_ident()?;
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::Clock(domain))
             }
             Some(TokenKind::Reset) => {
@@ -4218,7 +4294,7 @@ impl Parser {
                 } else {
                     ResetLevel::High // default
                 };
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::Reset(kind, level))
             }
             Some(TokenKind::KwVec) => {
@@ -4227,8 +4303,26 @@ impl Parser {
                 let elem = self.parse_type_expr()?;
                 self.expect(TokenKind::Comma)?;
                 let size = self.parse_type_arg_expr()?;
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::Vec(Box::new(elem), Box::new(size)))
+            }
+            // `ScaledVec<Elem, N, Scale>` — a block-scaled vector. Three
+            // arguments, unlike Vec's two: the scale type is a parameter
+            // because MX and NVFP4 differ on it (E8M0 vs UE4M3).
+            Some(TokenKind::KwScaledVec) => {
+                self.advance();
+                self.expect(TokenKind::Lt)?;
+                let elem = self.parse_type_expr()?;
+                self.expect(TokenKind::Comma)?;
+                let size = self.parse_type_arg_expr()?;
+                self.expect(TokenKind::Comma)?;
+                let scale = self.parse_type_expr()?;
+                self.expect_angle_close()?;
+                Ok(TypeExpr::ScaledVec(
+                    Box::new(elem),
+                    Box::new(size),
+                    Box::new(scale),
+                ))
             }
             Some(TokenKind::Ident(_)) => {
                 let ident = self.expect_ident()?;
@@ -4791,6 +4885,86 @@ impl Parser {
                         span,
                         parenthesized: false,
                     })
+                } else if ident.name == "scaled_quantize" && self.check(TokenKind::Lt) {
+                    // `scaled_quantize<policy, rounding>(v)` — the block
+                    // quantizer's optional policy/rounding selectors.
+                    //
+                    // Gated on the callee NAME rather than on a token shape:
+                    // `<` after an identifier is otherwise a comparison, and
+                    // `scaled_quantize` is a reserved builtin, so there is no
+                    // expression this can steal. (`fma<pipelined, N>` gates on
+                    // the `pipelined` keyword instead, which is the same
+                    // narrowness by a different route.)
+                    //
+                    // The selectors ride along as trailing `Ident` args, the
+                    // convention `MethodCall` already documents ("type_args
+                    // encoded as exprs"), so no new ExprKind is needed.
+                    self.advance(); // consume `<`
+                                    // The output format is MANDATORY and comes first; the two
+                                    // selectors are optional and default to the OCP §6.3
+                                    // policy with RNE.
+                    let fmt = self.parse_type_expr()?;
+                    let (policy, rounding) = if self.eat(TokenKind::Comma) {
+                        let p = self.expect_ident()?;
+                        self.expect(TokenKind::Comma)?;
+                        let r = self.expect_ident()?;
+                        let policy = match p.name.as_str() {
+                            "floor_pow2" => ScalePolicy::FloorPow2,
+                            "ceil_pow2" => ScalePolicy::CeilPow2,
+                            "exact" => ScalePolicy::Exact,
+                            other => {
+                                return Err(CompileError::general(
+                                    &format!(
+                                        "unknown scale policy `{other}` — expected `floor_pow2` \
+                                         (OCP §6.3), `ceil_pow2` (NVIDIA) or `exact` \
+                                         (`RNE(amax / elem_max)`, for a non-power-of-two scale \
+                                         such as `UE4M3`)"
+                                    ),
+                                    p.span,
+                                ))
+                            }
+                        };
+                        let rounding = match r.name.as_str() {
+                            "rne" => RoundMode::Rne,
+                            "rtz" => RoundMode::Rtz,
+                            "rna" => RoundMode::Rna,
+                            other => {
+                                return Err(CompileError::general(
+                                    &format!(
+                                        "unknown rounding mode `{other}` — expected `rne` (the \
+                                         default), `rtz` or `rna`. `stochastic` is not \
+                                         implemented: it needs an entropy source, which is a \
+                                         datapath question rather than a rounding-mode one"
+                                    ),
+                                    r.span,
+                                ))
+                            }
+                        };
+                        (Some(policy), rounding)
+                    } else {
+                        // The policy default is scale-dependent and `fmt` may
+                        // be an alias, so leave it unwritten for typecheck to
+                        // settle rather than guessing `floor_pow2` here.
+                        (None, RoundMode::Rne)
+                    };
+                    // `expect_angle_close`, not `expect(Gt)`: the format may
+                    // be written inline (`scaled_quantize<ScaledVec<..>>(v)`),
+                    // which the lexer munches into a single `>>`.
+                    self.expect_angle_close()?;
+                    self.expect(TokenKind::LParen)?;
+                    let value = self.parse_expr()?;
+                    let end = self.expect(TokenKind::RParen)?;
+                    let span = ident.span.merge(end.span);
+                    Ok(Expr {
+                        kind: ExprKind::ScaledQuantize(
+                            Box::new(value),
+                            Box::new(fmt),
+                            policy,
+                            rounding,
+                        ),
+                        span,
+                        parenthesized: false,
+                    })
                 } else if self.check(TokenKind::LParen) {
                     // Function call: Name(arg, ...)
                     self.advance(); // consume `(`
@@ -5065,7 +5239,7 @@ impl Parser {
                 _ if self.check_contextual("state") => {
                     states.push(self.parse_state_body()?);
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -5246,7 +5420,7 @@ impl Parser {
                 Some(TokenKind::Stall) => stall_conds.push(self.parse_stall_decl()?),
                 Some(TokenKind::Flush) => flush_directives.push(self.parse_flush_decl()?),
                 Some(TokenKind::Forward) => forward_directives.push(self.parse_forward_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -5467,7 +5641,7 @@ impl Parser {
                 }
                 _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -5814,7 +5988,7 @@ impl Parser {
                 Some(TokenKind::Init) => {
                     init = Some(self.parse_ram_init()?);
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -5964,6 +6138,7 @@ impl Parser {
             shared: None,
             unpacked: false,
             unpacked_ascending: false,
+            split: false,
             comb_deps: None,
             span: start.merge(end_span),
         })
@@ -6083,7 +6258,7 @@ impl Parser {
         while !self.check_end_of(TokenKind::Cam) {
             match self.peek_kind() {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -6204,7 +6379,7 @@ impl Parser {
         while !self.check_end_of(TokenKind::Counter) {
             match self.peek_kind() {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -6356,7 +6531,7 @@ impl Parser {
                 Some(TokenKind::Hook) => {
                     hook = Some(self.parse_arbiter_hook()?);
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -6733,7 +6908,7 @@ impl Parser {
                     }
                     self.eat(TokenKind::Semi);
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -6957,6 +7132,33 @@ impl Parser {
         tok
     }
 
+    /// Consume the `>` that closes an angle-bracket list, splitting a `>>`
+    /// token when the list's last element is itself angle-bracketed.
+    ///
+    /// The lexer maximal-munches `>>` into a shift, which no other construct
+    /// ever hits: `Vec<Vec<T,N>,M>` closes with `>` after a `,`, and a type in
+    /// a port declaration is followed by `;`. `scaled_quantize<Fmt>` is the
+    /// first place a *type* can end immediately before a closing `>`, so
+    /// `scaled_quantize<ScaledVec<FP4E2M1, 4, E8M0>>(v)` would otherwise be a
+    /// parse error — and the obvious workaround (declare an alias) must not be
+    /// mandatory just because of a tokenizer artifact. Rewriting the token in
+    /// place, rather than pushing back a synthetic one, keeps spans honest:
+    /// the remaining `>` keeps the second character's position.
+    fn expect_angle_close(&mut self) -> Result<Token, CompileError> {
+        if self.check(TokenKind::Shr) {
+            let tok = self.tokens[self.pos].clone();
+            let mut rest = tok.clone();
+            rest.kind = TokenKind::Gt;
+            rest.span.start += 1;
+            self.tokens[self.pos] = rest;
+            let mut first = tok;
+            first.kind = TokenKind::Gt;
+            first.span.end = first.span.start + 1;
+            return Ok(first);
+        }
+        self.expect(TokenKind::Gt)
+    }
+
     fn expect(&mut self, kind: TokenKind) -> Result<Token, CompileError> {
         if self.check(kind.clone()) {
             Ok(self.advance())
@@ -7111,7 +7313,7 @@ impl Parser {
                     }
                 }
                 Some(TokenKind::Op) => ops.push(self.parse_op_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -7215,7 +7417,7 @@ impl Parser {
                     self.eat(TokenKind::Semi);
                 }
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -7637,6 +7839,7 @@ impl Parser {
         let mut structs = Vec::new();
         let mut buses = Vec::new();
         let mut functions = Vec::new();
+        let mut aliases = Vec::new();
 
         while !self.check_end_keyword() {
             match self.peek_kind() {
@@ -7646,9 +7849,13 @@ impl Parser {
                 Some(TokenKind::Struct) => structs.push(self.parse_struct()?),
                 Some(TokenKind::Bus) => buses.push(self.parse_bus()?),
                 Some(TokenKind::Function) => functions.push(self.parse_function()?),
+                // `type Name = TypeExpr;` — same declaration form as a
+                // module-scope alias, but published file-wide like the
+                // package's other contents.
+                Some(TokenKind::Type) => aliases.push(self.parse_type_alias_decl()?),
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, domain, enum, struct, bus, or function",
+                        "param, domain, enum, struct, bus, function, or type",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -7677,6 +7884,7 @@ impl Parser {
             structs,
             buses,
             functions,
+            aliases,
             doc: None,
             inner_doc,
         })

@@ -291,12 +291,28 @@ fn type_width_u64(ty: &TypeExpr) -> Result<u64, String> {
         TypeExpr::Bool | TypeExpr::Bit => Ok(1),
         TypeExpr::FP32 => Ok(32),
         TypeExpr::BF16 => Ok(16),
+        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Ok(8),
+        TypeExpr::FP4E2M1 => Ok(4),
+        TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Ok(6),
+        TypeExpr::E8M0 | TypeExpr::UE4M3 => Ok(8),
         TypeExpr::Vec(elem, len) => {
             let elem_width = type_width_u64(elem)?;
             let len = const_expr_u64(len)?;
             elem_width.checked_mul(len).ok_or_else(|| {
                 "construct proof type width overflow while multiplying Vec width".to_string()
             })
+        }
+        TypeExpr::ScaledVec(elem, n, scale) => {
+            let n = const_expr_u64(n)?;
+            let n = u32::try_from(n).map_err(|_| {
+                "ScaledVec block size N does not fit in u32 for construct proof".to_string()
+            })?;
+            crate::fp_format::scaled_vec_width(elem, n, scale)
+                .map(u64::from)
+                .ok_or_else(|| {
+                    "ScaledVec element/scale is not a valid block member in construct proof"
+                        .to_string()
+                })
         }
         TypeExpr::Named(name) => Err(format!(
             "named type `{}` is not supported in construct proof data-width extraction",

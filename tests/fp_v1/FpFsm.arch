@@ -1,0 +1,26 @@
+// Float regs/ports inside an `fsm` construct. Pre-fix hazard: the fsm
+// SIM emit context had no float map, so `total <= total + x` on FP32
+// regs emitted integer adds (SV was correct — backend divergence).
+fsm FpFsm
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port x: in FP32;
+  port run: in Bool;
+  port acc: out FP32;
+  reg total: FP32 reset rst => 0.0;
+  state [Idle, Accum]
+  default state Idle;
+  default seq on clk rising;
+  default
+    comb acc = total; end comb
+  end default
+  state Idle
+    -> Accum when run;
+  end state Idle
+  state Accum
+    seq
+      total <= total + x;
+    end seq
+    -> Idle when !run;
+  end state Accum
+end fsm FpFsm

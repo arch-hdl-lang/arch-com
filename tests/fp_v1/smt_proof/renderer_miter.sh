@@ -17,7 +17,8 @@
 # cancels under bit-blasting).
 #
 # Requires: yosys, z3, python3, a release `arch` binary (built fresh by
-# default; set ARCH_BIN to override). Not run in CI (yosys/z3 not in the
+# default; set ARCH_BIN to override). Set DUMP_FP_BIN as well when the
+# override does not have its sibling `examples/dump_fp`. Not run in CI (yosys/z3 not in the
 # sandbox); run manually:
 #
 #   tests/fp_v1/smt_proof/renderer_miter.sh [outdir]
@@ -39,7 +40,8 @@ if [[ -z "${ARCH_BIN:-}" ]]; then
   ( cd "$repo" && cargo build --release --bin arch --example dump_fp >&2 )
   ARCH_BIN="$repo/target/release/arch"
 fi
-"$repo/target/release/examples/dump_fp" smt > "$outdir/arch_defs.smt2"
+DUMP_FP_BIN="${DUMP_FP_BIN:-$(dirname "$ARCH_BIN")/examples/dump_fp}"
+"$DUMP_FP_BIN" smt > "$outdir/arch_defs.smt2"
 
 # MODULE | arch define-fun | port list (space-sep in-ports) | in type | out type
 ops=(
@@ -67,6 +69,40 @@ ops=(
   "Bf16ToF32|arch_bf16_to_f32|a|BF16|FP32|y = a.to_fp32()"
   "F32ToS64|arch_f32_to_sint|a|FP32|SInt<64>|y = a.to_sint<64>()|(arch_f32_to_sint ARGa (_ bv64 32))"
   "F32ToU64|arch_f32_to_uint|a|FP32|UInt<64>|y = a.to_uint<64>()|(arch_f32_to_uint ARGa (_ bv64 32))"
+  "E4m3Add|arch_e4m3_add|a b|FP8E4M3|FP8E4M3|y = a + b"
+  "E4m3Sub|arch_e4m3_sub|a b|FP8E4M3|FP8E4M3|y = a - b"
+  "E4m3Mul|arch_e4m3_mul|a b|FP8E4M3|FP8E4M3|y = a * b"
+  "E4m3Fma|arch_fma_e4m3|a b c|FP8E4M3|FP8E4M3|y = fma(a, b, c)"
+  "E4m3Eq|arch_e4m3_eq|a b|FP8E4M3|Bool|y = a == b"
+  "E4m3Ne|arch_e4m3_ne|a b|FP8E4M3|Bool|y = a != b"
+  "E4m3Lt|arch_e4m3_lt|a b|FP8E4M3|Bool|y = a < b"
+  "E4m3Le|arch_e4m3_le|a b|FP8E4M3|Bool|y = a <= b"
+  "E4m3Gt|arch_e4m3_gt|a b|FP8E4M3|Bool|y = a > b"
+  "E4m3Ge|arch_e4m3_ge|a b|FP8E4M3|Bool|y = a >= b"
+  "E4m3ToF32|arch_e4m3_to_f32|a|FP8E4M3|FP32|y = a.to_fp32()"
+  "F32ToE4m3|arch_f32_to_e4m3|a|FP32|FP8E4M3|y = a.to_fp8e4m3()"
+  "E5m2Add|arch_e5m2_add|a b|FP8E5M2|FP8E5M2|y = a + b"
+  "E5m2Sub|arch_e5m2_sub|a b|FP8E5M2|FP8E5M2|y = a - b"
+  "E5m2Mul|arch_e5m2_mul|a b|FP8E5M2|FP8E5M2|y = a * b"
+  "E5m2Fma|arch_fma_e5m2|a b c|FP8E5M2|FP8E5M2|y = fma(a, b, c)"
+  "E5m2Eq|arch_e5m2_eq|a b|FP8E5M2|Bool|y = a == b"
+  "E5m2Ne|arch_e5m2_ne|a b|FP8E5M2|Bool|y = a != b"
+  "E5m2Lt|arch_e5m2_lt|a b|FP8E5M2|Bool|y = a < b"
+  "E5m2Le|arch_e5m2_le|a b|FP8E5M2|Bool|y = a <= b"
+  "E5m2Gt|arch_e5m2_gt|a b|FP8E5M2|Bool|y = a > b"
+  "E5m2Ge|arch_e5m2_ge|a b|FP8E5M2|Bool|y = a >= b"
+  "E5m2ToF32|arch_e5m2_to_f32|a|FP8E5M2|FP32|y = a.to_fp32()"
+  "F32ToE5m2|arch_f32_to_e5m2|a|FP32|FP8E5M2|y = a.to_fp8e5m2()"
+  # OCP MX sub-8-bit storage formats: conversions only (no scalar arithmetic
+  # exists on them, so there is no add/mul/cmp row to write).
+  "E2m1ToF32|arch_e2m1_to_f32|a|FP4E2M1|FP32|y = a.to_fp32()"
+  "F32ToE2m1|arch_f32_to_e2m1|a|FP32|FP4E2M1|y = a.to_fp4e2m1()"
+  "E2m3ToF32|arch_e2m3_to_f32|a|FP6E2M3|FP32|y = a.to_fp32()"
+  "F32ToE2m3|arch_f32_to_e2m3|a|FP32|FP6E2M3|y = a.to_fp6e2m3()"
+  "E3m2ToF32|arch_e3m2_to_f32|a|FP6E3M2|FP32|y = a.to_fp32()"
+  "F32ToE3m2|arch_f32_to_e3m2|a|FP32|FP6E3M2|y = a.to_fp6e3m2()"
+  "E8m0ToF32|arch_e8m0_to_f32|a|E8M0|FP32|y = a.to_fp32()"
+  "F32ToE8m0|arch_f32_to_e8m0|a|FP32|E8M0|y = a.to_e8m0()"
 )
 
 echo "# module            verdict   z3 time (s)"
@@ -131,15 +167,17 @@ PYSPEC
     # near-structural; diff ranges over [0,508] (eab in [-298,210], ec in
     # [-149,105]), plus a catchall (diff > 508, unsat by range). All
     # sub-miters unsat => the full miter is unsat.
-    conv=""
+    conv=""; convw=16
     [[ "$mod" == Bf16Fma ]] && conv="arch_bf16_to_f32"
+    [[ "$mod" == E4m3Fma ]] && { conv="arch_e4m3_to_f32"; convw=8; }
+    [[ "$mod" == E5m2Fma ]] && { conv="arch_e5m2_to_f32"; convw=8; }
     splitdir="$outdir/$mod.split"
     mkdir -p "$splitdir"
     {
       sed '$d' "$outdir/$mod.miter.smt2"   # strip (check-sat)
       if [[ -n "$conv" ]]; then
-        echo "(define-fun spl_in ((x (_ BitVec 16))) (_ BitVec 32) ($conv x))"
-        w=16
+        echo "(define-fun spl_in ((x (_ BitVec $convw))) (_ BitVec 32) ($conv x))"
+        w=$convw
       else
         echo "(define-fun spl_in ((x (_ BitVec 32))) (_ BitVec 32) x)"
         w=32

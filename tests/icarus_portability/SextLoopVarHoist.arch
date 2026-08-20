@@ -1,0 +1,23 @@
+// arch#827 P4.1 loop-var regression fixture: a `.sext<N>()` receiver that
+// references a live runtime `for`-loop iterator (`din[i]`, `i` the loop
+// var). `is_atomic_sext_receiver` still says "hoist" (a non-constant Index
+// base), and `push_hoist_temp_in_loop` — the same arch#861 split already
+// used by the `ExprKind::Index` codegen arm and `hoist_slice_base` — puts
+// the declaration at the top of the loop body and the assignment in place
+// as a blocking assign, since a module-scope temp can't see the
+// loop-local `i`. This is *not* a bail-to-bare-emission fallback (the
+// receiver is never emitted un-hoisted); it is a different, still-fully-
+// portable placement of the same hoist.
+//
+// See tests/integration_test.rs's
+// `test_sext_loop_var_hoist_behavioral_equivalence_verilator_and_iverilog`.
+module SextLoopVarHoist
+  port din: in Vec<SInt<8>, 4>;
+  port dout: out Vec<SInt<12>, 4>;
+
+  comb
+    for i in 0..3
+      dout[i] = din[i].sext<12>();
+    end for
+  end comb
+end module SextLoopVarHoist

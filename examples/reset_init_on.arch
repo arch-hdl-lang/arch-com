@@ -17,25 +17,25 @@ module SyncHighInitOn
   port out2:  out UInt<8>;
   port out3:  out UInt<8>;
 
-  reg table: Vec<UInt<8>, 4> reset none;
+  reg entries: Vec<UInt<8>, 4> reset none;
 
   seq on clk rising
     init on rst.asserted
       for i in 0..3
-        table[i] <= i.trunc<8>();
+        entries[i] <= i.trunc<8>();
       end for
     end init
 
     if en
-      table[0] <= (table[0] + 1).trunc<8>();
+      entries[0] <= (entries[0] + 1).trunc<8>();
     end if
   end seq
 
   comb
-    out0 = table[0];
-    out1 = table[1];
-    out2 = table[2];
-    out3 = table[3];
+    out0 = entries[0];
+    out1 = entries[1];
+    out2 = entries[2];
+    out3 = entries[3];
   end comb
 
 end module SyncHighInitOn
@@ -50,25 +50,25 @@ module AsyncLowInitOn
   port out2:  out UInt<8>;
   port out3:  out UInt<8>;
 
-  reg table: Vec<UInt<8>, 4> reset none;
+  reg entries: Vec<UInt<8>, 4> reset none;
 
   seq on clk rising
     init on rst_n.asserted
       for i in 0..3
-        table[i] <= i.trunc<8>();
+        entries[i] <= i.trunc<8>();
       end for
     end init
 
     if en
-      table[0] <= (table[0] + 1).trunc<8>();
+      entries[0] <= (entries[0] + 1).trunc<8>();
     end if
   end seq
 
   comb
-    out0 = table[0];
-    out1 = table[1];
-    out2 = table[2];
-    out3 = table[3];
+    out0 = entries[0];
+    out1 = entries[1];
+    out2 = entries[2];
+    out3 = entries[3];
   end comb
 
 end module AsyncLowInitOn

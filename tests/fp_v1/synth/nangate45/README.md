@@ -70,3 +70,52 @@ Register placement for the staged FMA is the compiler's cut-point schedule
 (`src/pipelined_ops.rs`, `FMA_F32_S6_SCHEDULE` and the sweep variants): stages
 are cut at fixed linearization temp indices; internal layers are reset-free
 with a 1-bit validity chain at the binding site (see the module docs).
+
+## FP8 operators — combinational fmax (2026-08-01)
+
+Same flow, same tool versions as the published numbers (Yosys 0.67+post
+`b8e7da6f`, OpenSTA 3.1.0, ABC bundled; Nangate45 typical, hash above).
+Anchors re-run in the same session for a same-machine baseline.
+
+| operator | fmax (MHz) | delay (ns) | area (µm²) |
+|---|---:|---:|---:|
+| `e4m3_to_f32` (widen) | 7221 | 0.14 | 73 |
+| `e5m2_to_f32` (widen) | 5893 | 0.17 | 78 |
+| `f32_to_e4m3` (narrow) | 848 | 1.18 | 638 |
+| `f32_to_e5m2` (narrow) | 856 | 1.17 | 493 |
+| `e5m2_mul` | 1046 | 0.96 | 592 |
+| `e4m3_mul` | 846 | 1.18 | 619 |
+| `e4m3_sub` | 663 | 1.51 | 754 |
+| `e4m3_add` | 639 | 1.56 | 728 |
+| `e5m2_add` | 572 | 1.75 | 809 |
+| `e5m2_sub` | 571 | 1.75 | 828 |
+| `e4m3_fma` | 339 | 2.95 | 2,332 |
+| `e5m2_fma` | 294 | 3.40 | 2,305 |
+| *anchor* `f32_add` | 329 | 3.04 | 2,271 |
+| *anchor* `bf16_fma` | 186 | 5.37 | 5,207 |
+| *anchor* `f32_fma` | 199 | 5.04 | 12,361 |
+
+Reading it:
+
+- **Every fp8 binary op clears the fastest f32 op** (`e5m2_mul` at 1 GHz+,
+  adds at 570–660 MHz vs `f32_add` 329 MHz). The RTL routes
+  widen→f32-op→narrow, but synthesis constant-propagates the widen: the fp8
+  operands occupy only the top 3–4 mantissa bits of the f32 datapath, so the
+  24×24 multiplier collapses to a ~5×5 and the aligner shrinks with it —
+  the "f32 datapath inside" costs nothing after optimization.
+- **fp8 fma is ~1.6× faster and 2.2–5.3× smaller than the bf16/f32 fmas**
+  (294–339 MHz, ~2.3 kµm² vs 186–199 MHz, 5.2–12.4 kµm²).
+- **E4M3 arith beats E5M2** (add 639 vs 572 MHz, fma 339 vs 294): E5M2's
+  wider exponent range means a wider alignment shifter — the extra exponent
+  bit costs more than the extra mantissa bit saves.
+- **Widens are wiring + a mux** (sub-0.2 ns): fp8→f32 is exact field
+  expansion, no rounding.
+
+ABC fragility notes (same class as the `dch -f` abort documented above for
+`Bf16Add`/`Bf16Sub`):
+
+- `E5m2Mul`: `dch -f` aborts; substitute `dc2` (as for the bf16 pair).
+- `E5m2Fma`: both `dch -f` and `dc2` abort; drop the restructuring line
+  entirely (script = `strash; map; buffer -N 8; upsize; dnsize`). The
+  mapping and repair stages, which carry the timing result, are unchanged;
+  the missing restructuring can only make its 294 MHz slightly pessimistic.

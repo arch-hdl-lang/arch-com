@@ -1,0 +1,39 @@
+// Numeric error-bound properties (assert<bound_err>) — the ALL-PROVED set.
+// assume clauses give input ranges (positive → no cancellation, so
+// relative/ULP goals hold); the error engine (gappa) proves each bound and
+// reports the derived enclosure. u_small locks that `assume` also
+// constrains the QF_BV solver path (8-bit input, provable only under
+// u <= 10). BF16 p_w exercises the faithful VR(f32) double-rounding model.
+module BoundOk
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port a0: in FP32;
+  port a1: in FP32;
+  port b0: in FP32;
+  port b1: in FP32;
+  port h0: in BF16;
+  port h1: in BF16;
+  port y: out FP32;
+  port p: out BF16;
+  port u: in UInt<8>;
+  port small: out Bool;
+  wire y_w: FP32;
+  wire p_w: BF16;
+  comb y_w = fma(a0, b0, a1 * b1); end comb
+  comb p_w = h0 * h1; end comb
+  comb y = y_w; end comb
+  comb p = p_w; end comb
+  comb small = u < 16; end comb
+
+  // positive ranges — no cancellation, so relative/ULP bounds hold
+  assume a_rng: (a0 >= 0.5) and (a0 <= 1.0) and (a1 >= 0.5) and (a1 <= 1.0);
+  assume b_rng: (b0 >= 0.5) and (b0 <= 1.0) and (b1 >= 0.5) and (b1 <= 1.0);
+  assume h_rng: (h0 >= 1.0) and (h0 <= 2.0) and (h1 >= 1.0) and (h1 <= 2.0);
+  assume u_rng: u <= 10;
+
+  assert<bound_err> y_ulp: abs(y_w - exact(y_w)) <= 8.0 * ulp(exact(y_w));
+  assert<bound_err> y_rel: abs(y_w - exact(y_w)) <= 0.000001 * abs(exact(y_w));
+  assert<bound_err> p_abs: abs(p_w - exact(p_w)) <= 0.02;
+  // the BV path sees assumes too: provable ONLY because u <= 10
+  assert u_small: small;
+end module BoundOk

@@ -30,6 +30,11 @@ pub struct FormalArgs {
     pub solver: String,
     pub emit_smt: Option<PathBuf>,
     pub timeout: u32,
+    /// Float special-value profile — selects the canonical-NaN constants in
+    /// the inlined float helper define-funs (same flag as build/sim).
+    pub fp_compat: crate::FpCompat,
+    /// Engine for `assert<bound_err>` properties. Currently only "gappa".
+    pub error_engine: String,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +44,22 @@ pub enum PropertyStatus {
     Hit(u32),             // cycle
     NotReached(u32),      // bound
     Inconclusive(String), // reason
+    /// `assert<bound_err>` proved by the error engine; the string carries
+    /// the engine's derived enclosure for the error term (best bound).
+    ProvedEnclosure(String),
+    /// A proof that holds only because its premise is never exercised — a
+    /// soundness trap, not a pass. Two causes, distinguished by the string:
+    /// jointly-unsatisfiable `assume` clauses (empty state space), or an
+    /// implication whose antecedent is unreachable (trigger never fires).
+    Vacuous(String),
+    /// The sat-side dual of `Vacuous`: the solver claimed a violation (or
+    /// cover hit), but independent replay of the returned model — the same
+    /// property expression evaluated concretely, floats via the fp_ir
+    /// interpreter over the identical operator definitions the query
+    /// embedded — shows the property is NOT violated at any cycle. That
+    /// contradiction means the BMC query generation itself is unsound: an
+    /// internal compiler bug, not a design error.
+    EncodingUnsound(String),
 }
 
 #[derive(Debug, Clone)]
@@ -55,16 +76,27 @@ pub struct FormalReport {
 
 impl FormalReport {
     pub fn exit_code(&self) -> i32 {
+        let mut any_unsound = false;
         let mut any_bad = false;
         let mut any_incon = false;
         for r in &self.results {
             match &r.status {
-                PropertyStatus::Proved(_) | PropertyStatus::Hit(_) => {}
-                PropertyStatus::Refuted(_) | PropertyStatus::NotReached(_) => any_bad = true,
+                PropertyStatus::Proved(_)
+                | PropertyStatus::Hit(_)
+                | PropertyStatus::ProvedEnclosure(_) => {}
+                PropertyStatus::Refuted(_)
+                | PropertyStatus::NotReached(_)
+                | PropertyStatus::Vacuous(_) => any_bad = true,
                 PropertyStatus::Inconclusive(_) => any_incon = true,
+                // Highest precedence and a dedicated code: a compiler bug is
+                // categorically different from a design bug (1), so CI can
+                // hard-fail on 3 while design-verification flows tolerate 1.
+                PropertyStatus::EncodingUnsound(_) => any_unsound = true,
             }
         }
-        if any_bad {
+        if any_unsound {
+            3
+        } else if any_bad {
             1
         } else if any_incon {
             2
@@ -102,6 +134,7 @@ pub fn run(
 
     // 3. Build encoder state
     let mut ctx = FormalCtx::new(encode_module, symbols);
+    ctx.fp_compat = args.fp_compat;
     ctx.carried_credit_sites = carried_credit_sites;
     ctx.preprocess()?;
 
@@ -118,10 +151,43 @@ pub fn run(
         })?;
     }
 
+    // 4b. Vacuity guard. `assume` clauses are conjoined into `base`, so if
+    // `base` is itself UNSAT the constrained state space is empty and EVERY
+    // assert/cover would return `unsat` on its negated-property miter —
+    // reporting a vacuous PROVED. Detect it with one satisfiability check on
+    // the constrained transition system (no property) and, if unsatisfiable,
+    // mark all solver-path properties Vacuous instead of trusting the proof.
+    // Only meaningful when there are assumes (an unconstrained system is
+    // trivially satisfiable). bound_err properties encode their own
+    // hypotheses separately and are checked there.
+    let vacuous = if !ctx.assumes.is_empty() {
+        let probe = format!("{base}(check-sat)\n");
+        let sr = invoke_solver(&args.solver, &probe, args.timeout)
+            .map_err(|e| CompileError::general(&format!("solver error: {e}"), module.span))?;
+        sr.stdout.split_ascii_whitespace().next() == Some("unsat")
+    } else {
+        false
+    };
+
     // 5. For each assert/cover, run one (push)/(check-sat)/(pop) scope
     let mut results = Vec::new();
     for prop in ctx.properties.clone().iter() {
-        let res = ctx.run_property(prop, &base, args)?;
+        if vacuous && prop.engine != crate::ast::AssertEngine::BoundErr {
+            results.push(PropertyResult {
+                name: prop.name.clone(),
+                kind: prop.kind.clone(),
+                status: PropertyStatus::Vacuous(
+                    "`assume` clauses are jointly unsatisfiable — the constrained state space is empty, so every property proves vacuously".to_string(),
+                ),
+                counterexample: None,
+            });
+            continue;
+        }
+        let res = if prop.engine == crate::ast::AssertEngine::BoundErr {
+            ctx.run_bound_err(prop, args)?
+        } else {
+            ctx.run_property(prop, &base, args)?
+        };
         results.push(res);
     }
 
@@ -297,6 +363,62 @@ fn flatten_for_formal(
                         _ => {}
                     }
                 }
+                // `port reg o: out T` (and its `out pipe_reg<T,1>` spelling)
+                // is a PortDecl, not a RegDecl body item, so the body walk
+                // below never sees it and no register is emitted for it.
+                // Left alone, the sub's `o <= ...` would be port-mapped
+                // straight onto the parent signal, land in `reg_writes`
+                // under a name that is not in `self.regs`, and be silently
+                // DROPPED by emit_base — leaving the parent signal declared
+                // but unconstrained, i.e. a free variable that admits
+                // spurious counterexamples (issue #821).
+                //
+                // Model it the way the RTL actually behaves: a register
+                // local to the instance, driving the parent signal
+                // combinationally. Treating the port name as a local makes
+                // every reference inside the sub (reads and the seq write)
+                // resolve to `<inst>_<port>`.
+                let mut carried_port_regs: Vec<(&PortDecl, String)> = Vec::new();
+                for p in &sub.ports {
+                    let Some(ri) = &p.reg_info else { continue };
+                    if ri.latency != 1 {
+                        return Err(CompileError::general(
+                            &format!(
+                                "hierarchical formal: inst `{}` port `{}` declares `pipe_reg<_, {}>`; \
+                                 `arch formal` v1 models only single-cycle port registers (latency 1). \
+                                 Refactor the sub-module to expose an explicit `reg` chain.",
+                                inst.name.name, p.name.name, ri.latency,
+                            ),
+                            inst.span,
+                        ));
+                    }
+                    let Some(parent_expr) = port_map.get(&p.name.name) else {
+                        continue;
+                    };
+                    let ExprKind::Ident(parent_name) = &parent_expr.kind else {
+                        return Err(CompileError::general(
+                            &format!(
+                                "hierarchical formal: inst `{}.{}` is a registered output port and \
+                                 must connect to a simple identifier in v1 (got a complex \
+                                 expression); refactor the parent to a named wire",
+                                inst.name.name, p.name.name,
+                            ),
+                            inst.span,
+                        ));
+                    };
+                    locals.insert(p.name.name.clone());
+                    carried_port_regs.push((p, parent_name.clone()));
+                }
+                // `subst_expr_for_formal` consults `port_map` BEFORE `locals`,
+                // so a carried port reg must be dropped from the port map or
+                // every reference to it — including the `seq` write that is
+                // the whole point — would still be rewritten to the parent
+                // signal and dropped. Removing it lets the `locals` path
+                // rewrite `o` to `<inst>_o`; the parent connection is driven
+                // instead by the `let` emitted alongside the RegDecl below.
+                for (p, _) in &carried_port_regs {
+                    port_map.remove(&p.name.name);
+                }
 
                 let prefix = format!("{}_", inst.name.name);
                 let new_body_start = new_body.len();
@@ -406,6 +528,43 @@ fn flatten_for_formal(
                         }
                         _ => unreachable!("validate_sub_for_formal rejects other items"),
                     }
+                }
+
+                // Emit the carried `port reg`s collected above: one prefixed
+                // RegDecl each, plus a let binding so the parent-side signal
+                // observes the registered value. `reg <inst>_<port>` +
+                // `let <parent> = <inst>_<port>` is exactly what `port reg`
+                // means in the RTL (always_ff drives it; the connection
+                // observes it). See the #821 note above.
+                for (p, parent_name) in carried_port_regs {
+                    let ri = p.reg_info.as_ref().expect("collected with reg_info");
+                    let new_init = ri
+                        .init
+                        .as_ref()
+                        .map(|e| subst_expr_for_formal(e, &port_map, &locals, &prefix));
+                    let new_reset =
+                        subst_reg_reset_for_formal(&ri.reset, &port_map, &locals, &prefix);
+                    let reg_name = format!("{prefix}{}", p.name.name);
+                    new_body.push(ModuleBodyItem::RegDecl(RegDecl {
+                        name: Ident::new(reg_name.clone(), p.name.span),
+                        ty: p.ty.clone(),
+                        init: new_init,
+                        reset: new_reset,
+                        guard: ri.guard.clone(),
+                        multicycle: None,
+                        span: p.span,
+                    }));
+                    new_body.push(ModuleBodyItem::LetBinding(LetBinding {
+                        name: Ident::new(parent_name, p.name.span),
+                        ty: Some(p.ty.clone()),
+                        value: Expr {
+                            kind: ExprKind::Ident(reg_name),
+                            span: p.span,
+                            parenthesized: false,
+                        },
+                        span: p.span,
+                        destructure_fields: Vec::new(),
+                    }));
                 }
 
                 // Rewrite SynthIdent strings in items appended for this
@@ -658,8 +817,11 @@ fn validate_sub_for_formal(sub: &ModuleDecl) -> Result<(), CompileError> {
         // Bus ports are accepted when carrying credit_channels (PR-hf4
         // item 5). Other bus contents (handshake / tlm_method / plain
         // signals) still need their own modelling and aren't supported
-        // in this slice — `flatten_for_formal` checks the bus's content
-        // when it processes the inst.
+        // in this slice. NOTE: nothing validates the bus's non-credit
+        // content up front — `flatten_for_formal` only walks
+        // `bus_info.credit_channels`. Unsupported usage is caught at the
+        // point of use instead: reads in `encode_raw`'s FieldAccess arm,
+        // writes in `check_assign_targets_registered()`.
         if p.bus_info.is_some() {
             continue;
         }
@@ -991,6 +1153,51 @@ struct SignalInfo {
     signed: bool,
     /// "input", "reg", "wire", "output" — for declaration ordering.
     kind: SignalKind,
+    /// Float helper tag ("f32"/"bf16"/"e4m3"/"e5m2") when the signal's HDL
+    /// type is a float format. Drives operator dispatch to the inlined
+    /// `arch_{tag}_*` define-funs.
+    float: Option<&'static str>,
+    /// True for the E8M0 block-scale type, which is NOT a float format (no
+    /// sign, no mantissa, no zero) and therefore has `float: None` — but
+    /// does have a NaN code, so `is_nan` needs to find it somehow.
+    is_e8m0: bool,
+}
+
+/// Float helper tag of a scalar TypeExpr, if any.
+/// Float dispatch tag of a surface type, or `None` if it is not a float.
+///
+/// Reads the canonical table, which closes a silent-failure chain: this
+/// used to be a hand-written match ending in `_ => None`, so a float type
+/// missing from it resolved to `None`, which left `SignalInfo::float` unset,
+/// which made `expr_float_tag` return `None`, which the call sites turned
+/// into `f32` via `unwrap_or("f32")`. A new format would then have been
+/// encoded as FP32 — right through to the solver — with nothing anywhere
+/// reporting a problem. Sourcing the tag from the table means a format that
+/// exists at all resolves correctly.
+fn float_tag_of(ty: &TypeExpr) -> Option<&'static str> {
+    crate::fp_format::by_type_expr(ty).map(|f| f.tag)
+}
+
+/// Carrier width of a float dispatch tag.
+///
+/// Backed by the canonical format table rather than a hand-written match:
+/// the old version ended in `_ => 8`, which is correct only while every
+/// format narrower than `bf16` happens to be 8 bits. A 4- or 6-bit format
+/// would have silently taken 8 here and mis-coerced every SMT term built
+/// from it.
+///
+/// The `unreachable!` cannot fire for a tag produced by `float_tag_of` /
+/// `expr_float_tag`, both of which draw from the same table; it exists so a
+/// future format that is added to one and not the other fails loudly instead
+/// of computing on a wrong width.
+fn float_tag_width(tag: &str) -> u32 {
+    match crate::fp_format::width_of_tag(tag) {
+        Some(w) => w,
+        None => unreachable!(
+            "float dispatch tag `{tag}` has no row in fp_format::FORMATS — \
+             add the format to the table"
+        ),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1013,6 +1220,7 @@ struct ResetInfo {
 struct PropertyDecl {
     name: String,
     kind: AssertKind,
+    engine: crate::ast::AssertEngine,
     expr: Expr,
     span: Span,
 }
@@ -1062,6 +1270,15 @@ struct FormalCtx<'a> {
     carried_credit_sites: Vec<CarriedCreditSite>,
     /// Synthesized derived signals whose formal value is `source != 0`.
     derived_nonzero: HashMap<String, String>,
+    /// `assume Name: expr;` input constraints — conjoined as hypotheses
+    /// at every timestep of the QF_BV unroll, and read as interval
+    /// hypotheses by the error-bound engine.
+    assumes: Vec<Expr>,
+    /// Any float-typed signal registered → prepend the float helper
+    /// define-funs to every emitted query.
+    uses_float: bool,
+    /// Profile for the inlined helpers' canonical-NaN constants.
+    fp_compat: crate::FpCompat,
 }
 
 #[derive(Debug, Clone)]
@@ -1069,6 +1286,10 @@ struct CombAssignFlat {
     target: String,   // flat name (e.g. "y" or "out[2]"); v1 supports ident targets only
     guard: Vec<Expr>, // stack of conditions (ANDed)
     value: Expr,
+    /// Span of the originating assignment statement. Used by
+    /// `check_assign_targets_registered` to point at an unsupported write,
+    /// and by `emit_base`'s internal-error backstop.
+    span: Span,
 }
 
 /// One credit_channel instance, attached to a specific bus port on the
@@ -1120,6 +1341,9 @@ impl<'a> FormalCtx<'a> {
             credit_sites: Vec::new(),
             carried_credit_sites: Vec::new(),
             derived_nonzero: HashMap::new(),
+            assumes: Vec::new(),
+            uses_float: false,
+            fp_compat: crate::FpCompat::Riscv,
         }
     }
 
@@ -1281,6 +1505,8 @@ impl<'a> FormalCtx<'a> {
                     width: sig.width,
                     signed: sig.signed,
                     kind: kind.clone(),
+                    float: None,
+                    is_e8m0: false,
                 },
             );
             match kind {
@@ -1294,10 +1520,12 @@ impl<'a> FormalCtx<'a> {
             self.reg_reset.insert(name, value);
         }
         for eq in model.comb_equations {
+            let span = eq.value.span;
             self.comb_assigns.push(CombAssignFlat {
                 target: eq.target,
                 guard: Vec::new(),
                 value: eq.value,
+                span,
             });
         }
         for eq in model.next_equations {
@@ -1369,10 +1597,14 @@ impl<'a> FormalCtx<'a> {
         // Ports (declare inputs/outputs + widths)
         for port in &self.module.ports {
             // Bus ports: the bus's individual signals aren't in the AST as
-            // scalar ports; we register them per-credit_channel below in
+            // scalar ports; we register them per-credit_channel in
             // `register_credit_channel_state()`. Skip generic scalar-only
-            // handling. (Non-credit_channel bus usage is still unsupported
-            // in formal v1 — the encoder will fail later on any reference.)
+            // handling. Non-credit_channel bus usage stays unsupported in
+            // formal v1, and both directions are refused explicitly: reads
+            // in `encode_raw`'s FieldAccess arm, writes in
+            // `check_assign_targets_registered()` at the end of preprocess.
+            // (Before that pass existed, a write panicked in `emit_base` on
+            // `self.sigs[tgt]` — issue #818.)
             if port.bus_info.is_some() {
                 continue;
             }
@@ -1389,8 +1621,15 @@ impl<'a> FormalCtx<'a> {
                     width: w,
                     signed,
                     kind: kind.clone(),
+                    float: float_tag_of(&port.ty),
+                    is_e8m0: matches!(port.ty, TypeExpr::E8M0),
                 },
             );
+            if float_tag_of(&port.ty).is_some() || matches!(port.ty, TypeExpr::E8M0) {
+                // E8M0 is not a float, but its conversions live in the same
+                // inlined helper preamble, so it must request it too.
+                self.uses_float = true;
+            }
             match kind {
                 SignalKind::Input => self.inputs.push(port.name.name.clone()),
                 SignalKind::Output => self.outputs.push(port.name.name.clone()),
@@ -1423,8 +1662,13 @@ impl<'a> FormalCtx<'a> {
                             width: w,
                             signed,
                             kind: SignalKind::Reg,
+                            float: float_tag_of(&r.ty),
+                            is_e8m0: matches!(r.ty, TypeExpr::E8M0),
                         },
                     );
+                    if float_tag_of(&r.ty).is_some() || matches!(r.ty, TypeExpr::E8M0) {
+                        self.uses_float = true;
+                    }
                     self.regs.push(r.name.name.clone());
                     match &r.reset {
                         RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) => {
@@ -1446,8 +1690,13 @@ impl<'a> FormalCtx<'a> {
                             width,
                             signed,
                             kind: SignalKind::Wire,
+                            float: float_tag_of(&w.ty),
+                            is_e8m0: matches!(w.ty, TypeExpr::E8M0),
                         },
                     );
+                    if float_tag_of(&w.ty).is_some() || matches!(w.ty, TypeExpr::E8M0) {
+                        self.uses_float = true;
+                    }
                     self.wires.push(w.name.name.clone());
                 }
                 ModuleBodyItem::LetBinding(lb) => {
@@ -1455,6 +1704,10 @@ impl<'a> FormalCtx<'a> {
                         .insert(lb.name.name.clone(), lb.value.clone());
                 }
                 ModuleBodyItem::Assert(a) => {
+                    if a.kind == AssertKind::Assume {
+                        self.assumes.push(a.expr.clone());
+                        continue;
+                    }
                     let name = a
                         .name
                         .as_ref()
@@ -1463,6 +1716,7 @@ impl<'a> FormalCtx<'a> {
                     self.properties.push(PropertyDecl {
                         name,
                         kind: a.kind.clone(),
+                        engine: a.engine,
                         expr: a.expr.clone(),
                         span: a.span,
                     });
@@ -1525,6 +1779,14 @@ impl<'a> FormalCtx<'a> {
             }
         }
 
+        // Reject assignment targets that no pass registered as a modelled
+        // signal (issue #818 — today that means plain, non-credit_channel
+        // bus fields). Must run after the body loop, since a `comb` block
+        // may textually precede the `wire` decl it drives; and before
+        // `comb_topo_order`, whose HashSet iteration would make the choice
+        // of reported offender nondeterministic.
+        self.check_assign_targets_registered()?;
+
         // Build comb-block topological order over wires + output ports
         self.comb_order = self.comb_topo_order()?;
 
@@ -1532,6 +1794,127 @@ impl<'a> FormalCtx<'a> {
         self.check_let_cycles()?;
 
         Ok(())
+    }
+
+    /// Reject `comb`/`seq` assignment targets that no earlier pass registered
+    /// as a modelled signal.
+    ///
+    /// Runs at the END of `preprocess`, so every `sigs` insert has already
+    /// happened: credit_channel lifted state, ports, and `reg`/`wire` decls.
+    /// Checking at push time in `walk_comb_stmt` would be source-order
+    /// fragile — module body items are walked in ONE pass, and a `comb`
+    /// block may legally precede the `wire` decl it drives.
+    ///
+    /// Why an error rather than a silent skip: an unregistered target is
+    /// never declared (`emit_base`'s declaration loops iterate
+    /// `inputs`/`outputs`/`regs`/`wires`) and can never be read either
+    /// (`encode_raw`'s FieldAccess arm rejects reads of unregistered flat
+    /// names), so dropping the equation would not corrupt the query — it
+    /// would silently shrink the *design under proof* and still print
+    /// PROVED. `arch formal` v1's contract is to error clearly on
+    /// unsupported constructs, and the read path already does.
+    ///
+    /// `let` bindings are deliberately exempt: `encode_ident` inlines a
+    /// let's value at every reference site, so an undeclared let needs no
+    /// declaration-site equation. `flatten_for_formal` relies on this —
+    /// sub-module locals become `<inst>_<name>` let bindings that are not
+    /// in `sigs` — which is why `emit_base` skips them behind
+    /// `self.sigs.get(tgt)`.
+    fn check_assign_targets_registered(&self) -> Result<(), CompileError> {
+        // (target, span, block-kind) for every unmodelled write.
+        let mut offenders: Vec<(&str, Span, &'static str)> = Vec::new();
+
+        for ca in &self.comb_assigns {
+            if !self.sigs.contains_key(&ca.target) && !self.let_bindings.contains_key(&ca.target) {
+                offenders.push((ca.target.as_str(), ca.span, "comb"));
+            }
+        }
+        // A `seq` write must land on something `emit_base` will actually
+        // emit a transition for, and that loop iterates `self.regs` — NOT
+        // `self.sigs`. A target that is in `sigs` but is not a register is
+        // therefore silently DROPPED, and because it *is* declared it
+        // becomes an unconstrained free variable, admitting spurious
+        // counterexamples. That is the #821 failure mode, and it is strictly
+        // worse than a refusal, so check membership in `regs` here rather
+        // than settling for `sigs`.
+        for (target, writes) in &self.reg_writes {
+            if self.regs.iter().any(|r| r == target) {
+                continue;
+            }
+            let span = writes
+                .first()
+                .map(|(_, v)| v.span)
+                .unwrap_or(self.module.span);
+            let kind = if self.sigs.contains_key(target) || self.let_bindings.contains_key(target) {
+                "seq-nonreg"
+            } else {
+                "seq"
+            };
+            offenders.push((target.as_str(), span, kind));
+        }
+
+        // `reg_writes` is a HashMap, so sort for a deterministic choice of
+        // reported offender: earliest source position wins, name breaks ties.
+        offenders.sort_by_key(|(name, sp, _)| (sp.start, sp.end, *name));
+        match offenders.first() {
+            None => Ok(()),
+            Some(&(target, span, block)) => {
+                Err(self.unregistered_target_error(target, span, block))
+            }
+        }
+    }
+
+    /// Diagnostic for an assignment target that is not a modelled signal.
+    /// Writes to a bus port get a scope-specific message naming the port and
+    /// field; anything else gets a generic "not a declared signal".
+    fn unregistered_target_error(
+        &self,
+        target: &str,
+        span: Span,
+        block: &'static str,
+    ) -> CompileError {
+        for p in &self.module.ports {
+            if p.bus_info.is_none() {
+                continue;
+            }
+            let port = &p.name.name;
+            let Some(field) = target.strip_prefix(&format!("{port}_")) else {
+                continue;
+            };
+            return CompileError::general(
+                &format!(
+                    "assignment to bus signal `{port}.{field}` is not supported by \
+                     `arch formal` v1 — only `credit_channel` signals on a bus port are \
+                     modelled (`<port>.<channel>.send(..)` / `.no_send()` / `.pop()` / \
+                     `.no_pop()`); plain bus signals, handshake groups and `tlm_method` \
+                     bundles are not encoded yet"
+                ),
+                span,
+            );
+        }
+        if block == "seq-nonreg" {
+            // In `sigs` but not a register: `emit_base` would emit no
+            // transition for it, so the write vanishes and the (declared)
+            // signal is left unconstrained — a free variable that admits
+            // spurious counterexamples. Refuse instead (issue #821).
+            return CompileError::general(
+                &format!(
+                    "`seq` block assigns to `{target}`, which `arch formal` v1 does not \
+                     model as a register — the write would be silently dropped and \
+                     `{target}` left unconstrained, which can produce a spurious \
+                     counterexample. Declare `{target}` as a `reg`, or drive it from one"
+                ),
+                span,
+            );
+        }
+        CompileError::general(
+            &format!(
+                "`{block}` block assigns to `{target}`, which is not a signal \
+                 `arch formal` v1 models — expected a `wire`, a `reg`, or an output \
+                 port declared in this module"
+            ),
+            span,
+        )
     }
 
     /// Walk a reg-block Stmt, collecting (path_cond_expr, rhs) per reg into `reg_writes`.
@@ -1631,6 +2014,7 @@ impl<'a> FormalCtx<'a> {
                     target: name,
                     guard: path.to_vec(),
                     value: a.value.clone(),
+                    span: a.span,
                 });
             }
             Stmt::IfElse(ie) => {
@@ -1761,10 +2145,20 @@ impl<'a> FormalCtx<'a> {
         match ty {
             TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit
                 | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Ok(()),
-            TypeExpr::FP32 | TypeExpr::BF16 => Err(CompileError::general(
-                "floating-point types (FP32/BF16) are not supported by `arch formal` v1",
-                span,
-            )),
+            // Floats are BV carriers; operator semantics come from the
+            // inlined proven define-funs (see emit_base).
+            TypeExpr::FP32
+            | TypeExpr::BF16
+            | TypeExpr::FP8E4M3
+            | TypeExpr::FP8E5M2
+            | TypeExpr::FP4E2M1
+            | TypeExpr::FP6E2M3
+            | TypeExpr::FP6E3M2
+            | TypeExpr::E8M0
+            | TypeExpr::UE4M3 => Ok(()),
+            // A block is ONE packed bit-vector, not an aggregate, so it fits
+            // the `(_ BitVec W)`-per-signal model directly — unlike Vec.
+            TypeExpr::ScaledVec(..) => Ok(()),
             TypeExpr::Vec(_, _) => Err(CompileError::general(
                 "Vec types are not supported by `arch formal` v1 — use scalars",
                 span,
@@ -1778,6 +2172,27 @@ impl<'a> FormalCtx<'a> {
 
     fn type_width_signed(&self, ty: &TypeExpr, span: Span) -> Result<(u32, bool), CompileError> {
         match ty {
+            TypeExpr::FP32 => Ok((32, false)),
+            TypeExpr::BF16 => Ok((16, false)),
+            TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Ok((8, false)),
+            TypeExpr::FP4E2M1 => Ok((4, false)),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Ok((6, false)),
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => Ok((8, false)),
+            TypeExpr::ScaledVec(elem, n, scale) => {
+                let n = fold_const_expr(n, &self.params).ok_or_else(|| {
+                    CompileError::general(
+                        "could not fold ScaledVec block size N to a compile-time constant",
+                        span,
+                    )
+                })? as u32;
+                let w = crate::fp_format::scaled_vec_width(elem, n, scale).ok_or_else(|| {
+                    CompileError::general(
+                        "ScaledVec element/scale type is not a valid block member",
+                        span,
+                    )
+                })?;
+                Ok((w, false))
+            }
             TypeExpr::UInt(w) => {
                 let width = fold_const_expr(w, &self.params).ok_or_else(|| {
                     CompileError::general(
@@ -1805,9 +2220,10 @@ impl<'a> FormalCtx<'a> {
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => {
                 Ok((1, false))
             }
-            TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::Vec(_, _) | TypeExpr::Named(_) => Err(
-                CompileError::general("type not supported by arch formal v1", span),
-            ),
+            TypeExpr::Vec(_, _) | TypeExpr::Named(_) => Err(CompileError::general(
+                "type not supported by arch formal v1",
+                span,
+            )),
         }
     }
 
@@ -1817,6 +2233,18 @@ impl<'a> FormalCtx<'a> {
         let mut out = String::new();
         out.push_str("; auto-generated by `arch formal`\n");
         out.push_str("(set-logic QF_BV)\n");
+        if self.uses_float {
+            // Float operator semantics: the SAME QF_BV define-funs the SV
+            // and the offline SMT proofs are rendered from (single-source
+            // IR, machine-proved correctly rounded — tests/fp_v1/smt_proof).
+            // User properties compose over proven operators; no FP theory
+            // is involved. NOTE: a property whose cone includes a float
+            // multiplier/fma at FP32 width can be SAT-hard; fp8/bf16 cones
+            // and add/compare cones are tractable.
+            out.push_str(&crate::fp_ir::render_smt(&crate::fp_ops::fp_functions(
+                self.fp_compat,
+            )));
+        }
         out.push_str("(set-option :produce-models true)\n\n");
 
         // Declare every non-reg signal at each cycle (inputs get free choice per cycle;
@@ -1879,7 +2307,23 @@ impl<'a> FormalCtx<'a> {
                 if assigns.is_empty() {
                     continue;
                 }
-                let info = &self.sigs[tgt];
+                // Backstop: `check_assign_targets_registered` rejects
+                // unregistered targets during preprocess, so reaching here
+                // means that pass missed a case. Fail with a report-this
+                // error rather than panicking on the index, and never skip
+                // silently — a dropped equation would quietly shrink the
+                // design under proof.
+                let Some(info) = self.sigs.get(tgt) else {
+                    return Err(CompileError::general(
+                        &format!(
+                            "internal error: comb target `{tgt}` reached SMT emission without \
+                             being registered as a signal — `check_assign_targets_registered` \
+                             should have rejected this during preprocess. Please report this \
+                             design as an `arch formal` bug."
+                        ),
+                        assigns[0].span,
+                    ));
+                };
                 // Build nested ite from the guard chain. Last unguarded write wins as default.
                 let rhs = self.build_comb_ite(&assigns, t, info.width, info.signed)?;
                 out.push_str(&format!("(assert (= {tgt}_{t} {rhs}))\n"));
@@ -1911,6 +2355,19 @@ impl<'a> FormalCtx<'a> {
                     next
                 };
                 out.push_str(&format!("(assert (= {reg}_{} {next_gated}))\n", t + 1));
+            }
+            out.push('\n');
+        }
+
+        // `assume` clauses: conjoined as hypotheses at every timestep, so
+        // both assert and cover properties see only constrained inputs.
+        if !self.assumes.is_empty() {
+            out.push_str("; assume clauses\n");
+            for t in 0..=bound {
+                for a in &self.assumes {
+                    let enc = self.encode_expr(a, t, None)?;
+                    out.push_str(&format!("(assert {})\n", as_bool(&enc)));
+                }
             }
             out.push('\n');
         }
@@ -1993,6 +2450,11 @@ impl<'a> FormalCtx<'a> {
             // Latency annotation is transparent to SMT: at timepoint t,
             // `q@0` is the same as `q` at t. Non-@0 reads are rejected by
             // typecheck before reaching formal emission.
+            ScaledQuantize(..) => Err(CompileError::general(
+                "`scaled_quantize` is not yet supported by `arch formal` \
+                 (arch#884 phase 2b)",
+                expr.span,
+            )),
             LatencyAt(inner, _) => self.encode_raw(inner, t),
             // `fma<pipelined, N>(...)` — the retimed staged datapath (and
             // its sequential-equivalence proof obligation vs. the trusted
@@ -2218,6 +2680,51 @@ impl<'a> FormalCtx<'a> {
                     expr.span,
                 ))
             }
+            // Float builtins: fused multiply-add and NaN classification.
+            FunctionCall(name, args) if name == "fma" && args.len() == 3 => {
+                let tag = args
+                    .iter()
+                    .find_map(|a| self.expr_float_tag(a))
+                    .unwrap_or("f32");
+                let w = float_tag_width(tag);
+                let ea = coerce(self.encode_raw(&args[0], t)?, w, false);
+                let eb = coerce(self.encode_raw(&args[1], t)?, w, false);
+                let ec = coerce(self.encode_raw(&args[2], t)?, w, false);
+                Ok(SmtTerm {
+                    s: format!("(arch_fma_{tag} {} {} {})", ea.s, eb.s, ec.s),
+                    width: w,
+                    signed: false,
+                })
+            }
+            FunctionCall(name, args) if name == "is_nan" && args.len() == 1 => {
+                // E8M0 carries no float tag (it is a scale type); its NaN is
+                // the single code 0xFF. Without this it would take the f32
+                // test at f32's bit offsets on an 8-bit value.
+                if self.expr_is_e8m0(&args[0]) {
+                    let x = coerce(self.encode_raw(&args[0], t)?, 8, false);
+                    return Ok(SmtTerm {
+                        s: format!("(ite (= {} #xff) #b1 #b0)", x.s),
+                        width: 1,
+                        signed: false,
+                    });
+                }
+                let tag = self.expr_float_tag(&args[0]).unwrap_or("f32");
+                let w = float_tag_width(tag);
+                let x = coerce(self.encode_raw(&args[0], t)?, w, false);
+                // Bit-field NaN test, DERIVED from the format table. The old
+                // hand-written match ended in `_ =>` returning the *e5m2*
+                // test at e5m2's offsets, so any unnamed format was probed
+                // at the wrong bits. Deriving it makes a new format a table
+                // row rather than a fifth arm here.
+                let d = crate::fp_format::by_tag(tag)
+                    .unwrap_or_else(|| crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32));
+                let cond = nan_test_smt(d, &x.s);
+                Ok(SmtTerm {
+                    s: format!("(ite {cond} #b1 #b0)"),
+                    width: 1,
+                    signed: false,
+                })
+            }
             FunctionCall(name, args) if (name == "rose" || name == "fell") && args.len() == 1 => {
                 // rose(a) ≡ a@t AND NOT a@(t-1); fell(a) ≡ NOT a@t AND a@(t-1).
                 // run_property's max_past_depth treats these as depth 1.
@@ -2328,6 +2835,74 @@ impl<'a> FormalCtx<'a> {
         ))
     }
 
+    /// Is this expression an E8M0 scale value? E8M0 is deliberately not a
+    /// float format, so `expr_float_tag` returns `None` for it and every
+    /// float-shaped code path must ask this instead.
+    fn expr_is_e8m0(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Ident(n) => self.sigs.get(n).map(|i| i.is_e8m0).unwrap_or(false),
+            ExprKind::MethodCall(_, m, _) => m.name == "to_e8m0",
+            ExprKind::LatencyAt(inner, _) => self.expr_is_e8m0(inner),
+            _ => false,
+        }
+    }
+
+    /// Float helper tag of an expression, mirroring `encode_ident`'s
+    /// resolution (signals, inline-expanded lets) plus literal/derived
+    /// forms. Mixing formats is rejected upstream by typecheck.
+    fn expr_float_tag(&self, e: &Expr) -> Option<&'static str> {
+        use ExprKind::*;
+        match &e.kind {
+            Ident(name) => {
+                if let Some(info) = self.sigs.get(name) {
+                    return info.float;
+                }
+                if let Some(val) = self.let_bindings.get(name) {
+                    return self.expr_float_tag(val);
+                }
+                None
+            }
+            Literal(LitKind::Float(_)) => Some("f32"),
+            Literal(LitKind::TypedFloat(fmt, _)) => Some(match fmt {
+                crate::ast::FloatLitFmt::Fp32 => "f32",
+                crate::ast::FloatLitFmt::Bf16 => "bf16",
+                crate::ast::FloatLitFmt::E4m3 => "e4m3",
+                crate::ast::FloatLitFmt::E5m2 => "e5m2",
+                crate::ast::FloatLitFmt::E2m1 => "e2m1",
+                crate::ast::FloatLitFmt::E2m3 => "e2m3",
+                crate::ast::FloatLitFmt::E3m2 => "e3m2",
+            }),
+            Binary(op, l, r) => match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                    self.expr_float_tag(l).or_else(|| self.expr_float_tag(r))
+                }
+                _ => None,
+            },
+            Ternary(_, th, el) => self.expr_float_tag(th).or_else(|| self.expr_float_tag(el)),
+            FunctionCall(name, args) if name == "fma" => {
+                args.first().and_then(|a| self.expr_float_tag(a))
+            }
+            MethodCall(_, m, _) => match m.name.as_str() {
+                "to_fp32" => Some("f32"),
+                "to_bf16" => Some("bf16"),
+                "to_fp8e4m3" => Some("e4m3"),
+                "to_fp8e5m2" => Some("e5m2"),
+                // The sub-8-bit OCP MX storage formats. Their TYPES were
+                // already accepted by formal (`check_scalar_type`), and their
+                // narrows are the same proven `arch_f32_to_*` helpers every
+                // other backend calls — only these two dispatch tables were
+                // never extended when the formats landed, so a property
+                // mentioning `.to_fp4e2m1()` was refused outright.
+                "to_fp4e2m1" => Some("e2m1"),
+                "to_fp6e2m3" => Some("e2m3"),
+                "to_fp6e3m2" => Some("e3m2"),
+                _ => None,
+            },
+            LatencyAt(inner, _) => self.expr_float_tag(inner),
+            _ => None,
+        }
+    }
+
     fn encode_binary(
         &self,
         op: BinOp,
@@ -2336,6 +2911,34 @@ impl<'a> FormalCtx<'a> {
         t: u32,
         span: Span,
     ) -> Result<SmtTerm, CompileError> {
+        // Float operands dispatch to the inlined proven define-funs — the
+        // formal mirror of the SV/sim operator dispatch.
+        if let Some(tag) = self.expr_float_tag(a).or_else(|| self.expr_float_tag(b)) {
+            let fop = match op {
+                BinOp::Add => Some(("add", false)),
+                BinOp::Sub => Some(("sub", false)),
+                BinOp::Mul => Some(("mul", false)),
+                BinOp::Eq => Some(("eq", true)),
+                BinOp::Neq => Some(("ne", true)),
+                BinOp::Lt => Some(("lt", true)),
+                BinOp::Gt => Some(("gt", true)),
+                BinOp::Lte => Some(("le", true)),
+                BinOp::Gte => Some(("ge", true)),
+                _ => None,
+            };
+            if let Some((fop, is_cmp)) = fop {
+                let w = float_tag_width(tag);
+                let ta = self.encode_raw(a, t)?;
+                let tb = self.encode_raw(b, t)?;
+                let la = coerce(ta, w, false);
+                let lb = coerce(tb, w, false);
+                return Ok(SmtTerm {
+                    s: format!("(arch_{tag}_{fop} {} {})", la.s, lb.s),
+                    width: if is_cmp { 1 } else { w },
+                    signed: false,
+                });
+            }
+        }
         let ta = self.encode_raw(a, t)?;
         let tb = self.encode_raw(b, t)?;
         match op {
@@ -2597,6 +3200,114 @@ impl<'a> FormalCtx<'a> {
         } else {
             fold_const_expr(&args[0], &self.params).map(|v| v as u32)
         };
+        // Float conversion surface — dispatch to the inlined helpers.
+        let recv_tag = self.expr_float_tag(recv);
+        match n {
+            "to_e8m0" => {
+                // Any float widens to f32 first; FP32 goes straight in.
+                let f32s = match recv_tag {
+                    Some("f32") | None => coerce(r, 32, false).s,
+                    Some(tag) => format!(
+                        "(arch_{tag}_to_f32 {})",
+                        coerce(r, float_tag_width(tag), false).s
+                    ),
+                };
+                return Ok(SmtTerm {
+                    s: format!("(arch_f32_to_e8m0 {f32s})"),
+                    width: 8,
+                    signed: false,
+                });
+            }
+            "to_fp32" => {
+                // E8M0 carries no float tag, so it would otherwise fall into
+                // the `None` identity arm and return its raw 8 bits instead
+                // of the scale VALUE 2^(e-127).
+                if self.expr_is_e8m0(recv) {
+                    return Ok(SmtTerm {
+                        s: format!("(arch_e8m0_to_f32 {})", coerce(r, 8, false).s),
+                        width: 32,
+                        signed: false,
+                    });
+                }
+                return match recv_tag {
+                    Some("f32") | None => Ok(r),
+                    Some(tag) => Ok(SmtTerm {
+                        s: format!(
+                            "(arch_{tag}_to_f32 {})",
+                            coerce(r, float_tag_width(tag), false).s
+                        ),
+                        width: 32,
+                        signed: false,
+                    }),
+                };
+            }
+            "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" | "to_fp6e2m3"
+            | "to_fp6e3m2" => {
+                // Widths come from the format table, never a literal: `8` was
+                // right for both fp8s and is wrong for FP4 (4) and FP6 (6),
+                // which is precisely the wildcard shape the table removed.
+                let (helper, tgt) = narrow_target(n);
+                let w = float_tag_width(tgt);
+                // Any float source composes through f32 (widen exact); the
+                // target's narrow is the single rounding.
+                return match recv_tag {
+                    Some(t) if t == tgt => Ok(r),
+                    Some("f32") => Ok(SmtTerm {
+                        s: format!("({helper} {})", coerce(r, 32, false).s),
+                        width: w,
+                        signed: false,
+                    }),
+                    Some(src) => Ok(SmtTerm {
+                        s: format!(
+                            "({helper} (arch_{src}_to_f32 {}))",
+                            coerce(r, float_tag_width(src), false).s
+                        ),
+                        width: w,
+                        signed: false,
+                    }),
+                    None => Err(CompileError::general(
+                        &format!(
+                            ".{n}() on an integer is not supported inside `arch formal` properties"
+                        ),
+                        span,
+                    )),
+                };
+            }
+            "to_uint" | "to_sint" if recv_tag.is_some() => {
+                let tag = recv_tag.unwrap();
+                let w = target_w.ok_or_else(|| {
+                    CompileError::general(
+                        &format!(".{n}<N>() requires a constant width argument"),
+                        span,
+                    )
+                })?;
+                // Widen (exact) then the proven saturating f32->int helper;
+                // the helper returns 64 bits already clamped to N.
+                let f32s = if tag == "f32" {
+                    coerce(r, 32, false).s
+                } else {
+                    format!(
+                        "(arch_{tag}_to_f32 {})",
+                        coerce(r, float_tag_width(tag), false).s
+                    )
+                };
+                let conv = if n == "to_sint" {
+                    "arch_f32_to_sint"
+                } else {
+                    "arch_f32_to_uint"
+                };
+                return Ok(SmtTerm {
+                    s: format!(
+                        "((_ extract {} 0) ({conv} {f32s} {}))",
+                        w - 1,
+                        bv_lit(w as u64, 32)
+                    ),
+                    width: w,
+                    signed: n == "to_sint",
+                });
+            }
+            _ => {}
+        }
         match n {
             "trunc" => {
                 let w = target_w.ok_or_else(|| {
@@ -2672,6 +3383,433 @@ impl<'a> FormalCtx<'a> {
 
     // ── Property solving ─────────────────────────────────────────────────────
 
+    // ── assert<bound_err>: numeric error bounds via an external engine ──────
+    //
+    // The property compares a comb float signal against `exact(sig)` — the
+    // real-valued evaluation of the SAME dataflow with every rounding
+    // removed. We render the signal's cone twice into a Gappa script
+    // (rounded: each op wrapped in its format's rounding operator, modeling
+    // the RTL faithfully including the VR(f32) double-rounded narrow ops;
+    // exact: bare over ℝ), turn range-shaped `assume`s into interval
+    // hypotheses, and ask the engine to prove the bound. A second goal-free
+    // query reports the tightest enclosure the engine can derive for the
+    // error term. Soundness of modeling each op as ideal rounding is exactly
+    // the per-operator CR theorems (tests/fp_v1/smt_proof, proofs/).
+    fn run_bound_err(
+        &self,
+        prop: &PropertyDecl,
+        args: &FormalArgs,
+    ) -> Result<PropertyResult, CompileError> {
+        if args.error_engine != "gappa" {
+            return Err(CompileError::general(
+                &format!(
+                    "unknown --error-engine `{}` (supported: gappa)",
+                    args.error_engine
+                ),
+                prop.span,
+            ));
+        }
+        let mut goal =
+            parse_bound_goal(&prop.expr).map_err(|m| CompileError::general(&m, prop.span))?;
+        // The ulp() unit is the SIGNAL's format, not always f32.
+        if let BoundKind::Ulps(n, _) = goal.kind {
+            let tag = self
+                .sigs
+                .get(&goal.sig)
+                .and_then(|i| i.float)
+                .unwrap_or("f32");
+            goal.kind = BoundKind::Ulps(n, tag);
+        }
+
+        // Build definitions for the signal's cone, rounded + exact.
+        let mut defs: Vec<String> = Vec::new();
+        let mut done: HashSet<String> = HashSet::new();
+        let mut gctx = GappaCtx::default();
+        self.emit_gappa_defs(&goal.sig, &mut defs, &mut done, &mut gctx, prop.span)?;
+
+        // Hypotheses from range-shaped assumes over the cone's free ports.
+        let mut hyps: Vec<String> = Vec::new();
+        let mut ranged: HashSet<String> = HashSet::new();
+        for a in &self.assumes {
+            collect_range_hyps(a, &mut hyps, &mut ranged);
+        }
+        // Every input port feeding the cone must be range-constrained —
+        // error bounds are range-dependent by nature.
+        let mut free_ports: HashSet<String> = HashSet::new();
+        self.collect_cone_ports(&goal.sig, &mut free_ports, &mut HashSet::new());
+        let missing: Vec<String> = free_ports.difference(&ranged).cloned().collect();
+        if !missing.is_empty() {
+            let mut m = missing;
+            m.sort();
+            return Err(CompileError::general(
+                &format!(
+                    "assert<bound_err> requires every input in the cone to be range-constrained by `assume` clauses (missing: {}) — e.g. `assume a_rng: (a >= -1.0) and (a <= 1.0);`",
+                    m.join(", ")
+                ),
+                prop.span,
+            ));
+        }
+
+        // Iterate the formats the cone actually used, not a hardcoded list —
+        // the old list silently dropped the `@rnd_` definition for any format
+        // outside it, which gappa would then reject as an unknown identifier
+        // (or, worse, the cone would never reach here at all). Sorted so the
+        // emitted script is byte-stable.
+        let mut header = String::new();
+        let mut used: Vec<&str> = gctx.fmts.iter().copied().collect();
+        used.sort_unstable();
+        for f in used {
+            let (p, emin) = gappa_fmt_params(f);
+            header.push_str(&format!("@rnd_{f} = float<{p},{emin},ne>;\n"));
+        }
+        let defs_s = defs.join("\n");
+        let hyp_s = hyps.join(" /\\ ");
+        let goal_s = goal.render();
+        let script = format!("{header}\n{defs_s}\n\n{{ {hyp_s} -> {goal_s} }}\n");
+        let encl_script = format!(
+            "{header}\n{defs_s}\n\n{{ {hyp_s} -> {sig} - M_{sig} in ? }}\n",
+            sig = goal.sig
+        );
+
+        if std::env::var("GAPPA_DEBUG").is_ok() {
+            eprintln!("--- gappa script for {} ---\n{script}", prop.name);
+        }
+        let bin = gappa_binary();
+        let Some(bin) = bin else {
+            return Ok(PropertyResult {
+                name: prop.name.clone(),
+                kind: prop.kind.clone(),
+                status: PropertyStatus::Inconclusive(
+                    "gappa binary not found (install gappa or set GAPPA_BIN)".to_string(),
+                ),
+                counterexample: None,
+            });
+        };
+
+        let run = |input: &str| -> std::io::Result<(bool, String)> {
+            use std::io::Write as _;
+            use std::process::{Command, Stdio};
+            let mut child = Command::new(&bin)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            child.stdin.as_mut().unwrap().write_all(input.as_bytes())?;
+            let out = child.wait_with_output()?;
+            Ok((
+                out.status.success(),
+                String::from_utf8_lossy(&out.stderr).to_string(),
+            ))
+        };
+
+        // ── Soundness side-conditions: no narrow in the cone may overflow ──
+        //
+        // Gappa's `float<p,emin,ne>` bounds precision and the smallest
+        // exponent, but has no largest one — it reasons about an idealized
+        // format of unbounded range and so never models overflow. The real
+        // hardware saturates (FP4/FP6, and fp8 under `--fp-compat=cuda`) or
+        // produces NaN/Inf (fp8 under riscv), and in both cases the error is
+        // nothing like the rounding error gappa computed.
+        //
+        // Before arch#898 this was simply assumed, and a cone narrowing
+        // `[1000, 2000]` to FP8E4M3 (max finite 448) reported PROVED for a
+        // bound of 64 while `arch sim` returned NaN. Each narrow now carries
+        // an explicit obligation `|input| <= max_finite`, and a bound is only
+        // reported PROVED if every one of them is discharged.
+        //
+        // This matters most where MX quantization analysis is headed: under
+        // `floor_pow2` the block maximum normalizes ABOVE the element
+        // format's largest representable value, so saturation is routine
+        // rather than exceptional.
+        for (tag, input) in &gctx.narrows {
+            let d = crate::fp_format::by_tag(tag).unwrap_or_else(|| {
+                unreachable!("narrow target `{tag}` has no row in fp_format::FORMATS")
+            });
+            let max = gappa_real(d.max_finite);
+            let rng_script = format!("{header}\n{defs_s}\n\n{{ {hyp_s} -> |{input}| <= {max} }}\n");
+            if std::env::var("GAPPA_DEBUG").is_ok() {
+                eprintln!(
+                    "--- gappa range obligation for {} ---\n{rng_script}",
+                    prop.name
+                );
+            }
+            let in_range = run(&rng_script).map(|(ok, _)| ok).unwrap_or(false);
+            if !in_range {
+                return Ok(PropertyResult {
+                    name: prop.name.clone(),
+                    kind: prop.kind.clone(),
+                    status: PropertyStatus::Inconclusive(format!(
+                        "cannot show the narrow to {} stays in range (|input| <= {}, its \
+                         largest finite value) — gappa models an unbounded exponent range, \
+                         so a bound proved past that point would not describe the \
+                         saturating hardware. Tighten the `assume` ranges on the cone inputs.",
+                        d.type_name, d.max_finite
+                    )),
+                    counterexample: None,
+                });
+            }
+        }
+
+        let (ok, err) = run(&script)
+            .map_err(|e| CompileError::general(&format!("failed to run gappa: {e}"), prop.span))?;
+        // Enclosure query (best-effort; gappa prints `... in [lo, hi]` on stderr).
+        let encl = run(&encl_script)
+            .ok()
+            .map(|(_, e)| {
+                e.lines()
+                    .find(|l| l.contains(" in ["))
+                    .map(|l| l.trim().to_string())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
+        let status = if ok {
+            let detail = if encl.is_empty() {
+                "error bound proved".to_string()
+            } else {
+                format!("error bound proved; derived {encl}")
+            };
+            PropertyStatus::ProvedEnclosure(detail)
+        } else {
+            let mut why = err
+                .lines()
+                .find(|l| l.contains("error") || l.contains("Error") || l.contains("not satisfied"))
+                .unwrap_or("engine could not prove the bound")
+                .trim()
+                .to_string();
+            if !encl.is_empty() {
+                why.push_str(&format!(" (best derivable: {encl})"));
+            }
+            PropertyStatus::Inconclusive(why)
+        };
+        Ok(PropertyResult {
+            name: prop.name.clone(),
+            kind: prop.kind.clone(),
+            status,
+            counterexample: None,
+        })
+    }
+
+    /// Emit gappa definitions (rounded `name = ...;` and exact
+    /// `M_name = ...;`) for `sig` and its cone, post-order.
+    fn emit_gappa_defs(
+        &self,
+        sig: &str,
+        defs: &mut Vec<String>,
+        done: &mut HashSet<String>,
+        gctx: &mut GappaCtx,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        if done.contains(sig) {
+            return Ok(());
+        }
+        done.insert(sig.to_string());
+        let def_expr = self.defining_expr(sig);
+        let Some(expr) = def_expr else {
+            // Free port — no definition (shared real variable).
+            return Ok(());
+        };
+        // Emit dependencies first.
+        let mut deps: HashSet<String> = HashSet::new();
+        collect_idents(&expr, &mut deps);
+        for d in &deps {
+            self.emit_gappa_defs(d, defs, done, gctx, span)?;
+        }
+        let rounded = self.gappa_expr(&expr, true, gctx, span)?;
+        let exact = self.gappa_expr(&expr, false, gctx, span)?;
+        defs.push(format!("{sig} = {rounded};"));
+        defs.push(format!("M_{sig} = {exact};"));
+        Ok(())
+    }
+
+    /// Defining expression of a comb-driven signal (comb assign target or
+    /// let binding). Ports/regs have none.
+    fn defining_expr(&self, name: &str) -> Option<Expr> {
+        if let Some(v) = self.let_bindings.get(name) {
+            return Some(v.clone());
+        }
+        for ca in &self.comb_assigns {
+            if ca.target == name && ca.guard.is_empty() {
+                return Some(ca.value.clone());
+            }
+        }
+        None
+    }
+
+    /// Free input ports of the cone (idents with no defining expression).
+    fn collect_cone_ports(&self, sig: &str, out: &mut HashSet<String>, seen: &mut HashSet<String>) {
+        if seen.contains(sig) {
+            return;
+        }
+        seen.insert(sig.to_string());
+        match self.defining_expr(sig) {
+            Some(e) => {
+                let mut ids = HashSet::new();
+                collect_idents(&e, &mut ids);
+                for i in ids {
+                    self.collect_cone_ports(&i, out, seen);
+                }
+            }
+            None => {
+                out.insert(sig.to_string());
+            }
+        }
+    }
+
+    /// Render an ARCH float expression to gappa. `rounded` selects the
+    /// implementation rendering (rounding operators per op, incl. the
+    /// VR(f32) double rounding of narrow-format arith) vs the real-valued
+    /// spec rendering (no roundings; conversions are identity over ℝ).
+    fn gappa_expr(
+        &self,
+        e: &Expr,
+        rounded: bool,
+        gctx: &mut GappaCtx,
+        span: Span,
+    ) -> Result<String, CompileError> {
+        use ExprKind::*;
+        match &e.kind {
+            Ident(n) => Ok(if rounded || self.defining_expr(n).is_none() {
+                n.clone()
+            } else {
+                format!("M_{n}")
+            }),
+            Literal(LitKind::Float(bits)) => Ok(gappa_real(f64::from_bits(*bits))),
+            Literal(LitKind::TypedFloat(fmt, bits)) => {
+                let v = match fmt {
+                    crate::ast::FloatLitFmt::Fp32 => f32::from_bits(*bits as u32) as f64,
+                    crate::ast::FloatLitFmt::Bf16 => {
+                        f32::from_bits((*bits as u32) << 16) as f64
+                    }
+                    crate::ast::FloatLitFmt::E4m3 => crate::fp_lit::e4m3_bits_to_f64(*bits as u8),
+                    crate::ast::FloatLitFmt::E5m2 => crate::fp_lit::e5m2_bits_to_f64(*bits as u8),
+                    crate::ast::FloatLitFmt::E2m1 => crate::fp_lit::e2m1_bits_to_f64(*bits as u8),
+                    crate::ast::FloatLitFmt::E2m3 => crate::fp_lit::e2m3_bits_to_f64(*bits as u8),
+                    crate::ast::FloatLitFmt::E3m2 => crate::fp_lit::e3m2_bits_to_f64(*bits as u8),
+                };
+                Ok(gappa_real(v))
+            }
+            Binary(op, a, b) => {
+                let tag = self
+                    .expr_float_tag(a)
+                    .or_else(|| self.expr_float_tag(b))
+                    .ok_or_else(|| {
+                        CompileError::general(
+                            "assert<bound_err> cones must be floating-point arithmetic",
+                            span,
+                        )
+                    })?;
+                let (osym, supported) = match op {
+                    BinOp::Add => ("+", true),
+                    BinOp::Sub => ("-", true),
+                    BinOp::Mul => ("*", true),
+                    _ => ("", false),
+                };
+                if !supported {
+                    return Err(CompileError::general(
+                        "assert<bound_err> cones support + - * fma and float conversions only",
+                        span,
+                    ));
+                }
+                let ga = self.gappa_expr(a, rounded, gctx, span)?;
+                let gb = self.gappa_expr(b, rounded, gctx, span)?;
+                let raw = format!("({ga} {osym} {gb})");
+                Ok(if rounded {
+                    wrap_impl_rounding(tag, &raw, gctx)
+                } else {
+                    raw
+                })
+            }
+            FunctionCall(name, cargs) if name == "fma" && cargs.len() == 3 => {
+                let tag = cargs
+                    .iter()
+                    .find_map(|a| self.expr_float_tag(a))
+                    .unwrap_or("f32");
+                let ga = self.gappa_expr(&cargs[0], rounded, gctx, span)?;
+                let gb = self.gappa_expr(&cargs[1], rounded, gctx, span)?;
+                let gc = self.gappa_expr(&cargs[2], rounded, gctx, span)?;
+                let raw = format!("({ga} * {gb} + {gc})");
+                Ok(if rounded {
+                    wrap_impl_rounding(tag, &raw, gctx)
+                } else {
+                    raw
+                })
+            }
+            MethodCall(base, m, _) => {
+                let gb_r = self.gappa_expr(base, rounded, gctx, span)?;
+                match m.name.as_str() {
+                    // Exact widen: identity over ℝ.
+                    "to_fp32" => Ok(gb_r),
+                    "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1"
+                    | "to_fp6e2m3" | "to_fp6e3m2" => {
+                        let (_, tgt) = narrow_target(m.name.as_str());
+                        if rounded {
+                            gctx.fmts.insert(tgt);
+                            // Gappa's `float<p,emin,ne>` has a minimum but NO
+                            // MAXIMUM: it models an idealized format with an
+                            // unbounded exponent above, so it never sees
+                            // overflow, saturation, or a NaN/Inf result. Its
+                            // bound is therefore valid only where this narrow
+                            // does not overflow — record that as a proof
+                            // obligation to discharge separately rather than
+                            // assuming it (arch#898).
+                            gctx.narrows.push((tgt, gb_r.clone()));
+                            Ok(format!("rnd_{tgt}({gb_r})"))
+                        } else {
+                            Ok(gb_r)
+                        }
+                    }
+                    other => Err(CompileError::general(
+                        &format!(
+                            "`.{other}()` is not supported inside assert<bound_err> cones"
+                        ),
+                        span,
+                    )),
+                }
+            }
+            LatencyAt(inner, _) => self.gappa_expr(inner, rounded, gctx, span),
+            _ => Err(CompileError::general(
+                "assert<bound_err> cones support + - * fma, float conversions, signals, and float literals only",
+                span,
+            )),
+        }
+    }
+
+    /// True if the implication antecedent `a` cannot be satisfied at any
+    /// cycle in `[min_t, max_t]` of the constrained unroll — i.e. the
+    /// trigger never fires, so an `a |-> b` / `a |=> b` proof is vacuous.
+    /// One extra solver query on `base` (which already carries all `assume`
+    /// constraints) asserting the disjunction of `a@t` over the window.
+    fn antecedent_unreachable(
+        &self,
+        antecedent: &Expr,
+        base: &str,
+        min_t: u32,
+        max_t: u32,
+        args: &FormalArgs,
+    ) -> Result<bool, CompileError> {
+        let mut smt = String::with_capacity(base.len() + 128);
+        smt.push_str(base);
+        smt.push_str("\n; ── antecedent reachability (vacuity) ──\n");
+        let mut terms = Vec::new();
+        for t in min_t..=max_t {
+            let enc = self.encode_expr(antecedent, t, Some((1, false)))?;
+            terms.push(format!("(= {} #b1)", as_bv1_bool(&enc)));
+        }
+        let disj = if terms.len() == 1 {
+            terms.into_iter().next().unwrap()
+        } else {
+            format!("(or {})", terms.join(" "))
+        };
+        smt.push_str(&format!("(assert {disj})\n(check-sat)\n"));
+        let sr = invoke_solver(&args.solver, &smt, args.timeout)
+            .map_err(|e| CompileError::general(&format!("solver error: {e}"), antecedent.span))?;
+        // unsat ⇒ the antecedent is never satisfiable ⇒ vacuous. On a
+        // `sat`/`unknown` we conservatively treat the trigger as reachable
+        // (do NOT flag vacuity on an inconclusive reachability check).
+        Ok(sr.stdout.split_ascii_whitespace().next() == Some("unsat"))
+    }
+
     fn run_property(
         &self,
         prop: &PropertyDecl,
@@ -2741,11 +3879,12 @@ impl<'a> FormalCtx<'a> {
         let matcher = match prop.kind {
             AssertKind::Assert => "#b0",
             AssertKind::Cover => "#b1",
+            AssertKind::Assume => {
+                unreachable!("assumes are hypotheses, filtered before run_property")
+            }
         };
-        let disjuncts: Vec<String> = per_cycle
-            .iter()
-            .enumerate()
-            .map(|(_i, p)| format!("(= {p} {matcher})"))
+        let disjuncts: Vec<String> = (0..per_cycle.len())
+            .map(|i| format!("(= __prop_{} {matcher})", min_t + i as u32))
             .collect();
         let assertion = if disjuncts.len() == 1 {
             disjuncts.into_iter().next().unwrap()
@@ -2753,13 +3892,23 @@ impl<'a> FormalCtx<'a> {
             format!("(or {})", disjuncts.join(" "))
         };
 
-        // Compose final SMT text
+        // Compose final SMT text. Each cycle's property bit is bound to a
+        // named constant `__prop_<t>` so the failing cycle can be read
+        // directly from the solver model — the numeric evaluator cannot
+        // evaluate float-helper applications, and guessing from inputs
+        // rendered the WRONG cycle's (arbitrary) values as counterexamples.
         let mut smt = String::with_capacity(base.len() + 256);
         smt.push_str(base);
         smt.push_str(&format!(
             "\n; ── property `{}` ({:?}) ──\n",
             prop.name, prop.kind
         ));
+        for (i, p) in per_cycle.iter().enumerate() {
+            let t = min_t + i as u32;
+            smt.push_str(&format!(
+                "(declare-fun __prop_{t} () (_ BitVec 1))\n(assert (= __prop_{t} {p}))\n"
+            ));
+        }
         smt.push_str(&format!("(assert {assertion})\n"));
         smt.push_str("(check-sat)\n");
         // We always emit get-model; the solver will ignore it on unsat/unknown for most tools.
@@ -2786,22 +3935,122 @@ impl<'a> FormalCtx<'a> {
                     &assignments,
                     args.bound,
                 );
-                let cex = render_counterexample(
-                    &prop.name,
-                    failing_cycle,
-                    self,
-                    &assignments,
-                    args.bound,
-                );
-                match prop.kind {
-                    AssertKind::Assert => PropertyStatus::Refuted(failing_cycle),
-                    AssertKind::Cover => PropertyStatus::Hit(failing_cycle),
+                // Counterexample replay — the sat-side dual of the vacuity
+                // guard below. Independently re-evaluate the property on the
+                // solver's model (floats via the fp_ir interpreter, over the
+                // identical operator definitions the query embedded) to
+                // confirm the claimed violation is real. Conservative: only a
+                // confident contradiction (every cycle decidable, none
+                // violating) flags; anything undecidable retains the solver's
+                // verdict. Kill-switch: ARCH_FORMAL_NO_REPLAY=1.
+                let replay = if std::env::var_os("ARCH_FORMAL_NO_REPLAY").is_some() {
+                    None
+                } else {
+                    let fns = crate::fp_ops::fp_functions(self.fp_compat);
+                    Some(self.replay_check(prop, &assignments, min_t, max_t, lhs_future, &fns))
+                };
+                match replay {
+                    Some(ReplayVerdict::Contradicted) => {
+                        // The solver's claim differs by kind: an assert is
+                        // "violated", a cover is "hit".
+                        let (claim, note) = if matches!(prop.kind, AssertKind::Cover) {
+                            (
+                                "reported this cover as hit, but independent replay of its \
+                                 model shows the cover expression holds at no cycle",
+                                "cover expression holds at no cycle",
+                            )
+                        } else {
+                            (
+                                "reported this property as violated, but independent replay \
+                                 of its model shows no violation at any cycle",
+                                "property evaluates un-violated at every cycle",
+                            )
+                        };
+                        PropertyStatus::EncodingUnsound(format!(
+                            "internal compiler bug: the solver {claim} — \
+                             the BMC query generation is unsound. This is not a design error; \
+                             please report it (attach the --emit-smt output)"
+                        ))
+                        .with_cex(
+                            render_counterexample(
+                                &prop.name,
+                                failing_cycle,
+                                self,
+                                &assignments,
+                                args.bound,
+                            )
+                            .map(|c| {
+                                format!("{c}\n  replay: {note} in [{min_t}, {max_t}] on this model")
+                            }),
+                        )
+                    }
+                    Some(ReplayVerdict::Confirmed(c)) => {
+                        // Replay's earliest independently-confirmed cycle wins
+                        // over the solver-bit guess (defense-in-depth against
+                        // the #792 wrong-cycle class).
+                        let cex =
+                            render_counterexample(&prop.name, c, self, &assignments, args.bound);
+                        match prop.kind {
+                            AssertKind::Assert => PropertyStatus::Refuted(c),
+                            AssertKind::Cover => PropertyStatus::Hit(c),
+                            AssertKind::Assume => {
+                                unreachable!("assumes filtered before run_property")
+                            }
+                        }
+                        .with_cex(cex)
+                    }
+                    Some(ReplayVerdict::Inconclusive) | None => {
+                        let cex = render_counterexample(
+                            &prop.name,
+                            failing_cycle,
+                            self,
+                            &assignments,
+                            args.bound,
+                        )
+                        .map(|c| {
+                            if replay.is_some() {
+                                format!(
+                                    "{c}\n  note: independent replay could not decide this \
+                                     property on the model; solver verdict retained"
+                                )
+                            } else {
+                                c
+                            }
+                        });
+                        match prop.kind {
+                            AssertKind::Assert => PropertyStatus::Refuted(failing_cycle),
+                            AssertKind::Cover => PropertyStatus::Hit(failing_cycle),
+                            AssertKind::Assume => {
+                                unreachable!("assumes filtered before run_property")
+                            }
+                        }
+                        .with_cex(cex)
+                    }
                 }
-                .with_cex(cex)
             }
             "unsat" => match prop.kind {
-                AssertKind::Assert => PropertyStatus::Proved(args.bound).with_cex(None),
+                AssertKind::Assert => {
+                    // Antecedent-reachability (vacuity) check: an implication
+                    // `a |-> b` / `a |=> b` proves vacuously whenever the
+                    // antecedent `a` is unreachable in the constrained state
+                    // space — the consequent is never tested. A genuine proof
+                    // requires the trigger to fire at least once. If it never
+                    // can, this is a vacuous pass, not a real one.
+                    if let Some(antecedent) = implication_antecedent(&prop.expr) {
+                        if self.antecedent_unreachable(antecedent, base, min_t, max_t, args)? {
+                            PropertyStatus::Vacuous(
+                                "implication antecedent is unreachable — the trigger never fires, so the consequent is never tested".to_string(),
+                            )
+                            .with_cex(None)
+                        } else {
+                            PropertyStatus::Proved(args.bound).with_cex(None)
+                        }
+                    } else {
+                        PropertyStatus::Proved(args.bound).with_cex(None)
+                    }
+                }
                 AssertKind::Cover => PropertyStatus::NotReached(args.bound).with_cex(None),
+                AssertKind::Assume => unreachable!("assumes filtered before run_property"),
             },
             _ => PropertyStatus::Inconclusive(
                 if sr.stdout.contains("timeout") || !sr.stderr.is_empty() {
@@ -2845,6 +4094,290 @@ struct SmtTerm {
     signed: bool,
 }
 
+// ── assert<bound_err> free helpers ──────────────────────────────────────────
+
+/// Parsed goal shape: `abs(SIG - exact(SIG)) <= BOUND` where BOUND is a
+/// float literal, `LIT * ulp(exact(SIG))`, or `LIT * abs(exact(SIG))`.
+struct BoundGoal {
+    sig: String,
+    kind: BoundKind,
+}
+enum BoundKind {
+    Abs(f64),
+    /// N ulps, checked via the sound relative form N·2⁻ᵖ (conservative by
+    /// at most 2× — ulp(x) > 2⁻ᵖ·|x| for normal x).
+    Ulps(f64, &'static str),
+    Rel(f64),
+}
+impl BoundGoal {
+    fn render(&self) -> String {
+        match &self.kind {
+            BoundKind::Abs(c) => format!("|{s} - M_{s}| <= {}", gappa_real(*c), s = self.sig),
+            BoundKind::Ulps(n, tag) => {
+                let p = gappa_fmt_params(tag).0;
+                format!(
+                    "|{s} -/ M_{s}| <= {}",
+                    gappa_real(*n * (2.0f64).powi(-(p as i32))),
+                    s = self.sig
+                )
+            }
+            BoundKind::Rel(c) => {
+                format!("|{s} -/ M_{s}| <= {}", gappa_real(*c), s = self.sig)
+            }
+        }
+    }
+}
+
+fn lit_f64(e: &Expr) -> Option<f64> {
+    match &e.kind {
+        ExprKind::Unary(crate::ast::UnaryOp::Neg, inner) => lit_f64(inner).map(|v| -v),
+        ExprKind::Literal(LitKind::Float(b)) => Some(f64::from_bits(*b)),
+        ExprKind::Literal(LitKind::TypedFloat(fmt, b)) => Some(match fmt {
+            crate::ast::FloatLitFmt::Fp32 => f32::from_bits(*b as u32) as f64,
+            crate::ast::FloatLitFmt::Bf16 => f32::from_bits((*b as u32) << 16) as f64,
+            crate::ast::FloatLitFmt::E4m3 => crate::fp_lit::e4m3_bits_to_f64(*b as u8),
+            crate::ast::FloatLitFmt::E5m2 => crate::fp_lit::e5m2_bits_to_f64(*b as u8),
+            crate::ast::FloatLitFmt::E2m1 => crate::fp_lit::e2m1_bits_to_f64(*b as u8),
+            crate::ast::FloatLitFmt::E2m3 => crate::fp_lit::e2m3_bits_to_f64(*b as u8),
+            crate::ast::FloatLitFmt::E3m2 => crate::fp_lit::e3m2_bits_to_f64(*b as u8),
+        }),
+        ExprKind::Literal(LitKind::Dec(v)) => Some(*v as f64),
+        _ => None,
+    }
+}
+
+/// `abs(SIG - exact(SIG))` matcher → SIG name.
+fn match_err_term(e: &Expr) -> Option<String> {
+    let ExprKind::FunctionCall(n, args) = &e.kind else {
+        return None;
+    };
+    if n != "abs" || args.len() != 1 {
+        return None;
+    }
+    let ExprKind::Binary(BinOp::Sub, a, b) = &args[0].kind else {
+        return None;
+    };
+    let ExprKind::Ident(sig) = &a.kind else {
+        return None;
+    };
+    let ExprKind::FunctionCall(en, eargs) = &b.kind else {
+        return None;
+    };
+    if en != "exact" || eargs.len() != 1 {
+        return None;
+    }
+    let ExprKind::Ident(sig2) = &eargs[0].kind else {
+        return None;
+    };
+    if sig != sig2 {
+        return None;
+    }
+    Some(sig.clone())
+}
+
+fn parse_bound_goal(e: &Expr) -> Result<BoundGoal, String> {
+    const SHAPE: &str = "assert<bound_err> expects `abs(sig - exact(sig)) <= C`, `<= N * ulp(exact(sig))`, or `<= C * abs(exact(sig))`";
+    let ExprKind::Binary(op, lhs, rhs) = &e.kind else {
+        return Err(SHAPE.to_string());
+    };
+    if !matches!(op, BinOp::Lte | BinOp::Lt) {
+        return Err(SHAPE.to_string());
+    }
+    let sig = match_err_term(lhs).ok_or_else(|| SHAPE.to_string())?;
+    // RHS: literal | LIT * ulp(exact(sig)) | LIT * abs(exact(sig))
+    if let Some(c) = lit_f64(rhs) {
+        return Ok(BoundGoal {
+            sig,
+            kind: BoundKind::Abs(c),
+        });
+    }
+    if let ExprKind::Binary(BinOp::Mul, a, b) = &rhs.kind {
+        let c = lit_f64(a).ok_or_else(|| SHAPE.to_string())?;
+        if let ExprKind::FunctionCall(fname, fargs) = &b.kind {
+            if fargs.len() == 1 {
+                if let ExprKind::FunctionCall(en, eargs) = &fargs[0].kind {
+                    if en == "exact" && eargs.len() == 1 {
+                        if let ExprKind::Ident(s2) = &eargs[0].kind {
+                            if *s2 == sig {
+                                if fname == "ulp" {
+                                    // Format resolved by the caller from the
+                                    // signal; default f32, refined below.
+                                    return Ok(BoundGoal {
+                                        sig,
+                                        kind: BoundKind::Ulps(c, "f32"),
+                                    });
+                                }
+                                if fname == "abs" {
+                                    return Ok(BoundGoal {
+                                        sig,
+                                        kind: BoundKind::Rel(c),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Err(SHAPE.to_string())
+}
+
+/// Faithful implementation rounding for one op: f32 ops round once; the
+/// narrow formats round through f32 first (the VR(f32) datapath).
+fn wrap_impl_rounding(tag: &'static str, raw: &str, gctx: &mut GappaCtx) -> String {
+    gctx.fmts.insert("f32");
+    if tag == "f32" {
+        format!("rnd_f32{raw}")
+    } else {
+        gctx.fmts.insert(tag);
+        format!("rnd_{tag}(rnd_f32{raw})")
+    }
+}
+
+/// `.to_<fmt>()` → (narrowing helper, dispatch tag). One table for all three
+/// places formal dispatches conversions — the SMT encoder, the gappa cone
+/// renderer and counterexample replay — because keeping three copies in step
+/// is how the sub-8-bit formats came to be accepted by `check_scalar_type`
+/// while every one of these tables still rejected them.
+fn narrow_target(m: &str) -> (&'static str, &'static str) {
+    match m {
+        "to_bf16" => ("arch_f32_to_bf16", "bf16"),
+        "to_fp8e4m3" => ("arch_f32_to_e4m3", "e4m3"),
+        "to_fp8e5m2" => ("arch_f32_to_e5m2", "e5m2"),
+        "to_fp4e2m1" => ("arch_f32_to_e2m1", "e2m1"),
+        "to_fp6e2m3" => ("arch_f32_to_e2m3", "e2m3"),
+        "to_fp6e3m2" => ("arch_f32_to_e3m2", "e3m2"),
+        other => unreachable!("narrow_target called on non-narrowing method `{other}`"),
+    }
+}
+
+/// What a `bound_err` cone accumulated while being rendered to gappa.
+///
+/// `fmts` drives the `@rnd_*` header. `narrows` is the soundness half: one
+/// entry per narrowing conversion in the cone, holding the target format and
+/// the gappa expression flowing into it, so that "this narrow does not
+/// overflow" can be **discharged** rather than assumed (arch#898).
+#[derive(Default)]
+struct GappaCtx {
+    fmts: HashSet<&'static str>,
+    narrows: Vec<(&'static str, String)>,
+}
+
+/// (precision, emin) per format for gappa's `float<p,emin,ne>`, DERIVED from
+/// the format table rather than tabulated here.
+///
+/// The previous hand-written map ended in `_ => (3, -16)`, so any format
+/// without an explicit arm silently borrowed E5M2's parameters — the
+/// silent-wildcard class of arch#829/#858, except that here the consequence
+/// is a *certified numeric bound computed for the wrong format*, which is
+/// worse than a crash. `gappa_fmt_params_reproduce_the_hand_table` pins that
+/// this derivation reproduces all four original entries exactly.
+///
+/// `p` is the significand width including the implicit bit; `emin` is the
+/// exponent of the smallest subnormal, `(1 - bias) - mant_bits`.
+fn gappa_fmt_params(tag: &str) -> (u32, i32) {
+    let d = crate::fp_format::by_tag(tag).unwrap_or_else(|| {
+        unreachable!(
+            "float dispatch tag `{tag}` has no row in fp_format::FORMATS — \
+             add the format to the table"
+        )
+    });
+    let bias = (1i32 << (d.exp_bits - 1)) - 1;
+    (d.mant_bits + 1, (1 - bias) - d.mant_bits as i32)
+}
+
+/// Exact real literal in gappa's `<mantissa>b<exponent>` notation.
+fn gappa_real(v: f64) -> String {
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    let bits = v.to_bits();
+    let neg = bits >> 63 == 1;
+    let e = ((bits >> 52) & 0x7FF) as i64;
+    let m = bits & ((1u64 << 52) - 1);
+    let (mut mant, mut exp) = if e == 0 {
+        (m as i128, -1074i64)
+    } else {
+        ((m | (1 << 52)) as i128, e - 1075)
+    };
+    while mant != 0 && mant % 2 == 0 {
+        mant /= 2;
+        exp += 1;
+    }
+    let sign = if neg { "-" } else { "" };
+    if exp == 0 {
+        format!("{sign}{mant}")
+    } else {
+        format!("{sign}{mant}b{exp}")
+    }
+}
+
+/// Locate the gappa binary: PATH, then $GAPPA_BIN, then ~/bin/gappa.
+fn gappa_binary() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("GAPPA_BIN") {
+        let pb = std::path::PathBuf::from(p);
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+    if let Ok(out) = std::process::Command::new("which").arg("gappa").output() {
+        if out.status.success() {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !p.is_empty() {
+                return Some(std::path::PathBuf::from(p));
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let pb = std::path::PathBuf::from(home).join("bin/gappa");
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+    None
+}
+
+/// Range-shaped assume mining: conjunctions of `x >= lit` / `x <= lit`
+/// (either operand order) become gappa interval hypotheses. Ports with
+/// BOTH bounds seen are recorded in `ranged`.
+fn collect_range_hyps(e: &Expr, hyps: &mut Vec<String>, ranged: &mut HashSet<String>) {
+    fn bounds(e: &Expr, lo: &mut HashMap<String, f64>, hi: &mut HashMap<String, f64>) {
+        match &e.kind {
+            ExprKind::Binary(BinOp::And, a, b) => {
+                bounds(a, lo, hi);
+                bounds(b, lo, hi);
+            }
+            ExprKind::Binary(op, a, b) => {
+                let (id, lit, ge) = match (&a.kind, &b.kind, op) {
+                    (ExprKind::Ident(n), _, BinOp::Gte) => (Some(n.clone()), lit_f64(b), true),
+                    (ExprKind::Ident(n), _, BinOp::Lte) => (Some(n.clone()), lit_f64(b), false),
+                    (_, ExprKind::Ident(n), BinOp::Gte) => (Some(n.clone()), lit_f64(a), false),
+                    (_, ExprKind::Ident(n), BinOp::Lte) => (Some(n.clone()), lit_f64(a), true),
+                    _ => (None, None, false),
+                };
+                if let (Some(id), Some(v)) = (id, lit) {
+                    if ge {
+                        lo.insert(id, v);
+                    } else {
+                        hi.insert(id, v);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut lo = HashMap::new();
+    let mut hi = HashMap::new();
+    bounds(e, &mut lo, &mut hi);
+    for (n, l) in &lo {
+        if let Some(h) = hi.get(n) {
+            hyps.push(format!("{n} in [{}, {}]", gappa_real(*l), gappa_real(*h)));
+            ranged.insert(n.clone());
+        }
+    }
+}
+
 fn bv_lit(value: u64, width: u32) -> String {
     // Prefer hex for widths divisible by 4, else decimal form.
     if width % 4 == 0 && width <= 64 {
@@ -2869,6 +4402,56 @@ fn bv_lit(value: u64, width: u32) -> String {
 
 fn bv_zero(width: u32) -> String {
     bv_lit(0, width)
+}
+
+/// SMT bit-field NaN test for `x`, derived from the format descriptor.
+///
+/// Factored out of `encode_raw` so it is unit-testable: `--emit-smt` writes
+/// only the base (declarations + transitions), and per-property queries are
+/// built inside `run_property` and piped straight to the solver, so
+/// `scripts/refactor_diff.sh` cannot see this string. The test in this
+/// module pins it against the hand-written originals instead.
+fn nan_test_smt(d: &'static crate::fp_format::FpFormat, x: &str) -> String {
+    use crate::fp_format::NanRule;
+    // These field literals are written in the `#b…` binary form the
+    // hand-written tests used. `bv_lit` would emit `#xff` for widths
+    // divisible by 4 but `(_ bv0 23)` otherwise — semantically the same
+    // value, different text. Matching the original spelling exactly keeps
+    // this refactor provably inert; the solver would accept either.
+    let ones_bin = |w: u32| format!("#b{}", "1".repeat(w as usize));
+    let zeros_bin = |w: u32| format!("#b{}", "0".repeat(w as usize));
+    // The exponent field kept its hex spelling where `bv_lit` produced one.
+    let exp_ones = if d.exp_bits % 4 == 0 {
+        bv_all_ones(d.exp_bits)
+    } else {
+        ones_bin(d.exp_bits)
+    };
+    match d.nan_rule {
+        NanRule::IeeeExpAllOnes => {
+            let (eh, el) = d.exp_field();
+            let (mh, ml) = d
+                .mant_field()
+                .expect("IEEE-shaped format must have a mantissa");
+            format!(
+                "(and (= ((_ extract {eh} {el}) {x}) {exp_ones}) (distinct ((_ extract {mh} {ml}) {x}) {}))",
+                zeros_bin(d.mant_bits),
+            )
+        }
+        NanRule::OcpAllMagnitudeOnes => {
+            let (gh, gl) = d.magnitude_field();
+            format!(
+                "(= ((_ extract {gh} {gl}) {x}) {})",
+                ones_bin(d.magnitude_bits()),
+            )
+        }
+        // Unreachable: typecheck rejects `is_nan` on a format with no NaN
+        // encoding (`Ty::is_float_arith`).
+        NanRule::NoNan => unreachable!(
+            "is_nan on `{}`, which has no NaN encoding — typecheck should have \
+             rejected this",
+            d.type_name
+        ),
+    }
 }
 
 fn bv_all_ones(width: u32) -> String {
@@ -3042,6 +4625,11 @@ fn collect_idents(expr: &Expr, out: &mut HashSet<String>) {
             collect_idents(b, out);
         }
         Unary(_, a) => collect_idents(a, out),
+        FunctionCall(_, args) => {
+            for a in args {
+                collect_idents(a, out);
+            }
+        }
         Ternary(c, t, e) => {
             collect_idents(c, out);
             collect_idents(t, out);
@@ -3424,6 +5012,19 @@ fn max_cycle_offsets(e: &Expr) -> (u32, u32) {
 
 // ── Counterexample rendering ────────────────────────────────────────────────
 
+/// Antecedent of a top-level implication property (`a |-> b` or `a |=> b`),
+/// if the expression is one. Used for vacuity (antecedent-reachability)
+/// checking: an implication whose antecedent is unreachable proves
+/// vacuously — the consequent is never exercised.
+fn implication_antecedent(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Binary(BinOp::Implies, a, _) | ExprKind::Binary(BinOp::ImpliesNext, a, _) => {
+            Some(a)
+        }
+        _ => None,
+    }
+}
+
 fn find_first_failing_cycle(
     kind: &AssertKind,
     expr: &Expr,
@@ -3442,11 +5043,21 @@ fn find_first_failing_cycle(
     if min_t > max_t {
         return min_t.min(bound);
     }
+    // Primary: the named per-cycle property bits from the model.
     for t in min_t..=max_t {
-        let v = eval_expr_numeric(expr, t, ctx, assignments).unwrap_or(0);
-        let bit = v & 1;
-        if bit == target_bit {
-            return t;
+        if let Some(v) = assignments.get(&format!("__prop_{t}")) {
+            if (v & 1) == target_bit {
+                return t;
+            }
+        }
+    }
+    // Fallback (older models without the named bits): numeric evaluation —
+    // skip cycles the evaluator cannot decide instead of claiming them.
+    for t in min_t..=max_t {
+        if let Some(v) = eval_expr_numeric(expr, t, ctx, assignments) {
+            if (v & 1) == target_bit {
+                return t;
+            }
         }
     }
     max_t
@@ -3599,6 +5210,778 @@ fn eval_expr_numeric(
     }
 }
 
+// ── Counterexample replay ────────────────────────────────────────────────────
+//
+// The sat-side dual of the vacuity guard: when the solver claims a violation
+// (REFUTED) or cover hit, independently re-evaluate the property on the
+// returned model to confirm the claim. A confident contradiction — every
+// cycle decidable, none violating — means the BMC query generation itself is
+// unsound (`PropertyStatus::EncodingUnsound`, exit 3).
+//
+// This is a deliberately PARALLEL implementation of the encoder's semantics,
+// not a shared helper: a shared dispatch would mirror an encoder bug into the
+// replay and mask the contradiction. Drift is safe by construction — any
+// form replay does not recognize returns `None`, which can only weaken the
+// verdict to inconclusive, never fabricate a flag.
+//
+// Unlike `eval_expr_numeric` (a heuristic cycle-finder that computes on bare
+// u64s), replay must be width- and signedness-exact against the SMT encoding:
+// `bvnot`/`bvneg`/widening arithmetic/signed compares all depend on operand
+// width, and a width divergence here could produce a false contradiction.
+// `NumVal` therefore mirrors `SmtTerm` (value, width, signedness), and every
+// arm below mirrors the corresponding `encode_*` arm's width rules. Float
+// operations evaluate through `fp_ir::eval_bv` against the same
+// `fp_ops::fp_functions` table the query inlined — the identical operator
+// definitions, so no cross-model equivalence assumption.
+
+/// A width- and signedness-tracked concrete value — the replay mirror of
+/// `SmtTerm`. The value lives in the low `width` bits of `v`; anything the
+/// replay cannot represent (width > 64) is `None` at the call site.
+#[derive(Debug, Clone, Copy)]
+struct NumVal {
+    v: u64,
+    width: u32,
+    signed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ReplayVerdict {
+    /// Earliest cycle at which replay independently confirms the violation
+    /// (assert) or hit (cover).
+    Confirmed(u32),
+    /// Every cycle in range was decidable and none shows the violation —
+    /// the solver's claim is wrong. Internal compiler bug.
+    Contradicted,
+    /// At least one cycle was undecidable and none confirmed. The solver's
+    /// verdict is retained; replay must never flag from uncertainty.
+    Inconclusive,
+}
+
+fn nv_mask(w: u32) -> u64 {
+    if w >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << w) - 1
+    }
+}
+
+fn nv(v: u64, width: u32, signed: bool) -> NumVal {
+    NumVal {
+        v: v & nv_mask(width),
+        width,
+        signed,
+    }
+}
+
+/// Reinterpret the masked `width`-bit value as a signed integer.
+fn nv_as_i64(x: &NumVal) -> i64 {
+    if x.width >= 64 || (x.v >> (x.width - 1)) & 1 == 0 {
+        x.v as i64
+    } else {
+        (x.v | !nv_mask(x.width)) as i64
+    }
+}
+
+/// The replay mirror of `coerce`: resize to `(width, signed)` via
+/// sign/zero-extension (by the SOURCE's signedness, as `coerce` does) or
+/// low-bit extraction. `None` when the target width is unrepresentable.
+fn nv_coerce(x: NumVal, width: u32, signed: bool) -> Option<NumVal> {
+    if width == 0 || width > 64 {
+        return None;
+    }
+    Some(if x.width == width {
+        NumVal { signed, ..x }
+    } else if x.width < width {
+        let v = if x.signed { nv_as_i64(&x) as u64 } else { x.v };
+        nv(v, width, signed)
+    } else {
+        nv(x.v, width, signed)
+    })
+}
+
+impl FormalCtx<'_> {
+    /// Property truth value at cycle `t`, mirroring `run_property`'s
+    /// per-cycle encoding: top-level `a |=> b` samples the RHS at
+    /// `t + 1 + lhs_future`; everything else is the expression coerced to
+    /// 1 bit (i.e. bit 0), exactly as `encode_expr(_, _, Some((1, false)))`.
+    fn replay_prop_at(
+        &self,
+        expr: &Expr,
+        t: u32,
+        lhs_future: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<bool> {
+        if let ExprKind::Binary(BinOp::ImpliesNext, lhs, rhs) = &expr.kind {
+            let la = self.replay_raw(lhs, t, m, fns)?;
+            let lb = self.replay_raw(rhs, t + 1 + lhs_future, m, fns)?;
+            Some((la.v & 1) == 0 || (lb.v & 1) == 1)
+        } else {
+            let v = self.replay_raw(expr, t, m, fns)?;
+            Some((v.v & 1) == 1)
+        }
+    }
+
+    /// Scan the property over the same cycle range the query asserted and
+    /// classify the solver's sat claim. See `ReplayVerdict`.
+    fn replay_check(
+        &self,
+        prop: &PropertyDecl,
+        m: &HashMap<String, u64>,
+        min_t: u32,
+        max_t: u32,
+        lhs_future: u32,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> ReplayVerdict {
+        // Assert: violation ⇔ property false. Cover: hit ⇔ property true.
+        let violation_truth = matches!(prop.kind, AssertKind::Cover);
+        let mut all_decided = true;
+        let mut confirmed = None;
+        for t in min_t..=max_t {
+            match self.replay_prop_at(&prop.expr, t, lhs_future, m, fns) {
+                Some(b) => {
+                    if b == violation_truth && confirmed.is_none() {
+                        confirmed = Some(t);
+                    }
+                }
+                None => all_decided = false,
+            }
+        }
+        match (confirmed, all_decided) {
+            (Some(c), _) => ReplayVerdict::Confirmed(c),
+            (None, true) => ReplayVerdict::Contradicted,
+            (None, false) => ReplayVerdict::Inconclusive,
+        }
+    }
+
+    /// Evaluate a float operator application through the fp_ir interpreter:
+    /// operands are already-evaluated concrete bit patterns, wrapped as
+    /// constants in a single `Call` node against the operator table.
+    fn replay_fp_call(
+        &self,
+        name: &str,
+        args: &[NumVal],
+        ret_w: u32,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        let bv_args: Vec<crate::fp_ir::Bv> = args
+            .iter()
+            .map(|a| crate::fp_ir::cst(a.v as u128, a.width))
+            .collect();
+        let node = crate::fp_ir::call(name, &bv_args, ret_w);
+        let v = crate::fp_ir::eval_bv(&node, &HashMap::new(), fns)?;
+        if ret_w > 64 {
+            return None;
+        }
+        Some(nv(v as u64, ret_w, false))
+    }
+
+    /// The replay mirror of `encode_raw`. Every arm reproduces the
+    /// corresponding encoder arm's width/signedness rules; any form outside
+    /// the mirrored surface returns `None` (inconclusive), never a guess.
+    fn replay_raw(
+        &self,
+        e: &Expr,
+        t: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        use ExprKind::*;
+        match &e.kind {
+            LatencyAt(inner, _) => self.replay_raw(inner, t, m, fns),
+            SvaNext(n, inner) => self.replay_raw(inner, t + *n, m, fns),
+            Bool(b) => Some(nv(*b as u64, 1, false)),
+            Literal(l) => self.replay_literal(l),
+            Ident(name) => self.replay_ident(name, t, m, fns),
+            SynthIdent(name, _) => {
+                if self.sigs.contains_key(name) {
+                    return self.replay_ident(name, t, m, fns);
+                }
+                self.replay_derived_nonzero(name, t, m)
+            }
+            Binary(op, a, b) => self.replay_binary(*op, a, b, t, m, fns),
+            Unary(op, a) => {
+                let ta = self.replay_raw(a, t, m, fns)?;
+                Some(match op {
+                    UnaryOp::Not => nv((ta.v == 0) as u64, 1, false),
+                    UnaryOp::BitNot => nv(!ta.v, ta.width, ta.signed),
+                    UnaryOp::Neg => nv(ta.v.wrapping_neg(), ta.width, true),
+                    UnaryOp::RedAnd => nv((ta.v == nv_mask(ta.width)) as u64, 1, false),
+                    UnaryOp::RedOr => nv((ta.v != 0) as u64, 1, false),
+                    UnaryOp::RedXor => nv((ta.v.count_ones() & 1) as u64, 1, false),
+                })
+            }
+            Ternary(c, then_e, else_e) => {
+                // Mirror the encoder's totality: both branches must be
+                // decidable (their widths shape the result), even though
+                // only one value is selected.
+                let ct = self.replay_raw(c, t, m, fns)?;
+                let tt = self.replay_raw(then_e, t, m, fns)?;
+                let et = self.replay_raw(else_e, t, m, fns)?;
+                let w = tt.width.max(et.width);
+                let signed = tt.signed || et.signed;
+                let th = nv_coerce(tt, w, signed)?;
+                let el = nv_coerce(et, w, signed)?;
+                Some(if ct.v != 0 { th } else { el })
+            }
+            MethodCall(recv, method, args) => self.replay_method(recv, method, args, t, m, fns),
+            BitSlice(base, hi, lo) => {
+                let b = self.replay_raw(base, t, m, fns)?;
+                let hi_v = fold_const_expr(hi, &self.params)?;
+                let lo_v = fold_const_expr(lo, &self.params)?;
+                if hi_v < lo_v || hi_v >= b.width as u64 {
+                    return None;
+                }
+                let w = (hi_v - lo_v + 1) as u32;
+                Some(nv(b.v >> lo_v, w, b.signed))
+            }
+            PartSelect(base, start, width, is_plus) => {
+                let b = self.replay_raw(base, t, m, fns)?;
+                let s_v = fold_const_expr(start, &self.params)?;
+                let w_v = fold_const_expr(width, &self.params)?;
+                if w_v == 0 {
+                    return None;
+                }
+                let (hi, lo) = if *is_plus {
+                    (s_v + w_v - 1, s_v)
+                } else {
+                    (s_v, s_v.checked_sub(w_v - 1)?)
+                };
+                if hi < lo || hi >= b.width as u64 {
+                    return None;
+                }
+                Some(nv(b.v >> lo, w_v as u32, b.signed))
+            }
+            Concat(es) => {
+                let parts: Option<Vec<NumVal>> =
+                    es.iter().map(|p| self.replay_raw(p, t, m, fns)).collect();
+                let parts = parts?;
+                // Mirror the encoder: a singleton {a} passes the sole part
+                // through unchanged, keeping its signedness.
+                if parts.len() == 1 {
+                    return parts.into_iter().next();
+                }
+                let total: u32 = parts.iter().map(|p| p.width).sum();
+                if total > 64 {
+                    return None;
+                }
+                let mut v = 0u64;
+                for p in &parts {
+                    v = (v << p.width) | p.v;
+                }
+                Some(nv(v, total, false))
+            }
+            Repeat(n, x) => {
+                let n_v = fold_const_expr(n, &self.params)?;
+                if n_v == 0 {
+                    return None;
+                }
+                let xt = self.replay_raw(x, t, m, fns)?;
+                // Mirror the encoder: {1{x}} passes the operand through
+                // unchanged, keeping its signedness.
+                if n_v == 1 {
+                    return Some(xt);
+                }
+                let total = xt.width.checked_mul(n_v as u32)?;
+                if total > 64 {
+                    return None;
+                }
+                let mut v = 0u64;
+                for _ in 0..n_v {
+                    v = (v << xt.width) | xt.v;
+                }
+                Some(nv(v, total, false))
+            }
+            Signed(inner) => {
+                let ti = self.replay_raw(inner, t, m, fns)?;
+                Some(NumVal { signed: true, ..ti })
+            }
+            Unsigned(inner) => {
+                let ti = self.replay_raw(inner, t, m, fns)?;
+                Some(NumVal {
+                    signed: false,
+                    ..ti
+                })
+            }
+            Clog2(inner) => {
+                let v = fold_const_expr(inner, &self.params)?;
+                let r = if v <= 1 {
+                    1
+                } else {
+                    64 - (v - 1).leading_zeros() as u64
+                };
+                Some(nv(r, 32, false))
+            }
+            Onehot(idx) => {
+                let idx_t = self.replay_raw(idx, t, m, fns)?;
+                let amt = nv_coerce(idx_t, 32, false)?.v;
+                let v = if amt >= 64 { 0 } else { 1u64 << amt };
+                Some(nv(v, 32, false))
+            }
+            EnumVariant(en, v) => {
+                let key = format!("{}::{}", en.name, v.name);
+                let (val, w) = self.enum_variants.get(&key)?;
+                Some(nv(*val, *w, false))
+            }
+            FieldAccess(base, field) => {
+                if let Ident(port) = &base.kind {
+                    let flat = format!("{port}_{}", field.name);
+                    if self.sigs.contains_key(&flat) {
+                        return self.replay_ident(&flat, t, m, fns);
+                    }
+                }
+                None
+            }
+            FunctionCall(name, args) if name == "fma" && args.len() == 3 => {
+                let tag = args
+                    .iter()
+                    .find_map(|a| self.expr_float_tag(a))
+                    .unwrap_or("f32");
+                let w = float_tag_width(tag);
+                let ea = nv_coerce(self.replay_raw(&args[0], t, m, fns)?, w, false)?;
+                let eb = nv_coerce(self.replay_raw(&args[1], t, m, fns)?, w, false)?;
+                let ec = nv_coerce(self.replay_raw(&args[2], t, m, fns)?, w, false)?;
+                self.replay_fp_call(&format!("arch_fma_{tag}"), &[ea, eb, ec], w, fns)
+            }
+            FunctionCall(name, args) if name == "is_nan" && args.len() == 1 => {
+                let tag = self.expr_float_tag(&args[0]).unwrap_or("f32");
+                let w = float_tag_width(tag);
+                let x = nv_coerce(self.replay_raw(&args[0], t, m, fns)?, w, false)?.v;
+                // Bit-field NaN test. The FIELD EXTENTS and the rule come
+                // from the format table — those are format facts, already
+                // shared with the encoder the same way carrier widths are
+                // (see `float_tag_width`) — but the arithmetic below stays
+                // replay's own, deliberately not a call into the encoder's
+                // `nan_test_smt`.
+                //
+                // This narrows replay's independence slightly and it is a
+                // conscious trade: the previous `_ =>` arm fell back to the
+                // e5m2 test, so a new format would have been probed at
+                // e5m2's offsets — silently wrong on BOTH sides, which is
+                // worse than sharing a table row. Independence still covers
+                // what it is for: operator dispatch and semantics.
+                let d = crate::fp_format::by_tag(tag)
+                    .unwrap_or_else(|| crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32));
+                let is_nan = match d.nan_rule {
+                    crate::fp_format::NanRule::IeeeExpAllOnes => {
+                        let (_, el) = d.exp_field();
+                        let exp_mask = (1u64 << d.exp_bits) - 1;
+                        let mant_mask = (1u64 << d.mant_bits) - 1;
+                        (x >> el) & exp_mask == exp_mask && x & mant_mask != 0
+                    }
+                    crate::fp_format::NanRule::OcpAllMagnitudeOnes => {
+                        let mag_mask = (1u64 << d.magnitude_bits()) - 1;
+                        x & mag_mask == mag_mask
+                    }
+                    // Typecheck rejects `is_nan` on a format with no NaN
+                    // encoding; replay stays conservative and declines
+                    // rather than inventing an answer.
+                    crate::fp_format::NanRule::NoNan => return None,
+                };
+                Some(nv(is_nan as u64, 1, false))
+            }
+            FunctionCall(name, args) if name == "past" && args.len() == 2 => {
+                let n = match &args[1].kind {
+                    Literal(LitKind::Dec(n)) | Literal(LitKind::Sized(_, n)) => *n as u32,
+                    _ => return None,
+                };
+                if t < n {
+                    return None;
+                }
+                self.replay_raw(&args[0], t - n, m, fns)
+            }
+            FunctionCall(name, args) if (name == "rose" || name == "fell") && args.len() == 1 => {
+                if t < 1 {
+                    return None;
+                }
+                let now = self.replay_raw(&args[0], t, m, fns)?;
+                let prev = self.replay_raw(&args[0], t - 1, m, fns)?;
+                let (now_b, prev_b) = (now.v != 0, prev.v != 0);
+                let v = if name == "rose" {
+                    now_b && !prev_b
+                } else {
+                    !now_b && prev_b
+                };
+                Some(nv(v as u64, 1, false))
+            }
+            // Everything else — struct literals, casts, indexing, unknown
+            // calls, match forms, todo!, pipelined ops — is outside the
+            // mirrored surface: inconclusive, never a guess.
+            _ => None,
+        }
+    }
+
+    /// Mirror of `lit_to_term` plus the float-literal forms.
+    fn replay_literal(&self, l: &LitKind) -> Option<NumVal> {
+        Some(match l {
+            LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => {
+                let w = if *v == 0 { 1 } else { 64 - v.leading_zeros() };
+                nv(*v, w, false)
+            }
+            LitKind::Sized(w, v) => {
+                if *w > 64 {
+                    return None;
+                }
+                nv(*v, *w, false)
+            }
+            LitKind::ParamSized(name, v) => {
+                let w = *self.params.get(name)? as u32;
+                if w > 64 {
+                    return None;
+                }
+                nv(*v, w, false)
+            }
+            LitKind::Float(bits) => {
+                let f = (f64::from_bits(*bits)) as f32;
+                nv(f.to_bits() as u64, 32, false)
+            }
+            LitKind::TypedFloat(fmt, bits) => nv(*bits, fmt.width(), false),
+        })
+    }
+
+    /// Mirror of `encode_ident`: const params (32-bit), inline-expanded let
+    /// bindings, then signals read from the model at `<name>_<t>`.
+    fn replay_ident(
+        &self,
+        name: &str,
+        t: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        if let Some(val) = self.params.get(name) {
+            return Some(nv(*val, 32, false));
+        }
+        if let Some(val) = self.let_bindings.get(name) {
+            return self.replay_raw(val, t, m, fns);
+        }
+        if let Some(info) = self.sigs.get(name) {
+            // parse_model stores u64s — a wider signal's value would be
+            // truncated, so refuse rather than compute on garbage.
+            if info.width > 64 {
+                return None;
+            }
+            let v = *m.get(&format!("{name}_{t}"))?;
+            return Some(nv(v, info.width, info.signed));
+        }
+        self.replay_derived_nonzero(name, t, m)
+    }
+
+    /// Mirror of the derived credit_channel resolution shared by
+    /// `encode_ident` and the SynthIdent path: `<stem>_can_send` ≡
+    /// `<stem>_credit != 0`, `<stem>_valid` ≡ `<stem>_occ != 0`.
+    fn replay_derived_nonzero(
+        &self,
+        name: &str,
+        t: u32,
+        m: &HashMap<String, u64>,
+    ) -> Option<NumVal> {
+        if let Some(reg) = self.derived_nonzero.get(name) {
+            if self.sigs.get(reg).is_some() {
+                let v = *m.get(&format!("{reg}_{t}"))?;
+                return Some(nv((v != 0) as u64, 1, false));
+            }
+        }
+        if let Some(stem) = name
+            .strip_suffix("_can_send")
+            .or_else(|| name.strip_suffix("_valid"))
+        {
+            let suffix = if name.ends_with("_can_send") {
+                "_credit"
+            } else {
+                "_occ"
+            };
+            let reg = format!("{stem}{suffix}");
+            if self.sigs.get(&reg).is_some() {
+                let v = *m.get(&format!("{reg}_{t}"))?;
+                return Some(nv((v != 0) as u64, 1, false));
+            }
+        }
+        None
+    }
+
+    /// Mirror of `encode_binary`: float operands dispatch to the operator
+    /// table via the fp_ir interpreter; integer forms reproduce the
+    /// encoder's IEEE-1800 width rules exactly.
+    fn replay_binary(
+        &self,
+        op: BinOp,
+        a: &Expr,
+        b: &Expr,
+        t: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        if let Some(tag) = self.expr_float_tag(a).or_else(|| self.expr_float_tag(b)) {
+            let fop = match op {
+                BinOp::Add => Some(("add", false)),
+                BinOp::Sub => Some(("sub", false)),
+                BinOp::Mul => Some(("mul", false)),
+                BinOp::Eq => Some(("eq", true)),
+                BinOp::Neq => Some(("ne", true)),
+                BinOp::Lt => Some(("lt", true)),
+                BinOp::Gt => Some(("gt", true)),
+                BinOp::Lte => Some(("le", true)),
+                BinOp::Gte => Some(("ge", true)),
+                _ => None,
+            };
+            if let Some((fop, is_cmp)) = fop {
+                let w = float_tag_width(tag);
+                let la = nv_coerce(self.replay_raw(a, t, m, fns)?, w, false)?;
+                let lb = nv_coerce(self.replay_raw(b, t, m, fns)?, w, false)?;
+                let ret_w = if is_cmp { 1 } else { w };
+                return self.replay_fp_call(&format!("arch_{tag}_{fop}"), &[la, lb], ret_w, fns);
+            }
+        }
+        let ta = self.replay_raw(a, t, m, fns)?;
+        let tb = self.replay_raw(b, t, m, fns)?;
+        match op {
+            BinOp::Add | BinOp::Sub => {
+                let out_w = ta.width.max(tb.width) + 1;
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, out_w, signed)?;
+                let lb = nv_coerce(tb, out_w, signed)?;
+                let v = if op == BinOp::Add {
+                    la.v.wrapping_add(lb.v)
+                } else {
+                    la.v.wrapping_sub(lb.v)
+                };
+                Some(nv(v, out_w, signed))
+            }
+            BinOp::Mul => {
+                let out_w = ta.width.checked_add(tb.width)?;
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, out_w, signed)?;
+                let lb = nv_coerce(tb, out_w, signed)?;
+                Some(nv(la.v.wrapping_mul(lb.v), out_w, signed))
+            }
+            BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                let v = match op {
+                    BinOp::AddWrap => la.v.wrapping_add(lb.v),
+                    BinOp::SubWrap => la.v.wrapping_sub(lb.v),
+                    BinOp::MulWrap => la.v.wrapping_mul(lb.v),
+                    _ => unreachable!(),
+                };
+                Some(nv(v, common, signed))
+            }
+            BinOp::Div | BinOp::Mod => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                // SMT-LIB defines bvudiv/bvsdiv-by-zero, but a counterexample
+                // hinging on that convention is pathological — refuse rather
+                // than risk a convention mismatch.
+                if lb.v == 0 {
+                    return None;
+                }
+                let v = if signed {
+                    let (x, y) = (nv_as_i64(&la), nv_as_i64(&lb));
+                    if op == BinOp::Div {
+                        x.wrapping_div(y) as u64
+                    } else {
+                        x.wrapping_rem(y) as u64
+                    }
+                } else if op == BinOp::Div {
+                    la.v / lb.v
+                } else {
+                    la.v % lb.v
+                };
+                Some(nv(v, common, signed))
+            }
+            BinOp::Eq | BinOp::Neq => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                let eq = la.v == lb.v;
+                Some(nv(
+                    (if op == BinOp::Eq { eq } else { !eq }) as u64,
+                    1,
+                    false,
+                ))
+            }
+            BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                let r = if signed {
+                    let (x, y) = (nv_as_i64(&la), nv_as_i64(&lb));
+                    match op {
+                        BinOp::Lt => x < y,
+                        BinOp::Gt => x > y,
+                        BinOp::Lte => x <= y,
+                        BinOp::Gte => x >= y,
+                        _ => unreachable!(),
+                    }
+                } else {
+                    match op {
+                        BinOp::Lt => la.v < lb.v,
+                        BinOp::Gt => la.v > lb.v,
+                        BinOp::Lte => la.v <= lb.v,
+                        BinOp::Gte => la.v >= lb.v,
+                        _ => unreachable!(),
+                    }
+                };
+                Some(nv(r as u64, 1, false))
+            }
+            BinOp::And | BinOp::Or => {
+                let (ba, bb) = (ta.v != 0, tb.v != 0);
+                let v = if op == BinOp::And { ba && bb } else { ba || bb };
+                Some(nv(v as u64, 1, false))
+            }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                let v = match op {
+                    BinOp::BitAnd => la.v & lb.v,
+                    BinOp::BitOr => la.v | lb.v,
+                    BinOp::BitXor => la.v ^ lb.v,
+                    _ => unreachable!(),
+                };
+                Some(nv(v, common, signed))
+            }
+            BinOp::Shl => {
+                let w = ta.width;
+                let amt = nv_coerce(tb, w, false)?.v;
+                let v = if amt >= 64 { 0 } else { ta.v << amt };
+                Some(nv(v, w, ta.signed))
+            }
+            BinOp::Shr => {
+                let w = ta.width;
+                let amt = nv_coerce(tb, w, false)?.v;
+                let v = if ta.signed {
+                    // bvashr: sign-fill; amounts ≥ width leave all sign bits.
+                    (nv_as_i64(&ta) >> amt.min(63)) as u64
+                } else if amt >= 64 {
+                    0
+                } else {
+                    ta.v >> amt
+                };
+                Some(nv(v, w, ta.signed))
+            }
+            BinOp::Implies => Some(nv((ta.v == 0 || tb.v != 0) as u64, 1, false)),
+            // Nested `|=>` is rejected by the encoder; top-level `|=>` is
+            // handled in replay_prop_at.
+            BinOp::ImpliesNext => None,
+        }
+    }
+
+    /// Mirror of `encode_method`: float conversions through the operator
+    /// table, integer width methods per the encoder's rules.
+    fn replay_method(
+        &self,
+        recv: &Expr,
+        method: &Ident,
+        args: &[Expr],
+        t: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        let r = self.replay_raw(recv, t, m, fns)?;
+        let n = method.name.as_str();
+        let target_w = if args.is_empty() {
+            None
+        } else {
+            fold_const_expr(&args[0], &self.params).map(|v| v as u32)
+        };
+        let recv_tag = self.expr_float_tag(recv);
+        match n {
+            "to_fp32" => {
+                return match recv_tag {
+                    Some("f32") => Some(r),
+                    Some(tag) => {
+                        let x = nv_coerce(r, float_tag_width(tag), false)?;
+                        self.replay_fp_call(&format!("arch_{tag}_to_f32"), &[x], 32, fns)
+                    }
+                    // The encoder passes an integer receiver through
+                    // unconverted; that shape is suspicious, so replay
+                    // declines to mirror it rather than bless it.
+                    None => None,
+                };
+            }
+            "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" | "to_fp6e2m3"
+            | "to_fp6e3m2" => {
+                // Widths come from the format table, never a literal: `8` was
+                // right for both fp8s and is wrong for FP4 (4) and FP6 (6),
+                // which is precisely the wildcard shape the table removed.
+                let (helper, tgt) = narrow_target(n);
+                let w = float_tag_width(tgt);
+                return match recv_tag {
+                    Some(src) if src == tgt => Some(r),
+                    Some("f32") => {
+                        let x = nv_coerce(r, 32, false)?;
+                        self.replay_fp_call(helper, &[x], w, fns)
+                    }
+                    Some(src) => {
+                        let x = nv_coerce(r, float_tag_width(src), false)?;
+                        let widened =
+                            self.replay_fp_call(&format!("arch_{src}_to_f32"), &[x], 32, fns)?;
+                        self.replay_fp_call(helper, &[widened], w, fns)
+                    }
+                    None => None,
+                };
+            }
+            "to_uint" | "to_sint" if recv_tag.is_some() => {
+                let tag = recv_tag.unwrap();
+                let w = target_w?;
+                if w == 0 || w > 64 {
+                    return None;
+                }
+                let f32s = if tag == "f32" {
+                    nv_coerce(r, 32, false)?
+                } else {
+                    let x = nv_coerce(r, float_tag_width(tag), false)?;
+                    self.replay_fp_call(&format!("arch_{tag}_to_f32"), &[x], 32, fns)?
+                };
+                let conv = if n == "to_sint" {
+                    "arch_f32_to_sint"
+                } else {
+                    "arch_f32_to_uint"
+                };
+                let full = self.replay_fp_call(conv, &[f32s, nv(w as u64, 32, false)], 64, fns)?;
+                return Some(nv(full.v, w, n == "to_sint"));
+            }
+            _ => {}
+        }
+        match n {
+            "trunc" => {
+                let w = target_w?;
+                if w == 0 || w > r.width {
+                    return None;
+                }
+                Some(nv(r.v, w, r.signed))
+            }
+            "zext" => {
+                let w = target_w?;
+                if w < r.width || w > 64 {
+                    return None;
+                }
+                Some(nv(r.v, w, false))
+            }
+            "sext" => {
+                let w = target_w?;
+                if w < r.width || w > 64 {
+                    return None;
+                }
+                Some(nv(nv_as_i64(&r) as u64, w, true))
+            }
+            "resize" => {
+                let w = target_w?;
+                let signed = r.signed;
+                nv_coerce(r, w, signed)
+            }
+            _ => None,
+        }
+    }
+}
+
 // ── User-visible report ──────────────────────────────────────────────────────
 
 fn render_report(results: &[PropertyResult]) {
@@ -3611,6 +5994,11 @@ fn render_report(results: &[PropertyResult]) {
             PropertyStatus::Hit(c) => ("HIT", format!("at cycle {c}")),
             PropertyStatus::NotReached(n) => ("NOT REACHED", format!("within bound {n}")),
             PropertyStatus::Inconclusive(why) => ("INCONCLUSIVE", why.clone()),
+            PropertyStatus::ProvedEnclosure(enc) => ("PROVED", enc.clone()),
+            PropertyStatus::Vacuous(why) => ("VACUOUS", why.clone()),
+            PropertyStatus::EncodingUnsound(why) => {
+                ("ENCODING UNSOUND (compiler bug)", why.clone())
+            }
         };
         eprintln!("[{:?}] {:<24} {}  — {}", r.kind, r.name, tag, detail);
         if let Some(cex) = &r.counterexample {
@@ -3620,4 +6008,636 @@ fn render_report(results: &[PropertyResult]) {
         }
     }
     eprintln!();
+}
+
+#[cfg(test)]
+mod tests {
+    //! Counterexample-replay unit tests. These drive `replay_check` directly
+    //! on hand-built solver models, which is the only way to exercise the
+    //! CONTRADICTED verdict: no .arch fixture can make the real encoder
+    //! produce an unsound query, so the z3-gated integration tests only
+    //! cover the CONFIRMED path (every genuine REFUTED must stay REFUTED).
+    use super::*;
+
+    /// `gappa_fmt_params` is now derived from `fp_format::FORMATS`. It
+    /// replaced a hand-written map whose `_ => (3, -16)` wildcard handed
+    /// E5M2's parameters to any format without an explicit arm — and the
+    /// consequence there is not a crash but a *certified numeric bound
+    /// computed for the wrong format*. Pin that the derivation reproduces
+    /// every original entry, and that the formats it newly reaches get the
+    /// values their encodings actually imply.
+    #[test]
+    fn gappa_fmt_params_reproduce_the_hand_table() {
+        // The four entries the hand-written map had, verbatim.
+        for (tag, want) in [
+            ("f32", (24u32, -149i32)),
+            ("bf16", (8, -133)),
+            ("e4m3", (4, -9)),
+            ("e5m2", (3, -16)),
+        ] {
+            assert_eq!(gappa_fmt_params(tag), want, "{tag} must be unchanged");
+        }
+        // The sub-8-bit formats the wildcard would have silently given
+        // E5M2's (3, -16). Smallest subnormal is `(1 - bias) - mant_bits`:
+        // E2M1 bias 1, mant 1 -> 2^-1; E2M3 bias 1, mant 3 -> 2^-3;
+        // E3M2 bias 3, mant 2 -> 2^-4.
+        for (tag, want) in [
+            ("e2m1", (2u32, -1i32)),
+            ("e2m3", (4, -3)),
+            ("e3m2", (3, -4)),
+        ] {
+            assert_ne!(
+                gappa_fmt_params(tag),
+                (3, -16),
+                "{tag} must not inherit E5M2's parameters"
+            );
+            assert_eq!(gappa_fmt_params(tag), want);
+        }
+    }
+
+    /// Every narrowing method formal dispatches must resolve to a helper and
+    /// a tag that the format table knows. A method added to one of the three
+    /// dispatch sites but not to this table is a compile error rather than a
+    /// silent refusal, which is how the sub-8-bit formats stayed unreachable
+    /// from `arch formal` after they shipped everywhere else.
+    #[test]
+    fn narrow_target_covers_every_narrowing_method() {
+        for m in [
+            "to_bf16",
+            "to_fp8e4m3",
+            "to_fp8e5m2",
+            "to_fp4e2m1",
+            "to_fp6e2m3",
+            "to_fp6e3m2",
+        ] {
+            let (helper, tag) = narrow_target(m);
+            assert!(helper.starts_with("arch_f32_to_"), "{m}: {helper}");
+            assert!(
+                crate::fp_format::by_tag(tag).is_some(),
+                "{m}: tag `{tag}` has no format row"
+            );
+            // The helper name and the tag must agree, or a conversion
+            // silently narrows to a different format than it reports.
+            assert_eq!(helper, format!("arch_f32_to_{tag}"), "{m}");
+        }
+    }
+
+    fn parse_and_resolve(src: &str) -> (crate::ast::SourceFile, SymbolTable) {
+        let tokens = crate::lexer::tokenize(src).expect("lexer error");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let parsed = p.parse_source_file().expect("parse error");
+        let ast = crate::elaborate::elaborate(parsed).expect("elaborate error");
+        let symbols = crate::resolve::resolve(&ast).expect("resolve error");
+        (ast, symbols)
+    }
+
+    fn build_ctx<'a>(ast: &'a crate::ast::SourceFile, symbols: &'a SymbolTable) -> FormalCtx<'a> {
+        let module = select_top(ast, None).expect("select_top");
+        let mut ctx = FormalCtx::new(module, symbols);
+        ctx.preprocess().expect("preprocess");
+        ctx
+    }
+
+    fn model(entries: &[(&str, u64)]) -> HashMap<String, u64> {
+        entries.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    const INT_SRC: &str = r#"
+module ReplayInt
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = x < 100; end comb
+  assert ok: x < 100;
+end module ReplayInt
+"#;
+
+    #[test]
+    fn replay_confirms_integer_violation_at_earliest_cycle() {
+        let (ast, symbols) = parse_and_resolve(INT_SRC);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        // Violated at cycle 0 (x=200 ≥ 100).
+        let m = model(&[("x_0", 200), ("x_1", 5), ("x_2", 5)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Confirmed(0)
+        );
+        // Violated only at cycle 2 — replay reports the EARLIEST confirmed
+        // cycle (the #792 wrong-cycle relocation path).
+        let m = model(&[("x_0", 5), ("x_1", 5), ("x_2", 200)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Confirmed(2)
+        );
+    }
+
+    #[test]
+    fn replay_contradicts_nonviolating_model() {
+        // The key negative test: a model that does NOT violate the property
+        // while the solver claimed sat. Every cycle decidable, none
+        // violating → Contradicted → EncodingUnsound at the caller. This is
+        // the stand-in for injecting an encoder bug, which no fixture can do.
+        let (ast, symbols) = parse_and_resolve(INT_SRC);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[("x_0", 5), ("x_1", 6), ("x_2", 7)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+    }
+
+    #[test]
+    fn replay_conservative_on_undecidable_cycle() {
+        // Cycle 1's value is missing from the model: that cycle is
+        // undecidable, so even though no cycle confirms a violation the
+        // verdict must be Inconclusive — NEVER Contradicted from uncertainty.
+        let (ast, symbols) = parse_and_resolve(INT_SRC);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[("x_0", 5), ("x_2", 7)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Inconclusive
+        );
+        // ...but a missing cycle does not mask a confirmed violation
+        // elsewhere.
+        let m = model(&[("x_0", 200), ("x_2", 7)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Confirmed(0)
+        );
+    }
+
+    #[test]
+    fn replay_is_width_exact_for_bitnot() {
+        // Regression pin for the width hazard that rules out a bare-u64
+        // evaluator: `~x` on UInt<8> is an 8-bit bvnot in the query
+        // (~5 = 250), while 64-bit `!5` is a huge value. A width-naive
+        // replay would judge the property false and CONFIRM a phantom
+        // violation; the width-exact replay must CONTRADICT.
+        let src = r#"
+module ReplayNot
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = (~x) == 250; end comb
+  assert inv: (~x) == 250;
+end module ReplayNot
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[("x_0", 5), ("x_1", 5)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Contradicted,
+            "8-bit ~5 is 250: the property holds, so a sat claim contradicts"
+        );
+    }
+
+    #[test]
+    fn replay_preserves_signedness_through_singleton_concat_and_repeat() {
+        // The encoder passes a singleton {a} / {1{x}} through unchanged,
+        // keeping the operand's signed flag; the replay mirror used to fall
+        // into the general concat/repeat arms and force `signed: false`.
+        // With x=200, `{1{signed(x)}} > 1` is a bvsgt in the query
+        // (-56 > 1, false → violated → Confirmed), but a signedness-lossy
+        // replay does 200 > 1 unsigned (true → property holds) and
+        // manufactures a false Contradicted → EncodingUnsound.
+        let src = r#"
+module ReplaySignRep
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = {1{signed(x)}} > 1; end comb
+  assert pos: {1{signed(x)}} > 1;
+end module ReplaySignRep
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[("x_0", 200), ("x_1", 200)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Confirmed(0),
+            "signed(200) as SInt<8> is -56: the signed compare is violated"
+        );
+        // And the property genuinely holds for a positive value — replay
+        // must agree with the encoder there too (Contradicted on a bogus
+        // sat claim), still through the signed compare.
+        let m = model(&[("x_0", 5), ("x_1", 5)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+
+        // Same divergence through the singleton-Concat shape {signed(x)}.
+        let src = r#"
+module ReplaySignCat
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = {signed(x)} > 1; end comb
+  assert pos: {signed(x)} > 1;
+end module ReplaySignCat
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let m = model(&[("x_0", 200), ("x_1", 200)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Confirmed(0)
+        );
+    }
+
+    #[test]
+    fn replay_evaluates_float_ops_through_fp_ir() {
+        let src = r#"
+module ReplayFp
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in FP32;
+  port b: in FP32;
+  port o: out Bool;
+  comb o = (a + b) < 3.0; end comb
+  assert lim: (a + b) < 3.0;
+end module ReplayFp
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let bits = |f: f32| f.to_bits() as u64;
+        // 2.0 + 2.5 = 4.5 ≥ 3.0 at cycle 1: violated there, satisfied at
+        // cycle 0 (1.0 + 1.0 = 2.0 < 3.0).
+        let m = model(&[
+            ("a_0", bits(1.0)),
+            ("b_0", bits(1.0)),
+            ("a_1", bits(2.0)),
+            ("b_1", bits(2.5)),
+        ]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Confirmed(1)
+        );
+        // No violation anywhere → Contradicted.
+        let m = model(&[
+            ("a_0", bits(1.0)),
+            ("b_0", bits(1.0)),
+            ("a_1", bits(0.5)),
+            ("b_1", bits(0.25)),
+        ]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+        // A missing float operand makes that cycle undecidable →
+        // Inconclusive, not Contradicted (conservatism on the float path).
+        let m = model(&[("a_0", bits(1.0)), ("b_0", bits(1.0)), ("a_1", bits(0.5))]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Inconclusive
+        );
+    }
+
+    /// The SMT `is_nan` test is now derived from the format table rather
+    /// than hand-tabulated per tag. `refactor_diff.sh` cannot cover it —
+    /// `--emit-smt` writes only the base, and per-property queries go
+    /// straight to the solver — so pin the derived strings against the
+    /// hand-written originals here, verbatim.
+    ///
+    /// The originals' fallthrough is the reason this matters: the old match
+    /// ended in `_ =>` returning the *e5m2* test, so any format it did not
+    /// name was probed at e5m2's bit offsets.
+    #[test]
+    fn nan_test_smt_reproduces_the_handwritten_tests() {
+        use crate::fp_format::{by_tag, FpFormatId};
+        let cases: [(&str, &str); 4] = [
+            (
+                "f32",
+                "(and (= ((_ extract 30 23) X) #xff) (distinct ((_ extract 22 0) X) #b00000000000000000000000))",
+            ),
+            (
+                "bf16",
+                "(and (= ((_ extract 14 7) X) #xff) (distinct ((_ extract 6 0) X) #b0000000))",
+            ),
+            ("e4m3", "(= ((_ extract 6 0) X) #b1111111)"),
+            (
+                "e5m2",
+                "(and (= ((_ extract 6 2) X) #b11111) (distinct ((_ extract 1 0) X) #b00))",
+            ),
+        ];
+        for (tag, want) in cases {
+            let d = by_tag(tag).expect("known tag must have a table row");
+            assert_eq!(
+                nan_test_smt(d, "X"),
+                want,
+                "{tag}: derived NaN test must match the hand-written original"
+            );
+        }
+        // The derivation is driven by the rule, not by the tag string.
+        assert_eq!(
+            by_tag("e4m3").unwrap().nan_rule,
+            crate::fp_format::NanRule::OcpAllMagnitudeOnes,
+            "OCP E4M3 is not IEEE-shaped: its sole NaN is all-magnitude-ones"
+        );
+        assert_eq!(
+            crate::fp_format::by_id(FpFormatId::E5m2).nan_rule,
+            crate::fp_format::NanRule::IeeeExpAllOnes
+        );
+    }
+
+    /// Replay computes `is_nan` with its own arithmetic rather than calling
+    /// `nan_test_smt`, so the two can drift. They share only the format
+    /// table's rule and field extents. Pin them against hand-picked
+    /// encodings — every canonical NaN, and the near-misses that a wrong
+    /// field offset would misclassify.
+    #[test]
+    fn replay_is_nan_agrees_with_the_format_rules() {
+        use crate::fp_format::{by_tag, NanRule};
+        // (tag, value, expected is_nan)
+        let cases: &[(&str, u64, bool)] = &[
+            // f32: exp all ones + nonzero mantissa.
+            ("f32", 0x7FC0_0000, true),  // canonical qNaN
+            ("f32", 0x7F80_0000, false), // +inf: exp ones, mantissa zero
+            ("f32", 0xFF80_0001, true),  // -sNaN
+            ("f32", 0x3F80_0000, false), // 1.0
+            // bf16: same shape, 8-bit exponent at [14:7].
+            ("bf16", 0x7FC0, true),
+            ("bf16", 0x7F80, false), // +inf
+            ("bf16", 0x3F80, false), // 1.0
+            // e4m3 (OCP): the SOLE NaN is all magnitude bits set.
+            ("e4m3", 0x7F, true),
+            ("e4m3", 0xFF, true),  // sign is not part of the test
+            ("e4m3", 0x7E, false), // 448.0, the max finite — NOT NaN
+            ("e4m3", 0x78, false),
+            // e5m2: IEEE-shaped, exp [6:2].
+            ("e5m2", 0x7D, true),
+            ("e5m2", 0x7C, false), // +inf
+            ("e5m2", 0xFF, true),
+            ("e5m2", 0x7B, false), // max finite
+        ];
+        for &(tag, x, want) in cases {
+            let d = by_tag(tag).expect("known tag");
+            let got = match d.nan_rule {
+                NanRule::IeeeExpAllOnes => {
+                    let (_, el) = d.exp_field();
+                    let exp_mask = (1u64 << d.exp_bits) - 1;
+                    let mant_mask = (1u64 << d.mant_bits) - 1;
+                    (x >> el) & exp_mask == exp_mask && x & mant_mask != 0
+                }
+                NanRule::OcpAllMagnitudeOnes => {
+                    let mag_mask = (1u64 << d.magnitude_bits()) - 1;
+                    x & mag_mask == mag_mask
+                }
+                NanRule::NoNan => false,
+            };
+            assert_eq!(got, want, "{tag}: is_nan({x:#X}) should be {want}");
+        }
+    }
+
+    /// Issue #818: the assignment-target validation must run at the END of
+    /// `preprocess`, not at push time in `walk_comb_stmt`. Module body items
+    /// are walked in ONE source-order pass, so a `comb` block may legally
+    /// precede the `wire` decl it drives (verified with `arch check`) — a
+    /// push-time check would reject this valid design.
+    #[test]
+    fn preprocess_accepts_comb_block_before_wire_decl() {
+        const SRC: &str = r#"
+module CombBeforeWire
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  comb
+    w = a;
+    o = w;
+  end comb
+  wire w: UInt<8>;
+end module CombBeforeWire
+"#;
+        let (ast, symbols) = parse_and_resolve(SRC);
+        let module = select_top(&ast, None).expect("select_top");
+        let mut ctx = FormalCtx::new(module, &symbols);
+        ctx.preprocess()
+            .expect("a comb block preceding its wire decl must preprocess cleanly");
+    }
+
+    /// A comb write to a plain (non-credit_channel) bus field is refused
+    /// with a scope message naming the port and field — not a panic
+    /// (issue #818), and not a silent skip.
+    #[test]
+    fn preprocess_rejects_plain_bus_field_write() {
+        const SRC: &str = r#"
+bus PlainBus
+  valid: out Bool;
+  data:  out UInt<8>;
+end bus PlainBus
+
+module PlainBusWrite
+  port s: target PlainBus;
+  port m: initiator PlainBus;
+  comb
+    m.valid = s.valid;
+  end comb
+end module PlainBusWrite
+"#;
+        let (ast, symbols) = parse_and_resolve(SRC);
+        let module = select_top(&ast, None).expect("select_top");
+        let mut ctx = FormalCtx::new(module, &symbols);
+        let err = ctx
+            .preprocess()
+            .expect_err("plain bus field write must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("assignment to bus signal `m.valid`"),
+            "should name the port and field: {msg}"
+        );
+        assert!(
+            msg.contains("is not supported by `arch formal` v1"),
+            "should name the v1 scope: {msg}"
+        );
+    }
+
+    #[test]
+    fn replay_handles_implies_next_sampling() {
+        // Top-level `a |=> b`: RHS samples at t+1. Model where the
+        // implication is violated exactly at t=0 (a_0=1 but b_1=0).
+        let src = r#"
+module ReplayImpl
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in Bool;
+  port b: in Bool;
+  port o: out Bool;
+  comb o = a; end comb
+  assert follows: a |=> b;
+end module ReplayImpl
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[
+            ("a_0", 1),
+            ("b_0", 0),
+            ("a_1", 0),
+            ("b_1", 0),
+            ("a_2", 0),
+            ("b_2", 1),
+        ]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Confirmed(0)
+        );
+        // a never fires → implication vacuously true everywhere →
+        // a sat claim would contradict.
+        let m = model(&[
+            ("a_0", 0),
+            ("b_0", 0),
+            ("a_1", 0),
+            ("b_1", 0),
+            ("a_2", 0),
+            ("b_2", 0),
+        ]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+    }
+
+    #[test]
+    fn replay_classifies_cover_hits() {
+        // Cover: the solver's sat claim is a HIT, so `violation_truth` flips —
+        // replay must confirm at the earliest cycle where the expression
+        // holds, contradict when it holds nowhere, and stay inconclusive on a
+        // missing model value. No cover property exercised replay before this.
+        let src = r#"
+module ReplayCover
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = x == 42; end comb
+  cover seen: x == 42;
+end module ReplayCover
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        assert!(matches!(prop.kind, AssertKind::Cover));
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        // Hit at cycles 1 and 2 — earliest wins.
+        let m = model(&[("x_0", 7), ("x_1", 42), ("x_2", 42)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Confirmed(1)
+        );
+        // Expression holds at no cycle → a sat (hit) claim contradicts.
+        let m = model(&[("x_0", 7), ("x_1", 8), ("x_2", 9)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+        // Missing model value → that cycle undecidable → Inconclusive,
+        // never Contradicted from uncertainty.
+        let m = model(&[("x_0", 7), ("x_2", 9)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Inconclusive
+        );
+    }
+
+    #[test]
+    fn replay_evaluates_past_across_cycles() {
+        // `past(x, 1)` reads the model one cycle back. The real caller
+        // (run_property) excludes t < past_depth via max_cycle_offsets, so
+        // the realistic range starts at min_t = 1.
+        let src = r#"
+module ReplayPast
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = x == 3; end comb
+  assert stable: past(x, 1) == x;
+end module ReplayPast
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let (min_t, _) = max_cycle_offsets(&prop.expr);
+        assert_eq!(min_t, 1, "past(x, 1) must impose past-depth 1");
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        // x changes 3 → 7 at cycle 2: past(x,1)=3 ≠ 7 violates there.
+        let m = model(&[("x_0", 3), ("x_1", 3), ("x_2", 7)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, min_t, 2, 0, &fns),
+            ReplayVerdict::Confirmed(2)
+        );
+        // x constant → property holds at every in-range cycle → contradiction.
+        let m = model(&[("x_0", 3), ("x_1", 3), ("x_2", 3)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, min_t, 2, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+        // Conservatism: if the range wrongly includes t=0 (below past depth),
+        // that cycle is undecidable (t < n) and blocks Contradicted.
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Inconclusive
+        );
+    }
+
+    #[test]
+    fn replay_evaluates_rose_and_fell() {
+        // rose(x) ≡ x@t ∧ ¬x@(t-1); fell(x) is the mirror. Both carry
+        // past-depth 1, mirroring the encoder's t≥1 requirement.
+        let src = r#"
+module ReplayEdge
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in Bool;
+  port o: out Bool;
+  comb o = x; end comb
+  assert no_rise: !rose(x);
+  assert no_fall: !fell(x);
+end module ReplayEdge
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let no_rise = &ctx.properties[0];
+        let no_fall = &ctx.properties[1];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        // 0 → 1 at cycle 1: rose fires there, fell never does.
+        let m = model(&[("x_0", 0), ("x_1", 1), ("x_2", 1)]);
+        assert_eq!(
+            ctx.replay_check(no_rise, &m, 1, 2, 0, &fns),
+            ReplayVerdict::Confirmed(1)
+        );
+        assert_eq!(
+            ctx.replay_check(no_fall, &m, 1, 2, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+        // 1 → 0 at cycle 2: fell fires there, rose never does.
+        let m = model(&[("x_0", 1), ("x_1", 1), ("x_2", 0)]);
+        assert_eq!(
+            ctx.replay_check(no_fall, &m, 1, 2, 0, &fns),
+            ReplayVerdict::Confirmed(2)
+        );
+        assert_eq!(
+            ctx.replay_check(no_rise, &m, 1, 2, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+    }
 }
