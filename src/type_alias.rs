@@ -25,7 +25,16 @@ use crate::diagnostics::CompileError;
 /// Top-level entry point — substitute all module-scope type aliases in
 /// every `Item::Module` of the source file. Returns the rewritten AST
 /// (aliases removed) or a list of errors.
-pub fn resolve_type_aliases(mut ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+pub fn resolve_type_aliases(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    resolve_type_aliases_with_file_scopes(ast, &[])
+}
+
+/// Multi-file variant: package aliases are visible only in the source file
+/// that declares the package or explicitly imports it with `use`.
+pub fn resolve_type_aliases_with_file_scopes(
+    mut ast: SourceFile,
+    file_scopes: &[std::ops::Range<usize>],
+) -> Result<SourceFile, Vec<CompileError>> {
     let mut errors: Vec<CompileError> = Vec::new();
 
     // Package-declared aliases are published file-wide, exactly like a
@@ -33,6 +42,7 @@ pub fn resolve_type_aliases(mut ast: SourceFile) -> Result<SourceFile, Vec<Compi
     // Collect them first so every module starts with them in scope — that is
     // what lets a shared vocabulary of named formats be declared once.
     let mut package_aliases: AliasMap = HashMap::new();
+    let mut package_alias_owners: HashMap<String, String> = HashMap::new();
     let mut package_alias_spans: HashMap<String, crate::lexer::Span> = HashMap::new();
     for item in &ast.items {
         if let Item::Package(pkg) = item {
@@ -57,14 +67,39 @@ pub fn resolve_type_aliases(mut ast: SourceFile) -> Result<SourceFile, Vec<Compi
                 let mut ty = a.ty.clone();
                 substitute_type(&mut ty, &package_aliases, &mut errors);
                 package_aliases.insert(name.clone(), (ty, a.bus_params.clone()));
+                package_alias_owners.insert(name.clone(), pkg.name.name.clone());
                 package_alias_spans.insert(name, a.name.span);
             }
         }
     }
 
+    let module_packages: HashMap<usize, HashSet<String>> = ast
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Module(module) => Some((
+                module.span.start,
+                packages_for_span(&ast.items, file_scopes, module.span),
+            )),
+            _ => None,
+        })
+        .collect();
     for item in ast.items.iter_mut() {
         if let Item::Module(m) = item {
-            if let Err(mut es) = resolve_module(m, &package_aliases) {
+            let active_packages = module_packages
+                .get(&m.span.start)
+                .cloned()
+                .unwrap_or_default();
+            let visible_aliases: AliasMap = package_aliases
+                .iter()
+                .filter(|(name, _)| {
+                    package_alias_owners
+                        .get(*name)
+                        .is_some_and(|owner| active_packages.contains(owner))
+                })
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            if let Err(mut es) = resolve_module(m, &visible_aliases) {
                 errors.append(&mut es);
             }
         }
@@ -74,6 +109,32 @@ pub fn resolve_type_aliases(mut ast: SourceFile) -> Result<SourceFile, Vec<Compi
     } else {
         Err(errors)
     }
+}
+
+fn packages_for_span(
+    items: &[Item],
+    file_scopes: &[std::ops::Range<usize>],
+    span: crate::lexer::Span,
+) -> HashSet<String> {
+    let scope = if file_scopes.is_empty() {
+        None
+    } else {
+        file_scopes.iter().find(|range| range.contains(&span.start))
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let in_scope = scope
+                .map(|range| range.contains(&item.span().start))
+                .unwrap_or(file_scopes.is_empty());
+            match item {
+                Item::Use(u) if in_scope => Some(u.name.name.clone()),
+                Item::Package(package) if in_scope => Some(package.name.name.clone()),
+                Item::ExternPackage(package) if in_scope => Some(package.name.name.clone()),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// Resolved alias table: `name -> (TypeExpr, bus_params)`.

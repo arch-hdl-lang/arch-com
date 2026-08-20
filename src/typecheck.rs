@@ -204,6 +204,11 @@ pub struct TypeChecker<'a> {
     /// current construct first. Falling back directly to the whole source file
     /// lets unrelated modules with the same local-param name collide.
     active_params: Vec<ParamDecl>,
+    /// Byte ranges of the original files concatenated into `source`.
+    /// Empty for single in-memory sources.
+    file_scopes: Vec<std::ops::Range<usize>>,
+    /// Package imports visible to the item currently being checked.
+    active_uses: HashSet<String>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -218,6 +223,64 @@ impl<'a> TypeChecker<'a> {
             in_bound_err: false,
             vec_of_bus_ports: HashMap::new(),
             active_params: Vec::new(),
+            file_scopes: Vec::new(),
+            active_uses: HashSet::new(),
+        }
+    }
+
+    pub fn with_file_scopes(mut self, scopes: Vec<std::ops::Range<usize>>) -> Self {
+        self.file_scopes = scopes;
+        self
+    }
+
+    fn uses_for_span(&self, span: Span) -> HashSet<String> {
+        let scope = if self.file_scopes.is_empty() {
+            None
+        } else {
+            self.file_scopes
+                .iter()
+                .find(|range| range.contains(&span.start))
+        };
+        self.source
+            .items
+            .iter()
+            .filter_map(|item| {
+                let in_scope = scope
+                    .map(|range| range.contains(&item.span().start))
+                    .unwrap_or(self.file_scopes.is_empty());
+                match item {
+                    Item::Use(u) if in_scope => Some(u.name.name.clone()),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Look up a global while honoring the file-scoped package imports for
+    /// the item currently being checked.
+    fn global_symbol(&self, name: &str) -> Option<&(Symbol, Span)> {
+        if self.package_member_hidden(name) {
+            return None;
+        }
+        self.symbols.globals.get(name)
+    }
+
+    fn package_member_hidden(&self, name: &str) -> bool {
+        !self.active_params.iter().any(|p| p.name.name == name)
+            && self
+                .symbols
+                .package_members
+                .get(name)
+                .is_some_and(|packages| packages.is_disjoint(&self.active_uses))
+    }
+
+    fn check_hidden_package_expr(&mut self, expr: &Expr) {
+        let mut names = HashSet::new();
+        crate::comb_graph::collect_expr_idents(expr, &mut names);
+        for name in names {
+            if self.package_member_hidden(&name) {
+                self.errors.push(CompileError::undefined(&name, expr.span));
+            }
         }
     }
 
@@ -229,6 +292,12 @@ impl<'a> TypeChecker<'a> {
         // Runs before per-item checks so reported errors sort naturally.
         self.check_const_div_zero();
         for item in self.source.items.clone().iter() {
+            self.active_uses = self.uses_for_span(item.span());
+            // A package's own declarations can refer to sibling members
+            // without importing the package that encloses them.
+            if let Item::Package(package) = item {
+                self.active_uses.insert(package.name.name.clone());
+            }
             let saved_params = std::mem::replace(&mut self.active_params, Self::item_params(item));
             item.as_construct().typecheck(&mut self);
             self.active_params = saved_params;
@@ -241,6 +310,7 @@ impl<'a> TypeChecker<'a> {
         // `doc/plan_regfile_latch.md` for the timing assumption.
         for item in &self.source.items {
             if let Item::Module(m) = item {
+                self.active_uses = self.uses_for_span(item.span());
                 self.check_latch_regfile_writes(m);
             }
         }
@@ -804,7 +874,7 @@ impl<'a> TypeChecker<'a> {
                 // Bus ports: validate bus exists, register as a special type
                 if let Some(ref bi) = p.bus_info {
                     if let Some((crate::resolve::Symbol::Bus(_), _)) =
-                        self.symbols.globals.get(&bi.bus_name.name)
+                        self.global_symbol(&bi.bus_name.name)
                     {
                         local_types.insert(p.name.name.clone(), Ty::Bus(bi.bus_name.name.clone()));
                         // Bus params are overridden at the port declaration
@@ -856,7 +926,7 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                             if let Some((crate::resolve::Symbol::Struct(info), _)) =
-                                self.symbols.globals.get(sname)
+                                self.global_symbol(sname).cloned()
                             {
                                 for bind in &l.destructure_fields {
                                     if let Some((_, fty)) =
@@ -1005,7 +1075,7 @@ impl<'a> TypeChecker<'a> {
                             continue;
                         }
                         let Some((crate::resolve::Symbol::Struct(info), _)) =
-                            self.symbols.globals.get(sname).cloned()
+                            self.global_symbol(sname).cloned()
                         else {
                             continue;
                         };
@@ -1265,7 +1335,7 @@ impl<'a> TypeChecker<'a> {
                                     });
                                     if let Some(bi) = inst_bus_info {
                                         if let Some((crate::resolve::Symbol::Bus(info), _)) =
-                                            self.symbols.globals.get(&bi.bus_name.name)
+                                            self.global_symbol(&bi.bus_name.name)
                                         {
                                             let mut pm = info.default_param_map();
                                             for pa in &bi.params {
@@ -1480,9 +1550,7 @@ impl<'a> TypeChecker<'a> {
                 // Bus port: check each output signal is driven (flattened name: port_signal).
                 // For Vec<Bus,N> ports, check each of the N copies independently.
                 let bus_name = &bi.bus_name.name;
-                if let Some((crate::resolve::Symbol::Bus(info), _)) =
-                    self.symbols.globals.get(bus_name)
-                {
+                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.global_symbol(bus_name) {
                     let mut pm = info.default_param_map();
                     for pa in &bi.params {
                         pm.insert(pa.name.name.clone(), &pa.value);
@@ -1964,9 +2032,7 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .find(|(pn, _)| *pn == conn_port_base)
             {
-                if let Some((crate::resolve::Symbol::Bus(info), _)) =
-                    self.symbols.globals.get(bus_name)
-                {
+                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.global_symbol(bus_name) {
                     // Find the inst's bus port perspective, params, and Vec count.
                     let inst_bus_info = self
                         .source
@@ -2080,7 +2146,7 @@ impl<'a> TypeChecker<'a> {
                 continue;
             };
             let Some(crate::resolve::Symbol::Bus(binfo)) =
-                self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
+                self.global_symbol(&bi.bus_name.name).map(|(s, _)| s)
             else {
                 continue;
             };
@@ -2884,9 +2950,7 @@ impl<'a> TypeChecker<'a> {
                     .checked_add(self.type_total_width(scale)?)?,
             ),
             Ty::Struct(name) => {
-                if let Some((crate::resolve::Symbol::Struct(info), _)) =
-                    self.symbols.globals.get(name)
-                {
+                if let Some((crate::resolve::Symbol::Struct(info), _)) = self.global_symbol(name) {
                     let mut total = 0u32;
                     for (_, field_ty) in &info.fields {
                         let w = self.type_expr_width(field_ty)?;
@@ -2959,7 +3023,7 @@ impl<'a> TypeChecker<'a> {
             }
             TypeExpr::Named(ident) => {
                 if let Some((crate::resolve::Symbol::Struct(info), _)) =
-                    self.symbols.globals.get(&ident.name)
+                    self.global_symbol(&ident.name)
                 {
                     let mut total = 0u32;
                     for (_, field_ty) in &info.fields {
@@ -2967,7 +3031,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     Some(total)
                 } else if let Some((crate::resolve::Symbol::Enum(info), _)) =
-                    self.symbols.globals.get(&ident.name)
+                    self.global_symbol(&ident.name)
                 {
                     Some(enum_width(info.variants.len()))
                 } else {
@@ -3175,7 +3239,7 @@ impl<'a> TypeChecker<'a> {
                 }
             })
             .collect();
-        if let Some((Symbol::Enum(info), _)) = self.symbols.globals.get(&enum_name).cloned() {
+        if let Some((Symbol::Enum(info), _)) = self.global_symbol(&enum_name).cloned() {
             let missing: Vec<String> = info
                 .variants
                 .iter()
@@ -3726,6 +3790,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Ty {
         match ty {
             TypeExpr::UInt(width_expr) => {
+                self.check_hidden_package_expr(width_expr);
                 if let Some(w) = self.eval_const_expr(width_expr, local_types) {
                     Ty::UInt(w as u32)
                 } else {
@@ -3733,6 +3798,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             TypeExpr::SInt(width_expr) => {
+                self.check_hidden_package_expr(width_expr);
                 if let Some(w) = self.eval_const_expr(width_expr, local_types) {
                     Ty::SInt(w as u32)
                 } else {
@@ -3750,10 +3816,19 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::FP6E3M2 => Ty::FP6E3M2,
             TypeExpr::E8M0 => Ty::E8M0,
             TypeExpr::UE4M3 => Ty::UE4M3,
-            TypeExpr::Clock(domain) => Ty::Clock(domain.name.clone()),
+            TypeExpr::Clock(domain) => {
+                if self.package_member_hidden(&domain.name) {
+                    self.errors
+                        .push(CompileError::undefined(&domain.name, domain.span));
+                    Ty::Error
+                } else {
+                    Ty::Clock(domain.name.clone())
+                }
+            }
             TypeExpr::Reset(kind, level) => Ty::Reset(*kind, *level),
             TypeExpr::Vec(inner, size_expr) => {
                 let inner_ty = self.resolve_type_expr(inner, _module_name, local_types);
+                self.check_hidden_package_expr(size_expr);
                 if let Some(n) = self.eval_const_expr(size_expr, local_types) {
                     Ty::Vec(Box::new(inner_ty), n as u32)
                 } else {
@@ -3763,13 +3838,14 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::ScaledVec(elem, size_expr, scale) => {
                 let elem_ty = self.resolve_type_expr(elem, _module_name, local_types);
                 let scale_ty = self.resolve_type_expr(scale, _module_name, local_types);
+                self.check_hidden_package_expr(size_expr);
                 match self.eval_const_expr(size_expr, local_types) {
                     Some(n) => Ty::ScaledVec(Box::new(elem_ty), n as u32, Box::new(scale_ty)),
                     None => Ty::Error,
                 }
             }
             TypeExpr::Named(ident) => {
-                if let Some((sym, _)) = self.symbols.globals.get(&ident.name) {
+                if let Some((sym, _)) = self.global_symbol(&ident.name) {
                     match sym {
                         crate::resolve::Symbol::Struct(_) => Ty::Struct(ident.name.clone()),
                         crate::resolve::Symbol::Enum(info) => {
@@ -4236,11 +4312,11 @@ impl<'a> TypeChecker<'a> {
                     TypeExpr::Bool | TypeExpr::Bit => Ty::Bool,
                     TypeExpr::Named(ident) => {
                         if let Some((crate::resolve::Symbol::Struct(_), _)) =
-                            self.symbols.globals.get(&ident.name)
+                            self.global_symbol(&ident.name)
                         {
                             Ty::Struct(ident.name.clone())
                         } else if let Some((crate::resolve::Symbol::Enum(info), _)) =
-                            self.symbols.globals.get(&ident.name)
+                            self.global_symbol(&ident.name)
                         {
                             Ty::Enum(ident.name.clone(), enum_width(info.variants.len()))
                         } else {
@@ -4295,6 +4371,9 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Ident(name) => {
                 if let Some(ty) = local_types.get(name) {
                     ty.clone()
+                } else if self.package_member_hidden(name) {
+                    self.errors.push(CompileError::undefined(name, expr.span));
+                    Ty::Error
                 } else {
                     // Check param (treat as generic width)
                     Ty::Error
@@ -4437,9 +4516,17 @@ impl<'a> TypeChecker<'a> {
                     _ => Ty::Error,
                 }
             }
-            ExprKind::StructLiteral(name, _) => Ty::Struct(name.name.clone()),
+            ExprKind::StructLiteral(name, _) => {
+                if self.package_member_hidden(&name.name) {
+                    self.errors
+                        .push(CompileError::undefined(&name.name, name.span));
+                    Ty::Error
+                } else {
+                    Ty::Struct(name.name.clone())
+                }
+            }
             ExprKind::EnumVariant(name, _) => {
-                if let Some((sym, _)) = self.symbols.globals.get(&name.name) {
+                if let Some((sym, _)) = self.global_symbol(&name.name) {
                     match sym {
                         crate::resolve::Symbol::Enum(info) => {
                             let bits = enum_width(info.variants.len());
@@ -4451,6 +4538,9 @@ impl<'a> TypeChecker<'a> {
                         }
                         _ => {}
                     }
+                } else if self.package_member_hidden(&name.name) {
+                    self.errors
+                        .push(CompileError::undefined(&name.name, name.span));
                 }
                 Ty::Error
             }
@@ -4856,7 +4946,7 @@ impl<'a> TypeChecker<'a> {
                     // Result type matches the inner expression.
                     return self.resolve_expr_type(&call_args[0], module_name, local_types);
                 }
-                if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
+                if let Some((Symbol::Function(overloads), _)) = self.global_symbol(name).cloned() {
                     // Resolve argument types first.
                     let arg_tys: Vec<Ty> = call_args
                         .iter()
@@ -4867,7 +4957,6 @@ impl<'a> TypeChecker<'a> {
                         .collect();
 
                     // Find matching overload: same arity, compatible types.
-                    let overloads = overloads.clone(); // detach borrow so we can call &mut self methods
                     let chosen = overloads.iter().enumerate().find(|(_, ov)| {
                         if ov.arg_types.len() != arg_tys.len() {
                             return false;
@@ -5013,7 +5102,7 @@ impl<'a> TypeChecker<'a> {
                     };
                 }
             }
-            if let Some((sym, _)) = self.symbols.globals.get(name) {
+            if let Some((sym, _)) = self.global_symbol(name).cloned() {
                 if let crate::resolve::Symbol::Struct(info) = sym {
                     for (fname, fty) in &info.fields {
                         if fname == &field.name {
@@ -5024,7 +5113,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Ty::Bus(name) = &base_ty {
-            if let Some((sym, _)) = self.symbols.globals.get(name) {
+            if let Some((sym, _)) = self.global_symbol(name) {
                 if let crate::resolve::Symbol::Bus(info) = sym {
                     // Port-site `<P=expr>` overrides, when the base names a
                     // bus port (or a `Vec<Bus,N>` element) of the enclosing
@@ -7570,7 +7659,7 @@ impl<'a> TypeChecker<'a> {
         for p in ports {
             if let Some(bi) = &p.bus_info {
                 let bus_name = &bi.bus_name.name;
-                if let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                if let Some((Symbol::Bus(info), _)) = self.global_symbol(bus_name) {
                     let mut param_map = info.default_param_map();
                     for pa in &bi.params {
                         param_map.insert(pa.name.name.clone(), &pa.value);

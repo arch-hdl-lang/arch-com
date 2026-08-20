@@ -41,28 +41,26 @@ impl<'a> Codegen<'a> {
         //     identically-named locals.
         // Both kinds emit at file scope so module-header parameter
         // types like `parameter rv32m_e RV32M` resolve.
-        for item in &self.source.items {
-            if let Item::Use(u) = item {
-                let arch_pkg = self
-                    .source
-                    .items
-                    .iter()
-                    .any(|i| matches!(i, Item::Package(p) if p.name.name == u.name.name));
-                let extern_pkg = self.source.items.iter().find_map(|i| {
-                    if let Item::ExternPackage(ep) = i {
-                        if ep.name.name == u.name.name {
-                            return Some(ep);
-                        }
+        for package_name in self.active_uses(m.span) {
+            let arch_pkg = self
+                .source
+                .items
+                .iter()
+                .any(|i| matches!(i, Item::Package(p) if p.name.name == package_name));
+            let extern_pkg = self.source.items.iter().find_map(|i| {
+                if let Item::ExternPackage(ep) = i {
+                    if ep.name.name == package_name {
+                        return Some(ep);
                     }
-                    None
-                });
-                if arch_pkg {
-                    self.out.push_str(&format!("import {}::*;\n", u.name.name));
-                } else if let Some(ep) = extern_pkg {
-                    for ty in &ep.types {
-                        self.out
-                            .push_str(&format!("import {}::{};\n", u.name.name, ty.name));
-                    }
+                }
+                None
+            });
+            if arch_pkg {
+                self.out.push_str(&format!("import {package_name}::*;\n"));
+            } else if let Some(ep) = extern_pkg {
+                for ty in &ep.types {
+                    self.out
+                        .push_str(&format!("import {package_name}::{};\n", ty.name));
                 }
             }
         }
