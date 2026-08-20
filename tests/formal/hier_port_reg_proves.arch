@@ -1,0 +1,33 @@
+// Issue #821: a sub-module `port reg` output used to be silently dropped
+// during flattening. `flatten_for_formal` walks the sub's BODY, and a
+// `port reg` is a PortDecl rather than a RegDecl body item, so no register
+// was emitted for it; the sub's `o <= 7` was port-mapped straight onto the
+// parent wire, landed in `reg_writes` under a name absent from `self.regs`,
+// and `emit_base` (which iterates `regs`) dropped it. The parent wire was
+// then DECLARED but never CONSTRAINED — a free variable — so this
+// trivially-true property REFUTED with a bogus counterexample.
+//
+// `o` only ever holds 0 (reset) or 7, so `w <= 7` must PROVE.
+
+module SubReg
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port reg o: out UInt<8> reset rst => 0;
+  seq on clk rising
+    o <= 8'd7;
+  end seq
+end module SubReg
+
+module HierPortReg
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  wire w: UInt<8>;
+
+  inst u0: SubReg
+    clk <- clk;
+    rst <- rst;
+    o -> w;
+  end inst u0
+
+  assert w_bounded: w <= 8'd7;
+end module HierPortReg

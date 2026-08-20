@@ -79,6 +79,11 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations (arch#852) — an `assert`/`cover` on this
+        // fifo may call one, and SV has no free functions.
+        self.emit_pending_functions();
+
         if is_async {
             self.emit_fifo_async_body(f, &port_names, has_overflow_param);
         } else if f.kind == FifoKind::Lifo {
@@ -87,8 +92,10 @@ impl<'a> Codegen<'a> {
             self.emit_fifo_sync_body(f, &port_names, has_overflow_param);
         }
 
-        // Auto-generated safety assertions for FIFO invariants
-        {
+        // Auto-generated safety assertions for FIFO invariants.
+        // Suppressed under `--no-auto-asserts` (issue #649) — the
+        // user-written `assert`/`cover` block below is unaffected.
+        if !self.suppress_auto_sva {
             let clk_names: Vec<String> = f
                 .ports
                 .iter()

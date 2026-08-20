@@ -1,0 +1,14 @@
+// Counterexample-replay integration fixture (arch#803): an unconstrained
+// float property that genuinely REFUTES. The replay pass must independently
+// CONFIRM the solver's counterexample through the fp_ir interpreter — the
+// report shows plain REFUTED with no inconclusive note and no ENCODING
+// UNSOUND flag.
+module ReplayFloatRefutes
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in FP32;
+  port b: in FP32;
+  port o: out Bool;
+  comb o = (a + b) < 3.0; end comb
+  assert lim: (a + b) < 3.0;
+end module ReplayFloatRefutes

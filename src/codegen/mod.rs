@@ -3,6 +3,7 @@ use crate::diagnostics::CompileWarning;
 use crate::lexer::Span;
 use crate::resolve::{Symbol, SymbolTable};
 use crate::typecheck::enum_width;
+use method_call::MethodCallHost;
 
 // Per-construct submodules. Each contributes `pub(super) fn emit_<name>`
 // to `impl Codegen` and lives in its own file mirroring the layout of
@@ -16,6 +17,7 @@ mod fifo;
 mod fp;
 mod fsm;
 mod linklist;
+mod method_call;
 mod module;
 mod pipeline;
 mod ram;
@@ -136,6 +138,11 @@ pub struct Codegen<'a> {
     comment_idx: usize,
     /// Functions collected from the current file; emitted inside each module body.
     pending_functions: Vec<FunctionDecl>,
+    /// Declared types of the function currently being emitted (params +
+    /// typed locals). Consulted ahead of the module scope by
+    /// `ident_decl_type`/`ident_float_fmt` so float-op dispatch works
+    /// inside `function` bodies; empty outside `emit_function`.
+    fn_local_types: std::collections::HashMap<String, TypeExpr>,
     /// Maps call-site span.start → overload index (for overloaded functions only).
     overload_map: std::collections::HashMap<usize, usize>,
     /// Bus port names in the current module → bus name (for FieldAccess rewriting).
@@ -167,6 +174,11 @@ pub struct Codegen<'a> {
     /// Set when any FP32/BF16 operation was emitted, so the `arch_f32_*` /
     /// `arch_bf16_*` SystemVerilog helper package is prepended to the output.
     fp_helpers_used: std::cell::Cell<bool>,
+    /// `ScaledVec` block helpers referenced by this design, one per distinct
+    /// (op, element, N, scale, policy, rounding). A `BTreeSet` so the emitted
+    /// prefix is byte-stable run to run — `scripts/refactor_diff.sh` diffs
+    /// emitted SV, so a `HashSet` here would show up as spurious churn.
+    block_helpers: std::cell::RefCell<std::collections::BTreeSet<crate::fp_block::BlockHelper>>,
     /// Staged pipelined-operator sites (`arch build --staged-ops`,
     /// proposal phase 3.5) — see `pipelined_ops::StagedSite`. Empty in
     /// cascade mode. `staged_emitted` records that at least one instance
@@ -176,14 +188,19 @@ pub struct Codegen<'a> {
     /// Floating-point special-value profile (doc/archive/plan_fp_types.md §6.2).
     /// Selects the emitted NaN-canonicalization / NaN→int constants.
     fp_compat: crate::FpCompat,
+    /// `arch build --no-auto-asserts` (issue #649): when set, every
+    /// compiler-generated `assert property` / `cover property` is skipped
+    /// — bounds (`_auto_bound_*`), divide-by-zero (`_auto_div0_*`), FSM
+    /// legal-state/reachability/transition, FIFO overflow/underflow,
+    /// counter range, guard-contract, handshake/credit-channel/TLM protocol
+    /// SVA. User-written `assert`/`cover` items (module/fsm/fifo/... body)
+    /// are unaffected — narrower reading of the issue, called out in the
+    /// PR description. Thread-lowering asserts are already off by default
+    /// (`--auto-thread-asserts` opts in) and are additionally gated by this
+    /// flag at the CLI layer so `--no-auto-asserts` wins if both are passed.
+    suppress_auto_sva: bool,
     /// Name of the construct currently being emitted (for symbol lookups).
     current_construct: String,
-    /// Function-local argument / let types for the function currently being
-    /// emitted. Most expression types can be recovered from the enclosing
-    /// construct AST, but function locals are not present in module_scopes.
-    /// Keeping this small overlay lets signed Vec element selection use the
-    /// same type-aware rvalue emission inside module/package functions.
-    local_expr_types: std::cell::RefCell<std::collections::HashMap<String, TypeExpr>>,
     /// Context-sensitive identifier substitutions.
     /// Used during Vec method predicate emission to rebind `item` and
     /// `index` to per-iteration expressions (e.g. `vec[3]`, `2'd3`).
@@ -227,6 +244,144 @@ pub struct Codegen<'a> {
     /// affects SDC output — the SV `always_ff` for a multicycle reg is
     /// byte-identical to a plain reg.
     multicycle_regs: Vec<MulticycleReg>,
+    /// SV-frontend portability (arch#650, extended by arch#807/#810): pending
+    /// `logic [W-1:0] name;` / `assign name = <expr>;` line pairs
+    /// synthesized by two call sites when a base expression is not
+    /// portable to emit bare/parenthesized on Icarus:
+    /// - The `Index` (`expr[i]`) emitter, when its base is not a
+    ///   "portable" SV bit-select base (the same allowlist
+    ///   `is_portable_bit_slice_base` enforces for `[hi:lo]`/`[start +:
+    ///   w]`, spec §3.2.1) — e.g. an arithmetic expression `(a - b)[i]`.
+    /// - `hoist_slice_base`, used by the `BitSlice`/`PartSelect` emitters
+    ///   for a `Concat`/`Repeat` base (arch#807) or a
+    ///   `FunctionCall`/`MethodCall` base (arch#810) — all portable per
+    ///   `is_portable_bit_slice_base` but rejected by Icarus 12.0 bare or
+    ///   parenthesized, and the `MethodCall` size-cast shape
+    ///   (`8'(x)[hi:lo]`) rejected by Verilator too. `codegen/pipeline.rs`
+    ///   reaches the same hoist through `hoist_slice_base_in` (arch#845),
+    ///   supplying its own stage-prefix-rewriting emitter.
+    /// Drained by `line()` so the hoisted temp's declaration+assignment
+    /// land in a *legal* position for the scope currently being emitted —
+    /// see `hoist_scope` for the three cases. That placement is scope-based,
+    /// not caller-based, so `codegen/pipeline.rs` needs nothing of its own:
+    /// its stage-update `always_ff` and its `always_comb` openers go through
+    /// `line()` like any other, and `HoistScope::Procedural` splices their
+    /// temps out to module scope automatically. `RefCell` because both call
+    /// sites live inside `&self` expression emission; the actual
+    /// `self.out` mutation only ever happens later from `line()`'s
+    /// `&mut self`, so this needs no unsafe code (contrast `ident_subst`'s
+    /// unsafe interior mutation in `emit_vec_method`).
+    index_hoist_temps: std::cell::RefCell<Vec<HoistTemp>>,
+    /// Byte offset in `out` just past the innermost runtime `for`-loop
+    /// body's `begin` line, plus the indent to declare at. `None` outside a
+    /// loop body.
+    ///
+    /// A hoist temp whose RHS reads the loop iterator (arch#861) can be
+    /// declared neither at module scope (the iterator is a loop-local
+    /// `int`, invisible there — and its `$bits(...)` width expression reads
+    /// the iterator too) nor immediately before the reading statement (a
+    /// declaration may not follow a statement inside `begin`/`end`; that is
+    /// the arch#846 hard error). It goes at the *top of the loop body*,
+    /// which both Icarus 12.0 and Verilator 5.048 accept and where the
+    /// iterator is in scope.
+    loop_body_anchor: Option<(usize, usize)>,
+    /// Monotonic counter for `index_hoist_temps` temp names
+    /// (`arch_idx_base_<n>`). Never reset per-module — names only need
+    /// to be unique within the emitted file, and a file-wide counter is
+    /// simplest and avoids any cross-module collision risk.
+    index_hoist_counter: std::cell::Cell<u32>,
+    /// Which SV scope `line()` is currently emitting into, so a drained
+    /// `index_hoist_temps` entry can be placed somewhere the language
+    /// actually allows it (arch#846). Maintained by `line()` itself
+    /// (`track_hoist_scope`) plus an explicit push/pop around function
+    /// bodies in `emit_function`.
+    hoist_scope: HoistScope,
+    /// Names of `for i in <range> ... end for` loop variables whose SV
+    /// `for` loop body is currently being emitted (module.rs / mod.rs
+    /// `emit_for_loop_sv`). A hoisted `Index`-base temp's continuous
+    /// `assign` is emitted at module scope (see `hoist_scope` above),
+    /// which cannot see a loop-local `int` iterator. So when a hoist
+    /// candidate's base expression references an active loop variable,
+    /// the hoist is skipped (falls back to prior bare-emission behavior)
+    /// rather than emitting SV that references an out-of-scope
+    /// identifier. arch#846 did NOT relax this: relocating the `assign`
+    /// out of the enclosing `always_*` block is exactly what makes the
+    /// iterator invisible, so the bail is still required for every
+    /// non-function scope. (A function body is the one scope where the
+    /// assignment stays in place — see `HoistScope::Function` — and the
+    /// bail is harmless there because `emit_function_for` does not
+    /// register its iterator in this set to begin with.)
+    runtime_for_loop_vars: std::collections::HashSet<String>,
+}
+
+/// One pending portability hoist temp (see `Codegen::index_hoist_temps`).
+///
+/// Kept as its three parts rather than as pre-rendered SV lines because
+/// the legal rendering differs by scope: module/`generate` and `always_*`
+/// scopes want `logic [W-1:0] n;` + a continuous `assign n = rhs;`, while
+/// a `function automatic` body wants the declaration hoisted to the top of
+/// the body and a *blocking* `n = rhs;` left in place (a continuous assign
+/// to an automatic-lifetime variable is illegal SV — rejected outright by
+/// both Icarus 12.0 and Verilator 5.048).
+#[derive(Debug, Clone)]
+struct HoistTemp {
+    /// Width expression, already paren-normalized (e.g. `8`, `($bits(x))`).
+    width: String,
+    /// Temp identifier (`arch_idx_base_<n>`).
+    name: String,
+    /// Emitted SV for the base expression the temp stands in for.
+    rhs: String,
+    /// The RHS references a live runtime `for`-loop iterator, so the value
+    /// must be computed *inside* the loop body where that iterator is in
+    /// scope — only the declaration may move to module scope, and the
+    /// assignment has to be a blocking one (arch#861). Same split
+    /// `HoistScope::Function` applies for function arguments, but decided
+    /// per-temp rather than per-scope: one `always_*` block can mix
+    /// loop-var temps with ordinary ones.
+    in_loop: bool,
+}
+
+impl HoistTemp {
+    fn decl_line(&self) -> String {
+        format!("logic [{}-1:0] {};", self.width, self.name)
+    }
+    fn continuous_assign_line(&self) -> String {
+        format!("assign {} = {};", self.name, self.rhs)
+    }
+    fn blocking_assign_line(&self) -> String {
+        format!("{} = {};", self.name, self.rhs)
+    }
+}
+
+/// Where `line()` is currently emitting, for the purposes of placing a
+/// drained `HoistTemp` (arch#846).
+#[derive(Debug, Clone, Copy)]
+enum HoistScope {
+    /// Module body or a `generate` block — both a `logic` declaration and
+    /// a continuous `assign` are legal right where the reading statement
+    /// goes, so the temp is emitted inline immediately before it.
+    Module,
+    /// Inside an `always_ff` / `always_comb` / `always_latch` / `initial` /
+    /// `final` block. Neither a declaration nor a continuous `assign` is
+    /// legal there (a mid-block declaration is a hard syntax error on both
+    /// frontends once a statement precedes it, and `assign` inside a
+    /// procedural block is a *procedural continuous assignment*, which
+    /// Icarus rejects as unsynthesizable). Both lines are spliced into
+    /// `out` at `at` — the byte offset of the block's opening line, i.e.
+    /// module scope — indented to `indent`. `depth` tracks `begin`/`end`
+    /// nesting so the scope pops when the block closes.
+    Procedural {
+        at: usize,
+        indent: usize,
+        depth: i32,
+    },
+    /// Inside a `function automatic ... endfunction` body. Module scope is
+    /// *wrong* here (the base expression may reference function
+    /// arguments/locals, which don't exist outside the body), so only the
+    /// declaration moves — spliced to `at`, the offset just past the
+    /// function header, which is where SV requires body declarations — and
+    /// the assignment stays inline as a blocking assignment.
+    Function { at: usize, indent: usize },
 }
 
 /// One `multicycle <N>` reg discovered during SV emission. Captures
@@ -257,6 +412,7 @@ impl<'a> Codegen<'a> {
             comments: Vec::new(),
             comment_idx: 0,
             pending_functions: Vec::new(),
+            fn_local_types: std::collections::HashMap::new(),
             overload_map,
             bus_ports: std::collections::HashMap::new(),
             vec_of_bus_port_count: std::collections::HashMap::new(),
@@ -265,11 +421,12 @@ impl<'a> Codegen<'a> {
             bus_wires: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
             fp_helpers_used: std::cell::Cell::new(false),
+            block_helpers: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             staged_sites: Vec::new(),
             staged_emitted: std::cell::Cell::new(false),
             fp_compat: crate::FpCompat::default(),
+            suppress_auto_sva: false,
             current_construct: String::new(),
-            local_expr_types: std::cell::RefCell::new(std::collections::HashMap::new()),
             ident_subst: std::collections::HashMap::new(),
             loop_var_subst: std::collections::HashMap::new(),
             vec_sizes: std::collections::HashMap::new(),
@@ -278,6 +435,11 @@ impl<'a> Codegen<'a> {
             find_first_widths: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             shared_call_sites: std::collections::HashMap::new(),
             multicycle_regs: Vec::new(),
+            index_hoist_temps: std::cell::RefCell::new(Vec::new()),
+            loop_body_anchor: None,
+            index_hoist_counter: std::cell::Cell::new(0),
+            hoist_scope: HoistScope::Module,
+            runtime_for_loop_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -413,6 +575,13 @@ impl<'a> Codegen<'a> {
         self.staged_sites = sites;
     }
 
+    /// `arch build --no-auto-asserts` (issue #649). Default `false`
+    /// (unchanged behavior — all generated SVA emitted as before).
+    pub fn with_suppress_auto_sva(mut self, suppress: bool) -> Self {
+        self.suppress_auto_sva = suppress;
+        self
+    }
+
     pub fn generate(&mut self) -> String {
         // `source.items` is borrowed for the whole call but `generate_items`
         // only needs an `&[Item]` slice — clone the Vec into a local so we
@@ -426,6 +595,9 @@ impl<'a> Codegen<'a> {
     pub fn generate_items(&mut self, items: &[Item]) -> String {
         self.out.clear();
         self.comment_idx = 0;
+        // `HoistScope`'s splice offsets index into `out`; clearing it
+        // invalidates them, and emission always restarts at module scope.
+        self.hoist_scope = HoistScope::Module;
         self.collect_multicycle_regs(items);
         // Pre-collect all functions so they can be emitted inside each module.
         self.pending_functions = items
@@ -491,6 +663,24 @@ impl<'a> Codegen<'a> {
             self.out = prefix;
         }
 
+        // Prepend the `ScaledVec` block helpers, then the FP helpers they
+        // call. Order matters: SV requires a function to be declared before
+        // use at `$unit` scope, and the block helpers call `arch_f32_mul` and
+        // friends, so the FP block must end up FIRST in the file. Prepending
+        // the blocks before the FP helpers achieves that.
+        if !self.block_helpers.borrow().is_empty() {
+            let mut prefix = String::from(
+                "// ── ScaledVec block helpers — generated from src/fp_block.rs, which\n\
+                 // emits this SystemVerilog and the matching arch-sim C++ from ONE\n\
+                 // descriptor. Do not edit by hand. ──\n",
+            );
+            for h in self.block_helpers.borrow().iter() {
+                prefix.push_str(&crate::fp_block::sv_definition(*h));
+                prefix.push('\n');
+            }
+            prefix.push_str(&self.out);
+            self.out = prefix;
+        }
         // Prepend the floating-point helper functions if any FP op was emitted.
         if self.fp_helpers_used.get() {
             let mut prefix = fp::fp_sv_helpers(self.fp_compat);
@@ -517,11 +707,258 @@ impl<'a> Codegen<'a> {
     }
 
     fn line(&mut self, s: &str) {
+        // Drain any SV-portability index-hoist temporaries synthesized
+        // while building `s` (see `index_hoist_temps`), placing them
+        // wherever the enclosing SV scope actually permits a declaration
+        // and an assignment (see `HoistScope`). Empty in the overwhelming
+        // common case (no hoist was needed), so this is a no-op
+        // borrow-and-check for ordinary lines.
+        let pending: Vec<HoistTemp> = {
+            let mut hoists = self.index_hoist_temps.borrow_mut();
+            if hoists.is_empty() {
+                Vec::new()
+            } else {
+                std::mem::take(&mut *hoists)
+            }
+        };
+        if !pending.is_empty() {
+            self.place_hoist_temps(&pending);
+        }
+        let line_start = self.out.len();
         for _ in 0..self.indent {
             self.out.push_str("  ");
         }
         self.out.push_str(s);
         self.out.push('\n');
+        self.track_hoist_scope(s, line_start);
+    }
+
+    /// Append one already-rendered line at the current indent, without
+    /// any hoist drain or scope tracking (`line()`'s inner half). Used to
+    /// emit hoist temps themselves — they can never contain a `begin`, an
+    /// `always_*` opener, or a further hoist.
+    fn raw_line(&mut self, s: &str) {
+        for _ in 0..self.indent {
+            self.out.push_str("  ");
+        }
+        self.out.push_str(s);
+        self.out.push('\n');
+    }
+
+    /// Render `pending` hoist temps into the right place for the scope
+    /// `line()` is currently emitting into (arch#846).
+    fn place_hoist_temps(&mut self, pending: &[HoistTemp]) {
+        fn push_at(buf: &mut String, indent: usize, s: &str) {
+            for _ in 0..indent {
+                buf.push_str("  ");
+            }
+            buf.push_str(s);
+            buf.push('\n');
+        }
+        // arch#861: a temp reading the loop iterator declares at the top of
+        // the loop body and is assigned in place, whatever the enclosing
+        // scope. Split it out first — one `always_*` block can mix these
+        // with ordinary temps, and the two go to different places. Done
+        // before the `hoist_scope` match because the destination is the
+        // loop body, not the block.
+        let (in_loop, pending): (Vec<&HoistTemp>, Vec<&HoistTemp>) = pending
+            .iter()
+            .partition(|t| t.in_loop && self.loop_body_anchor.is_some());
+        if let Some((at, indent)) = self.loop_body_anchor {
+            if !in_loop.is_empty() {
+                let mut text = String::new();
+                for t in &in_loop {
+                    push_at(&mut text, indent, &t.decl_line());
+                }
+                self.out.insert_str(at, &text);
+                let grew = text.len();
+                self.loop_body_anchor = Some((at + grew, indent));
+                // A splice at the loop-body top sits *after* an enclosing
+                // block's opener, so `Procedural`'s module-scope anchor is
+                // unaffected; the reverse is not true and is fixed up below.
+            }
+        }
+        match self.hoist_scope {
+            HoistScope::Module => {
+                for t in &pending {
+                    let decl = t.decl_line();
+                    let asg = t.continuous_assign_line();
+                    self.raw_line(&decl);
+                    self.raw_line(&asg);
+                }
+            }
+            HoistScope::Procedural { at, indent, depth } => {
+                // Splice declaration + continuous assign out to module
+                // scope, immediately above the `always_*` opener. `at` is
+                // advanced so a second hoist from the same block lands
+                // after the first, preserving generation order (an outer
+                // hoist's RHS can reference an inner one).
+                let mut text = String::new();
+                for t in &pending {
+                    push_at(&mut text, indent, &t.decl_line());
+                    push_at(&mut text, indent, &t.continuous_assign_line());
+                }
+                self.out.insert_str(at, &text);
+                let grew = text.len();
+                self.hoist_scope = HoistScope::Procedural {
+                    at: at + grew,
+                    indent,
+                    depth,
+                };
+                // This splice landed *before* the loop-body anchor, so
+                // shift it by what was inserted or the next in-loop
+                // declaration lands mid-statement.
+                if let Some((loop_at, loop_indent)) = self.loop_body_anchor {
+                    if loop_at >= at {
+                        self.loop_body_anchor = Some((loop_at + grew, loop_indent));
+                    }
+                }
+            }
+            HoistScope::Function { at, indent } => {
+                // Only the declaration moves (to the top of the function
+                // body, where SV requires declarations); the value must be
+                // computed in place, and as a blocking assignment because a
+                // continuous `assign` to an automatic-lifetime variable is
+                // illegal.
+                let mut text = String::new();
+                for t in &pending {
+                    push_at(&mut text, indent, &t.decl_line());
+                }
+                self.out.insert_str(at, &text);
+                let grew = text.len();
+                self.hoist_scope = HoistScope::Function {
+                    at: at + grew,
+                    indent,
+                };
+                if let Some((loop_at, loop_indent)) = self.loop_body_anchor {
+                    if loop_at >= at {
+                        self.loop_body_anchor = Some((loop_at + grew, loop_indent));
+                    }
+                }
+                for t in &pending {
+                    let asg = t.blocking_assign_line();
+                    self.raw_line(&asg);
+                }
+            }
+        }
+        // arch#861 in-loop temps: declaration was spliced to the loop-body
+        // top above; the value is computed here, inline, where the iterator
+        // is in scope. Emitted after the scope match so the assignment
+        // follows any temp this same drain moved to module scope (an
+        // in-loop RHS may read one).
+        for t in &in_loop {
+            let asg = t.blocking_assign_line();
+            self.raw_line(&asg);
+        }
+    }
+
+    /// Update `hoist_scope` after `line()` emitted `s` starting at byte
+    /// offset `line_start` in `out`.
+    ///
+    /// Only `Module` <-> `Procedural` is tracked here; `Function` is
+    /// entered and left explicitly by `emit_function`, and a function body
+    /// can never contain an `always_*` block, so it is left alone.
+    fn track_hoist_scope(&mut self, s: &str, line_start: usize) {
+        if matches!(self.hoist_scope, HoistScope::Function { .. }) {
+            return;
+        }
+        let code = Self::strip_sv_comments_and_strings(s);
+        let delta = Self::begin_end_delta(&code);
+        match self.hoist_scope {
+            HoistScope::Module => {
+                // A procedural block that opens without a `begin` is a
+                // single-statement `always_* <stmt>;` — nothing follows it
+                // inside the block, and any hoist for that statement was
+                // already drained (at module scope) before this line.
+                if delta > 0 && Self::opens_procedural_block(&code) {
+                    self.hoist_scope = HoistScope::Procedural {
+                        at: line_start,
+                        indent: self.indent,
+                        depth: delta,
+                    };
+                }
+            }
+            HoistScope::Procedural { at, indent, depth } => {
+                let d = depth + delta;
+                self.hoist_scope = if d <= 0 {
+                    HoistScope::Module
+                } else {
+                    HoistScope::Procedural {
+                        at,
+                        indent,
+                        depth: d,
+                    }
+                };
+            }
+            HoistScope::Function { .. } => unreachable!("filtered above"),
+        }
+    }
+
+    /// Blank out `"..."` string literals and `// ...` trailing comments so
+    /// `begin`/`end` counting can't be thrown off by prose inside an
+    /// `$error`/`$fatal` message or a generated comment.
+    fn strip_sv_comments_and_strings(s: &str) -> String {
+        let bytes = s.as_bytes();
+        let mut out = String::with_capacity(s.len());
+        let mut i = 0;
+        let mut in_str = false;
+        while i < bytes.len() {
+            let c = bytes[i] as char;
+            if in_str {
+                if c == '\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if c == '"' {
+                    in_str = false;
+                }
+                out.push(' ');
+                i += 1;
+                continue;
+            }
+            if c == '"' {
+                in_str = true;
+                out.push(' ');
+                i += 1;
+                continue;
+            }
+            if c == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                break;
+            }
+            out.push(c);
+            i += 1;
+        }
+        out
+    }
+
+    /// `+1` per `begin` keyword, `-1` per `end` keyword, matching whole
+    /// identifiers only — so `endcase`/`endfunction`/`endgenerate`/
+    /// `endmodule` and any identifier merely *containing* "end" are not
+    /// miscounted, and `end else begin` nets out to zero.
+    fn begin_end_delta(code: &str) -> i32 {
+        let mut delta = 0;
+        for tok in code.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')) {
+            match tok {
+                "begin" => delta += 1,
+                "end" => delta -= 1,
+                _ => {}
+            }
+        }
+        delta
+    }
+
+    /// Does `code` open an SV procedural block? Keyed on the first token,
+    /// which is how every emitter in `src/codegen/` writes these.
+    fn opens_procedural_block(code: &str) -> bool {
+        let first = code
+            .trim_start()
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("");
+        matches!(
+            first,
+            "always" | "always_ff" | "always_comb" | "always_latch" | "initial" | "final"
+        )
     }
 
     /// Emit one inst-site param override `.NAME(...)`. Handles two cases:
@@ -728,36 +1165,62 @@ impl<'a> Codegen<'a> {
         f.name.name.clone()
     }
 
-    fn emit_function(&mut self, f: &FunctionDecl) {
-        fn collect_local_types(
-            items: &[FunctionBodyItem],
-            out: &mut std::collections::HashMap<String, TypeExpr>,
-        ) {
+    /// Collect declared types visible inside a function body: params plus
+    /// every explicitly-typed `let`, recursively through if/for bodies.
+    fn collect_fn_local_types(f: &FunctionDecl) -> std::collections::HashMap<String, TypeExpr> {
+        fn walk(items: &[FunctionBodyItem], out: &mut std::collections::HashMap<String, TypeExpr>) {
             for item in items {
                 match item {
                     FunctionBodyItem::Let(l) => {
-                        if let Some(ty) = &l.ty {
-                            out.insert(l.name.name.clone(), ty.clone());
+                        if let Some(t) = &l.ty {
+                            out.insert(l.name.name.clone(), t.clone());
                         }
                     }
                     FunctionBodyItem::IfElse(ie) => {
-                        collect_local_types(&ie.then_body, out);
-                        collect_local_types(&ie.else_body, out);
+                        walk(&ie.then_body, out);
+                        walk(&ie.else_body, out);
                     }
-                    FunctionBodyItem::For(fl) => collect_local_types(&fl.body, out),
-                    FunctionBodyItem::Return(_) | FunctionBodyItem::Assign(_) => {}
+                    FunctionBodyItem::For(fl) => walk(&fl.body, out),
+                    _ => {}
                 }
             }
         }
+        let mut out = std::collections::HashMap::new();
+        for a in &f.args {
+            out.insert(a.name.name.clone(), a.ty.clone());
+        }
+        walk(&f.body, &mut out);
+        out
+    }
 
-        let saved_local_types = std::mem::take(self.local_expr_types.get_mut());
-        self.local_expr_types.get_mut().extend(
-            f.args
-                .iter()
-                .map(|arg| (arg.name.name.clone(), arg.ty.clone())),
-        );
-        collect_local_types(&f.body, self.local_expr_types.get_mut());
+    /// Emit every top-level (`Item::Function`) and `package` function
+    /// collected into `pending_functions` as a local `function automatic`
+    /// declaration inside the construct currently being emitted.
+    ///
+    /// SystemVerilog has no free functions: a `function automatic` must
+    /// live inside a module (or package/`$unit`), so ARCH copies the whole
+    /// set into each emitted module. Every construct that can emit a call
+    /// to a user function must therefore run this at the top of its module
+    /// body — which for a long time only `emit_module` did, so a `pipeline`
+    /// / `fsm` / `fifo` / … that called one emitted SV referencing an
+    /// undeclared function and no frontend would accept it (arch#852).
+    /// Emitting the full set (rather than only the ones this construct
+    /// references) matches `emit_module`'s long-standing behavior; an
+    /// unused `function automatic` is legal, unused SV.
+    ///
+    /// `pending_functions` is taken and restored because `emit_function`
+    /// needs `&mut self` and the same set is re-emitted into every
+    /// following construct in the file.
+    pub(crate) fn emit_pending_functions(&mut self) {
+        let fns = std::mem::take(&mut self.pending_functions);
+        for f in &fns {
+            self.emit_function(f);
+        }
+        self.pending_functions = fns;
+    }
 
+    fn emit_function(&mut self, f: &FunctionDecl) {
+        self.fn_local_types = Self::collect_fn_local_types(f);
         let sv_name = self.sv_function_name(f);
         let ret_str = self.emit_type_str(&f.ret_ty);
         let args_str: Vec<String> = f
@@ -772,6 +1235,16 @@ impl<'a> Codegen<'a> {
             args_str.join(", ")
         ));
         self.indent += 1;
+        // Hoist temps synthesized inside this body get their declaration
+        // spliced here — just past the header, the only place SV allows a
+        // body declaration — while the assignment stays in place (arch#846).
+        // Module scope would be wrong: the RHS may reference `f`'s
+        // arguments or locals.
+        let saved_scope = self.hoist_scope;
+        self.hoist_scope = HoistScope::Function {
+            at: self.out.len(),
+            indent: self.indent,
+        };
         for item in &f.body {
             match item {
                 FunctionBodyItem::Let(l) => {
@@ -794,16 +1267,17 @@ impl<'a> Codegen<'a> {
                     self.emit_function_for(fl);
                 }
                 FunctionBodyItem::Assign(a) => {
-                    let target = self.emit_lvalue_str(&a.target);
+                    let target = self.emit_expr_str(&a.target);
                     let val = self.emit_expr_str(&a.value);
                     self.line(&format!("{target} = {val};"));
                 }
             }
         }
+        self.hoist_scope = saved_scope;
         self.indent -= 1;
         self.line("endfunction");
         self.line("");
-        *self.local_expr_types.get_mut() = saved_local_types;
+        self.fn_local_types.clear();
     }
 
     // ── `shared function` support ────────────────────────────────────
@@ -1280,7 +1754,7 @@ impl<'a> Codegen<'a> {
                 FunctionBodyItem::IfElse(ie) => self.emit_function_if(ie),
                 FunctionBodyItem::For(fl) => self.emit_function_for(fl),
                 FunctionBodyItem::Assign(a) => {
-                    let target = self.emit_lvalue_str(&a.target);
+                    let target = self.emit_expr_str(&a.target);
                     let val = self.emit_expr_str(&a.value);
                     self.line(&format!("{target} = {val};"));
                 }
@@ -1543,8 +2017,19 @@ impl<'a> Codegen<'a> {
                     "for (int {var} = {start}; {var} <= {end}; {var}++) begin"
                 ));
                 self.indent += 1;
+                // `var` is a real SV loop-local `int`, not visible at module
+                // scope — a hoist temp reading it must declare inside this
+                // body (arch#861), so record both the iterator name and the
+                // body's top-of-block offset for the body's duration.
+                let newly_inserted = self.runtime_for_loop_vars.insert(var.clone());
+                let prev_anchor = self.loop_body_anchor;
+                self.loop_body_anchor = Some((self.out.len(), self.indent));
                 for s in &f.body {
                     emit_body_stmt(self, s);
+                }
+                self.loop_body_anchor = prev_anchor;
+                if newly_inserted {
+                    self.runtime_for_loop_vars.remove(var);
                 }
                 self.indent -= 1;
                 self.line("end");
@@ -1558,8 +2043,15 @@ impl<'a> Codegen<'a> {
                         "for (int {var} = {val}; {var} == {val}; {var}++) begin"
                     ));
                     self.indent += 1;
+                    let newly_inserted = self.runtime_for_loop_vars.insert(var.clone());
+                    let prev_anchor = self.loop_body_anchor;
+                    self.loop_body_anchor = Some((self.out.len(), self.indent));
                     for s in &f.body {
                         emit_body_stmt(self, s);
+                    }
+                    self.loop_body_anchor = prev_anchor;
+                    if newly_inserted {
+                        self.runtime_for_loop_vars.remove(var);
                     }
                     self.indent -= 1;
                     self.line("end");
@@ -1744,7 +2236,7 @@ impl<'a> Codegen<'a> {
                 if ctx == AssignCtx::Blocking {
                     if let ExprKind::ExprMatch(scrutinee, arms) = &a.value.kind {
                         let s = self.emit_expr_str(scrutinee);
-                        let target = self.emit_lvalue_str(&a.target);
+                        let target = self.emit_expr_str(&a.target);
                         self.line(&format!("case ({s})"));
                         self.indent += 1;
                         for arm in arms {
@@ -1770,7 +2262,7 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 let val = self.emit_expr_str(&a.value);
-                let tgt = self.emit_lvalue_str(&a.target);
+                let tgt = self.emit_expr_str(&a.target);
                 self.line(&format!("{} {} {};", tgt, ctx.op(), val));
             }
             Stmt::IfElse(ie) => {
@@ -2041,248 +2533,8 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn module_body_decl_type(body: &[ModuleBodyItem], name: &str) -> Option<TypeExpr> {
-        body.iter().find_map(|item| match item {
-            ModuleBodyItem::RegDecl(r) if r.name.name == name => Some(r.ty.clone()),
-            ModuleBodyItem::WireDecl(w) if w.name.name == name => Some(w.ty.clone()),
-            ModuleBodyItem::LetBinding(l) if l.name.name == name => l.ty.clone(),
-            _ => None,
-        })
-    }
-
-    fn param_declared_type(params: &[ParamDecl], name: &str) -> Option<TypeExpr> {
-        params.iter().find_map(|p| {
-            if p.name.name != name {
-                return None;
-            }
-            match &p.kind {
-                ParamKind::ConstVec(ty) | ParamKind::Logic(ty) => Some(ty.clone()),
-                ParamKind::Const
-                | ParamKind::WidthConst(..)
-                | ParamKind::Type(_)
-                | ParamKind::EnumConst(_) => None,
-            }
-        })
-    }
-
-    /// Recover the declared type of a name in the construct currently being
-    /// emitted. Codegen normally only needs strings, but SystemVerilog packed
-    /// array selections lose the signedness of anonymous element types. This
-    /// lookup supplies the source-level type needed to restore ARCH's
-    /// `Vec<SInt<W>, N>[i] -> SInt<W>` semantics on rvalue reads.
-    fn current_ident_type(&self, name: &str) -> Option<TypeExpr> {
-        if let Some(ty) = self.local_expr_types.borrow().get(name).cloned() {
-            return Some(ty);
-        }
-
-        for item in &self.source.items {
-            match item {
-                Item::Module(m) if m.name.name == self.current_construct => {
-                    if let Some(ty) = Self::param_declared_type(&m.params, name) {
-                        return Some(ty);
-                    }
-                    if let Some(p) = m.ports.iter().find(|p| p.name.name == name) {
-                        return Some(p.ty.clone());
-                    }
-                    return Self::module_body_decl_type(&m.body, name);
-                }
-                Item::Fsm(f) if f.name.name == self.current_construct => {
-                    if let Some(ty) = Self::param_declared_type(&f.params, name) {
-                        return Some(ty);
-                    }
-                    if let Some(p) = f.ports.iter().find(|p| p.name.name == name) {
-                        return Some(p.ty.clone());
-                    }
-                    if let Some(r) = f.regs.iter().find(|r| r.name.name == name) {
-                        return Some(r.ty.clone());
-                    }
-                    if let Some(w) = f.wires.iter().find(|w| w.name.name == name) {
-                        return Some(w.ty.clone());
-                    }
-                    return f
-                        .lets
-                        .iter()
-                        .find(|l| l.name.name == name)
-                        .and_then(|l| l.ty.clone());
-                }
-                Item::Pipeline(p) if p.name.name == self.current_construct => {
-                    if let Some(ty) = Self::param_declared_type(&p.params, name) {
-                        return Some(ty);
-                    }
-                    if let Some(port) = p.ports.iter().find(|port| port.name.name == name) {
-                        return Some(port.ty.clone());
-                    }
-                    let mut found: Option<TypeExpr> = None;
-                    for stage in &p.stages {
-                        if let Some(ty) = Self::module_body_decl_type(&stage.body, name) {
-                            if let Some(previous) = &found {
-                                // Bare stage-local names are legal in each
-                                // stage, so duplicates are common. Only use a
-                                // construct-wide lookup when every duplicate
-                                // has the same emitted type; explicit
-                                // `Stage.member` references are resolved by
-                                // pipeline_stage_member_type instead.
-                                if self.emit_type_and_array_suffix(previous)
-                                    != self.emit_type_and_array_suffix(&ty)
-                                {
-                                    return None;
-                                }
-                            } else {
-                                found = Some(ty);
-                            }
-                        }
-                    }
-                    return found;
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    fn pipeline_stage_member_type(&self, stage_name: &str, member: &str) -> Option<TypeExpr> {
-        self.source.items.iter().find_map(|item| {
-            let Item::Pipeline(p) = item else {
-                return None;
-            };
-            if p.name.name != self.current_construct {
-                return None;
-            }
-            p.stages
-                .iter()
-                .find(|stage| stage.name.name == stage_name)
-                .and_then(|stage| Self::module_body_decl_type(&stage.body, member))
-        })
-    }
-
-    /// Best-effort source TypeExpr recovery for codegen decisions. This is
-    /// deliberately conservative: returning None merely preserves the old
-    /// emission. The important cases are declared Vecs, nested indexing,
-    /// explicit Vec casts, struct fields, and pipeline stage references.
-    fn expr_type_for_codegen(&self, expr: &Expr) -> Option<TypeExpr> {
-        match &expr.kind {
-            ExprKind::Ident(name) | ExprKind::SynthIdent(name, _) => self.current_ident_type(name),
-            ExprKind::Cast(_, ty) => Some((**ty).clone()),
-            ExprKind::Index(base, _) => match self.expr_type_for_codegen(base)? {
-                TypeExpr::Vec(inner, _) => Some(*inner),
-                TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit => {
-                    Some(TypeExpr::Bool)
-                }
-                _ => None,
-            },
-            ExprKind::FieldAccess(base, field) => {
-                if let ExprKind::Ident(stage_name) = &base.kind {
-                    if let Some(ty) = self.pipeline_stage_member_type(stage_name, &field.name) {
-                        return Some(ty);
-                    }
-                }
-                let TypeExpr::Named(type_name) = self.expr_type_for_codegen(base)? else {
-                    return None;
-                };
-                let Some((Symbol::Struct(info), _)) = self.symbols.globals.get(&type_name.name)
-                else {
-                    return None;
-                };
-                info.fields
-                    .iter()
-                    .find(|(name, _)| name == &field.name)
-                    .map(|(_, ty)| ty.clone())
-            }
-            ExprKind::MethodCall(base, method, args) => match method.name.as_str() {
-                "sext" => args.first().cloned().map(|w| TypeExpr::SInt(Box::new(w))),
-                "trunc" | "resize" => {
-                    let width = args.first()?.clone();
-                    match self.expr_type_for_codegen(base)? {
-                        TypeExpr::SInt(_) => Some(TypeExpr::SInt(Box::new(width))),
-                        TypeExpr::UInt(_) | TypeExpr::Bool | TypeExpr::Bit => {
-                            Some(TypeExpr::UInt(Box::new(width)))
-                        }
-                        _ => None,
-                    }
-                }
-                "reverse" => self.expr_type_for_codegen(base),
-                _ => None,
-            },
-            ExprKind::Signed(inner) => match self.expr_type_for_codegen(inner)? {
-                TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(TypeExpr::SInt(w)),
-                TypeExpr::Bool | TypeExpr::Bit => Some(TypeExpr::SInt(Box::new(Expr::new(
-                    ExprKind::Literal(LitKind::Dec(1)),
-                    expr.span,
-                )))),
-                _ => None,
-            },
-            ExprKind::Unsigned(inner) => match self.expr_type_for_codegen(inner)? {
-                TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(TypeExpr::UInt(w)),
-                TypeExpr::Bool | TypeExpr::Bit => Some(TypeExpr::UInt(Box::new(Expr::new(
-                    ExprKind::Literal(LitKind::Dec(1)),
-                    expr.span,
-                )))),
-                _ => None,
-            },
-            ExprKind::Binary(_, lhs, _) => self.expr_type_for_codegen(lhs),
-            ExprKind::Ternary(_, then_expr, _) => self.expr_type_for_codegen(then_expr),
-            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => {
-                self.expr_type_for_codegen(inner)
-            }
-            ExprKind::FunctionCall(name, _) => {
-                let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) else {
-                    return None;
-                };
-                let index = self
-                    .overload_map
-                    .get(&expr.span.start)
-                    .copied()
-                    .unwrap_or(0);
-                overloads.get(index).map(|f| f.ret_ty.clone())
-            }
-            _ => None,
-        }
-    }
-
-    fn index_result_is_sint(&self, base: &Expr) -> bool {
-        matches!(
-            self.expr_type_for_codegen(base),
-            Some(TypeExpr::Vec(inner, _)) if matches!(*inner, TypeExpr::SInt(_))
-        )
-    }
-
-    /// Emit an assignment target without rvalue-only signed casts. A blanket
-    /// `$signed(vec[i])` rewrite would otherwise turn indexed writes into an
-    /// illegal system-function lvalue.
-    fn emit_lvalue_str(&self, expr: &Expr) -> String {
-        match &expr.kind {
-            ExprKind::Index(base, idx) => {
-                let b = self.emit_lvalue_str(base);
-                let i = self.emit_expr_str(idx);
-                format!("{b}[{i}]")
-            }
-            ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_lvalue_str(base);
-                if let Some(width) = Self::try_indexed_part_select(hi, lo) {
-                    let l = self.emit_expr_str(lo);
-                    format!("{b}[{l} +: {width}]")
-                } else {
-                    let h = self.emit_expr_str(hi);
-                    let l = self.emit_expr_str(lo);
-                    format!("{b}[{h}:{l}]")
-                }
-            }
-            ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_lvalue_str(base);
-                let s = self.emit_expr_str(start);
-                let w = self.emit_expr_str(width);
-                let op = if *up { "+:" } else { "-:" };
-                format!("{b}[{s} {op} {w}]")
-            }
-            _ => self.emit_expr_str(expr),
-        }
-    }
-
     /// Check if an expression produces a signed (SInt) value.
     fn expr_is_signed(&self, expr: &Expr) -> bool {
-        if matches!(self.expr_type_for_codegen(expr), Some(TypeExpr::SInt(_))) {
-            return true;
-        }
         match &expr.kind {
             ExprKind::Cast(_, ty) => matches!(&**ty, TypeExpr::SInt(_)),
             ExprKind::Ident(name) => self.ident_is_sint(name),
@@ -2306,18 +2558,24 @@ impl<'a> Codegen<'a> {
     /// `arch_f32_*` / `arch_bf16_*` SystemVerilog helper functions.
     fn expr_float_fmt(&self, expr: &Expr) -> Option<&'static str> {
         match &expr.kind {
-            ExprKind::Cast(_, ty) => match &**ty {
-                TypeExpr::FP32 => Some("f32"),
-                TypeExpr::BF16 => Some("bf16"),
-                _ => None,
-            },
+            ExprKind::Cast(_, ty) => crate::fp_format::by_type_expr(&**ty).map(|f| f.tag),
             ExprKind::Ident(name) => self.ident_float_fmt(name),
             ExprKind::Literal(LitKind::Float(_)) => Some("f32"),
             ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Fp32, _)) => Some("f32"),
             ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Bf16, _)) => Some("bf16"),
+            ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::E4m3, _)) => Some("e4m3"),
+            ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::E5m2, _)) => Some("e5m2"),
             ExprKind::MethodCall(_, method, _) => match method.name.as_str() {
                 "to_fp32" => Some("f32"),
                 "to_bf16" => Some("bf16"),
+                "to_fp8e4m3" => Some("e4m3"),
+                "to_fp8e5m2" => Some("e5m2"),
+                "to_fp4e2m1" => Some("e2m1"),
+                "to_fp6e2m3" => Some("e2m3"),
+                "to_fp6e3m2" => Some("e3m2"),
+                // NOTE: `to_e8m0` is deliberately absent — E8M0 is a scale
+                // type, not a float format, so it must not enter float
+                // operator dispatch.
                 _ => None,
             },
             ExprKind::FunctionCall(name, args) if name == "fma" => {
@@ -2330,13 +2588,232 @@ impl<'a> Codegen<'a> {
                 _ => None,
             },
             ExprKind::Ternary(_, t, e) => self.expr_float_fmt(t).or_else(|| self.expr_float_fmt(e)),
+            // Composite accesses: Vec element and struct field reads carry
+            // their declared element/field float type.
+            ExprKind::Index(..) | ExprKind::FieldAccess(..) => match self.expr_decl_type(expr) {
+                Some(TypeExpr::FP32) => Some("f32"),
+                Some(TypeExpr::BF16) => Some("bf16"),
+                Some(TypeExpr::FP8E4M3) => Some("e4m3"),
+                Some(TypeExpr::FP8E5M2) => Some("e5m2"),
+                _ => None,
+            },
             _ => None,
         }
     }
 
+    /// Declared TypeExpr of a scope identifier (ports, regs, typed lets,
+    /// wires) — the basis for composite float resolution (`Vec<FP32,N>[i]`,
+    /// `s.field`).
+    fn ident_decl_type(&self, name: &str) -> Option<TypeExpr> {
+        // Function-body scope shadows the module scope while emitting a
+        // `function` (params + typed locals).
+        if let Some(t) = self.fn_local_types.get(name) {
+            return Some(t.clone());
+        }
+        let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) else {
+            // Pipelines (and other scope-less constructs) fall back to a
+            // direct AST walk.
+            return self.pipeline_ident_decl_type(name);
+        };
+        match scope.get(name).map(|(sym, _)| sym)? {
+            Symbol::Port(p) => Some(p.ty.clone()),
+            Symbol::Reg(r) => Some(r.ty.clone()),
+            Symbol::Let(_) => {
+                for item in &self.source.items {
+                    match item {
+                        Item::Module(m) if m.name.name == self.current_construct => {
+                            for bi in &m.body {
+                                match bi {
+                                    ModuleBodyItem::LetBinding(l) if l.name.name == name => {
+                                        return l.ty.clone();
+                                    }
+                                    ModuleBodyItem::WireDecl(w) if w.name.name == name => {
+                                        return Some(w.ty.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Item::Fsm(f) if f.name.name == self.current_construct => {
+                            for l in &f.lets {
+                                if l.name.name == name {
+                                    return l.ty.clone();
+                                }
+                            }
+                            for w in &f.wires {
+                                if w.name.name == name {
+                                    return Some(w.ty.clone());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Pipeline-scope identifier types: pipelines have no `module_scopes`
+    /// entry, so resolve ports and stage-body decls straight from the AST.
+    fn pipeline_ident_decl_type(&self, name: &str) -> Option<TypeExpr> {
+        for item in &self.source.items {
+            let Item::Pipeline(p) = item else { continue };
+            if p.name.name != self.current_construct {
+                continue;
+            }
+            for port in &p.common.ports {
+                if port.name.name == name {
+                    return Some(port.ty.clone());
+                }
+            }
+            for stage in &p.stages {
+                for bi in &stage.body {
+                    match bi {
+                        ModuleBodyItem::RegDecl(r) if r.name.name == name => {
+                            return Some(r.ty.clone());
+                        }
+                        ModuleBodyItem::WireDecl(w) if w.name.name == name => {
+                            return Some(w.ty.clone());
+                        }
+                        ModuleBodyItem::LetBinding(l) if l.name.name == name => {
+                            return l.ty.clone();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Declared TypeExpr of an lvalue-shaped expression: identifiers,
+    /// Vec-element selects, and struct field accesses (recursively, so
+    /// `v[i].f` and `s.f[i]` both resolve). Used to give composite float
+    /// accesses a float format for operator dispatch.
+    /// The block-scale type an expression *produces*, if any.
+    ///
+    /// Wider than `expr_decl_type` on purpose: a scale type carries no float
+    /// dispatch tag (it is not a float), so any site that routes by tag falls
+    /// through to the INTEGER path on a scale value. That is fine while the
+    /// receiver is a declared signal, and silently wrong the moment it is a
+    /// chained conversion — `v.to_e8m0().to_fp32()` emitted an integer widen
+    /// and reinterpreted the 8-bit code as a whole number (arch#904).
+    fn scale_type_of(&self, e: &Expr) -> Option<TypeExpr> {
+        if let ExprKind::MethodCall(_, m, _) = &e.kind {
+            match m.name.as_str() {
+                "to_e8m0" => return Some(TypeExpr::E8M0),
+                "to_ue4m3" => return Some(TypeExpr::UE4M3),
+                _ => {}
+            }
+        }
+        match self.expr_decl_type(e) {
+            Some(t @ (TypeExpr::E8M0 | TypeExpr::UE4M3)) => Some(t),
+            _ => None,
+        }
+    }
+
+    fn expr_decl_type(&self, e: &Expr) -> Option<TypeExpr> {
+        match &e.kind {
+            ExprKind::Ident(name) => self.ident_decl_type(name),
+            ExprKind::Index(base, _) => match self.expr_decl_type(base)? {
+                TypeExpr::Vec(elem, _) => Some(*elem),
+                _ => None,
+            },
+            ExprKind::FieldAccess(base, field) => {
+                // Bus port signal (`m.data`): resolve through the bus def's
+                // signal types. Bus ports carry their bus in PortDecl
+                // bus_info (AST), not in the TypeExpr.
+                if let ExprKind::Ident(root) = &base.kind {
+                    if let Some(bus_name) = self.port_bus_name(root) {
+                        if let Some((Symbol::Bus(bi), _)) = self.symbols.globals.get(&bus_name) {
+                            for (sname, _dir, sty) in &bi.signals {
+                                if sname == &field.name {
+                                    return Some(sty.clone());
+                                }
+                            }
+                        }
+                        return None;
+                    }
+                    // Cross-stage pipeline reg reference (`Mul.p`).
+                    if let Some(t) = self.pipeline_stage_reg_type(root, &field.name) {
+                        return Some(t);
+                    }
+                }
+                let base_ty = self.expr_decl_type(base)?;
+                let TypeExpr::Named(sname) = base_ty else {
+                    return None;
+                };
+                if let Some((Symbol::Struct(si), _)) = self.symbols.globals.get(&sname.name) {
+                    for (fname, fty) in &si.fields {
+                        if fname == &field.name {
+                            return Some(fty.clone());
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Bus name of a bus-typed port in the current construct, if any.
+    fn port_bus_name(&self, port: &str) -> Option<String> {
+        for item in &self.source.items {
+            let ports = match item {
+                Item::Module(m) if m.name.name == self.current_construct => &m.ports,
+                Item::Fsm(f) if f.name.name == self.current_construct => &f.common.ports,
+                Item::Pipeline(p) if p.name.name == self.current_construct => &p.common.ports,
+                _ => continue,
+            };
+            for pd in ports {
+                if pd.name.name == port {
+                    return pd.bus_info.as_ref().map(|bi| bi.bus_name.name.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Type of `Stage.reg` when `Stage` is a stage of the current pipeline.
+    fn pipeline_stage_reg_type(&self, stage: &str, reg: &str) -> Option<TypeExpr> {
+        for item in &self.source.items {
+            let Item::Pipeline(p) = item else { continue };
+            if p.name.name != self.current_construct {
+                continue;
+            }
+            for st in &p.stages {
+                if st.name.name != stage {
+                    continue;
+                }
+                for bi in &st.body {
+                    if let ModuleBodyItem::RegDecl(r) = bi {
+                        if r.name.name == reg {
+                            return Some(r.ty.clone());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Float format of an identifier declared in the current construct's scope.
     fn ident_float_fmt(&self, name: &str) -> Option<&'static str> {
-        if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
+        if let Some(t) = self.fn_local_types.get(name) {
+            return crate::fp_format::by_type_expr(t).map(|f| f.tag);
+        }
+        let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) else {
+            return match self.pipeline_ident_decl_type(name) {
+                Some(TypeExpr::FP32) => Some("f32"),
+                Some(TypeExpr::BF16) => Some("bf16"),
+                Some(TypeExpr::FP8E4M3) => Some("e4m3"),
+                Some(TypeExpr::FP8E5M2) => Some("e5m2"),
+                _ => None,
+            };
+        };
+        {
             if let Some((sym, _)) = scope.get(name) {
                 let ty = match sym {
                     Symbol::Port(p) => Some(&p.ty),
@@ -2344,11 +2821,7 @@ impl<'a> Codegen<'a> {
                     _ => None,
                 };
                 if let Some(ty) = ty {
-                    return match ty {
-                        TypeExpr::FP32 => Some("f32"),
-                        TypeExpr::BF16 => Some("bf16"),
-                        _ => None,
-                    };
+                    return crate::fp_format::by_type_expr(ty).map(|f| f.tag);
                 }
                 if matches!(sym, Symbol::Let(_)) {
                     return self.let_binding_float_fmt(name);
@@ -2368,11 +2841,9 @@ impl<'a> Codegen<'a> {
                     for p in &m.params {
                         if p.name.name == name {
                             match &p.kind {
-                                ParamKind::Logic(ty) | ParamKind::Type(ty) => match ty {
-                                    TypeExpr::FP32 => return Some("f32"),
-                                    TypeExpr::BF16 => return Some("bf16"),
-                                    _ => return None,
-                                },
+                                ParamKind::Logic(ty) | ParamKind::Type(ty) => {
+                                    return crate::fp_format::by_type_expr(ty).map(|f| f.tag)
+                                }
                                 _ => return None,
                             }
                         }
@@ -2382,11 +2853,9 @@ impl<'a> Codegen<'a> {
                     for p in &f.params {
                         if p.name.name == name {
                             match &p.kind {
-                                ParamKind::Logic(ty) | ParamKind::Type(ty) => match ty {
-                                    TypeExpr::FP32 => return Some("f32"),
-                                    TypeExpr::BF16 => return Some("bf16"),
-                                    _ => return None,
-                                },
+                                ParamKind::Logic(ty) | ParamKind::Type(ty) => {
+                                    return crate::fp_format::by_type_expr(ty).map(|f| f.tag)
+                                }
                                 _ => return None,
                             }
                         }
@@ -2396,11 +2865,9 @@ impl<'a> Codegen<'a> {
                     for p in &pkg.params {
                         if p.name.name == name {
                             match &p.kind {
-                                ParamKind::Logic(ty) | ParamKind::Type(ty) => match ty {
-                                    TypeExpr::FP32 => return Some("f32"),
-                                    TypeExpr::BF16 => return Some("bf16"),
-                                    _ => return None,
-                                },
+                                ParamKind::Logic(ty) | ParamKind::Type(ty) => {
+                                    return crate::fp_format::by_type_expr(ty).map(|f| f.tag)
+                                }
                                 _ => return None,
                             }
                         }
@@ -2414,11 +2881,7 @@ impl<'a> Codegen<'a> {
 
     /// Float format of a `let`/`wire` binding by AST lookup (modules + fsms).
     fn let_binding_float_fmt(&self, name: &str) -> Option<&'static str> {
-        let fmt_of = |t: &TypeExpr| match t {
-            TypeExpr::FP32 => Some("f32"),
-            TypeExpr::BF16 => Some("bf16"),
-            _ => None,
-        };
+        let fmt_of = |t: &TypeExpr| crate::fp_format::by_type_expr(t).map(|f| f.tag);
         for item in &self.source.items {
             match item {
                 Item::Module(m) if m.name.name == self.current_construct => {
@@ -2692,10 +3155,36 @@ impl<'a> Codegen<'a> {
             }
             TypeExpr::FP32 => Some("32".to_string()),
             TypeExpr::BF16 => Some("16".to_string()),
+            TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some("8".to_string()),
+            TypeExpr::FP4E2M1 => Some("4".to_string()),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some("6".to_string()),
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => Some("8".to_string()),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_data_width(inner)?;
                 let n = self.emit_expr_str(size);
                 Some(format!("({iw}) * ({n})"))
+            }
+            // Packed block: `scale_w + N*elem_w`. Folded to a literal when `N`
+            // is constant (the common case — MXFP4 becomes a plain `136`);
+            // falls back to an expression so a param-sized `N` survives.
+            //
+            // The member types are gated by the same predicates the type
+            // checker uses. Falling back to the generic recursive width walk
+            // here is what let `ScaledVec<UInt<8>,4,E8M0>` emit a 40-bit port
+            // while the sim emitted a `uint8_t`.
+            TypeExpr::ScaledVec(elem, size, scale) => {
+                if !crate::fp_format::is_block_element(elem)
+                    || !crate::fp_format::is_block_scale(scale)
+                {
+                    return None;
+                }
+                if let Some(w) = self.type_expr_width(ty) {
+                    return Some(w.to_string());
+                }
+                let ew = self.type_expr_data_width(elem)?;
+                let sw = self.type_expr_data_width(scale)?;
+                let n = self.emit_expr_str(size);
+                Some(format!("({sw}) + ({ew}) * ({n})"))
             }
             TypeExpr::Named(ident) => {
                 if let Some((crate::resolve::Symbol::Struct(info), _)) =
@@ -3768,6 +4257,12 @@ impl<'a> Codegen<'a> {
         clk: &str,
         rst_active: Option<&str>,
     ) {
+        // `assert<bound_err>` properties are specification-only (their
+        // exact()/abs()/ulp() builtins have no SV form) — discharged by
+        // `arch formal --error-engine`, never emitted as SVA.
+        if a.engine == crate::ast::AssertEngine::BoundErr {
+            return;
+        }
         let expr_str = self.emit_expr_str(&a.expr);
         let label = a
             .name
@@ -3776,6 +4271,7 @@ impl<'a> Codegen<'a> {
             .unwrap_or_else(|| match a.kind {
                 AssertKind::Assert => "_assert_anon".to_string(),
                 AssertKind::Cover => "_cover_anon".to_string(),
+                AssertKind::Assume => "_assume_anon".to_string(),
             });
         let disable = rst_active
             .map(|r| format!(" disable iff ({r})"))
@@ -3792,6 +4288,11 @@ impl<'a> Codegen<'a> {
             AssertKind::Cover => {
                 self.line(&format!(
                     "{label}: cover property (@(posedge {clk}){disable} {expr_str});"
+                ));
+            }
+            AssertKind::Assume => {
+                self.line(&format!(
+                    "{label}: assume property (@(posedge {clk}){disable} {expr_str});"
                 ));
             }
         }
@@ -5210,6 +5711,50 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// True when `predicate` mentions a for-loop iterator as a standalone SV
+    /// identifier, which makes it unhoistable to module scope.
+    ///
+    /// `collect_bound_expr` already elides a site whose *index* is a bare
+    /// iterator, but the iterator also reaches the predicate two other ways:
+    /// through an enclosing `if` inside the loop body, whose condition is
+    /// folded in as the `|->` antecedent, and through a compound index such
+    /// as `mem[i + 1]`. In both cases the emitted concurrent assertion sits
+    /// outside the generated `for` block, where the iterator does not exist,
+    /// and Verilator rejects the whole file with "Can't find definition of
+    /// variable: 'i'" — the SV `arch build` produced would not elaborate.
+    ///
+    /// Skipping the site is the conservative choice: an unguarded variant
+    /// would assert on cycles the access is not taken, which is a false
+    /// failure. The `arch sim` runtime check still covers these accesses,
+    /// exactly as it does for the comb/let sites that are not mirrored either.
+    fn predicate_uses_loop_iter(
+        predicate: &str,
+        loop_iters: &std::collections::HashSet<String>,
+    ) -> bool {
+        if loop_iters.is_empty() {
+            return false;
+        }
+        let bytes = predicate.as_bytes();
+        let is_ident_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+        loop_iters.iter().any(|iter| {
+            if iter.is_empty() {
+                return false;
+            }
+            let mut from = 0usize;
+            while let Some(offset) = predicate[from..].find(iter.as_str()) {
+                let start = from + offset;
+                let end = start + iter.len();
+                let boundary_before = start == 0 || !is_ident_byte(bytes[start - 1]);
+                let boundary_after = end == bytes.len() || !is_ident_byte(bytes[end]);
+                if boundary_before && boundary_after {
+                    return true;
+                }
+                from = start + 1;
+            }
+            false
+        })
+    }
+
     /// Recursively collect bound-assertion sites from an expression. At each
     /// Index / PartSelect with a non-literal index whose base is an ident of
     /// known size, push a predicate. Also catches `/` and `%` with non-const
@@ -5251,6 +5796,9 @@ impl<'a> Codegen<'a> {
                     sites: &mut Vec<(String, String)>,
                     seen: &mut std::collections::HashSet<String>| {
             let predicate = Self::guard_bound_predicate(predicate, guard);
+            if Self::predicate_uses_loop_iter(&predicate, loop_iters) {
+                return;
+            }
             if seen.insert(predicate.clone()) {
                 sites.push((predicate, tag.to_string()));
             }
@@ -5340,7 +5888,9 @@ impl<'a> Codegen<'a> {
                     let rhs_s = self.emit_expr_str(b);
                     let tag = if *op == BinOp::Div { "div0" } else { "mod0" };
                     let pred = Self::guard_bound_predicate(format!("({rhs_s}) != 0"), guard);
-                    if seen.insert(pred.clone()) {
+                    if !Self::predicate_uses_loop_iter(&pred, loop_iters)
+                        && seen.insert(pred.clone())
+                    {
                         sites.push((pred, tag.to_string()));
                     }
                 }
@@ -5616,64 +6166,6 @@ impl<'a> Codegen<'a> {
         self.emit_expr_prec(expr, 0)
     }
 
-    /// Emit one index operation. `preserve_signed_element` is true for a
-    /// normal rvalue read and false when this expression is itself the base
-    /// of another bit/part/index select. Selections do not need signedness,
-    /// and suppressing the cast there avoids non-portable shapes such as
-    /// `$signed(vec[i])[bit]`.
-    fn emit_index_expr_str(
-        &self,
-        base: &Expr,
-        idx: &Expr,
-        preserve_signed_element: bool,
-    ) -> String {
-        if let (Some(v), Some(idx_v)) = (literal_expr_u64(base), literal_expr_u64(idx)) {
-            if idx_v < 64 {
-                return format!("1'd{}", (v >> idx_v) & 1);
-            }
-        }
-
-        let signed_element = preserve_signed_element && self.index_result_is_sint(base);
-
-        // Vec-of-const param `B[i]`: rewrite to packed part-select
-        // `B[i*W +: W]` since iverilog rejects unpacked-array params.
-        if let ExprKind::Ident(name) = &base.kind {
-            if let Some(elem_ty) = self.vec_params.get(name) {
-                let w = match elem_ty {
-                    TypeExpr::UInt(w) | TypeExpr::SInt(w) => self.emit_expr_str(w),
-                    _ => "1".to_string(),
-                };
-                let i = self.emit_expr_str(idx);
-                let selected = format!("{name}[({i}) * ({w}) +: ({w})]");
-                return if signed_element {
-                    format!("$signed({selected})")
-                } else {
-                    selected
-                };
-            }
-        }
-
-        let b = self.emit_selection_base_str(base);
-        let i = self.emit_expr_str(idx);
-        let selected = format!("{b}[{i}]");
-        if signed_element {
-            format!("$signed({selected})")
-        } else {
-            selected
-        }
-    }
-
-    /// Emit an expression used as the base of a subsequent selection. A
-    /// signed cast on the intermediate selection is semantically unnecessary
-    /// and can make otherwise-valid SV unparseable on Verilator/iverilog.
-    fn emit_selection_base_str(&self, expr: &Expr) -> String {
-        if let ExprKind::Index(base, idx) = &expr.kind {
-            self.emit_index_expr_str(base, idx, false)
-        } else {
-            self.emit_expr_str(expr)
-        }
-    }
-
     /// Bit-width of a `TypeExpr` resolved through the symbol table for
     /// named struct/enum types. Returns `None` if any width sub-expression
     /// is non-literal (parametric) or the named type is unresolved.
@@ -5692,10 +6184,17 @@ impl<'a> Codegen<'a> {
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Some(1),
             TypeExpr::FP32 => Some(32),
             TypeExpr::BF16 => Some(16),
+            TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some(8),
+            TypeExpr::FP4E2M1 => Some(4),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => Some(8),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval(size)?;
                 Some(iw * n)
+            }
+            TypeExpr::ScaledVec(elem, size, scale) => {
+                crate::fp_format::scaled_vec_width(elem, eval(size)?, scale)
             }
             TypeExpr::Named(ident) => match self.symbols.globals.get(&ident.name) {
                 Some((Symbol::Struct(info), _)) => {
@@ -5829,19 +6328,6 @@ impl<'a> Codegen<'a> {
         };
         let n_usize = n as usize;
         let idx_w = crate::width::index_width(n as u64);
-        let element_ty = match self.expr_type_for_codegen(recv) {
-            Some(TypeExpr::Vec(inner, _)) => Some(*inner),
-            _ => None,
-        };
-        let signed_element = matches!(element_ty, Some(TypeExpr::SInt(_)));
-        let elem_at = |i: u32| {
-            let selected = format!("{recv_b}[{i}]");
-            if signed_element {
-                format!("$signed({selected})")
-            } else {
-                selected
-            }
-        };
 
         // Helper: emit an expression with `item` bound to recv[i] and
         // `index` bound to a sized literal. `ident_subst` is a field of
@@ -5851,18 +6337,13 @@ impl<'a> Codegen<'a> {
         let emit_at = |i: u32| -> String {
             let this = self as *const Codegen as *mut Codegen;
             // SAFETY: single-threaded emission; no aliasing.
-            let (saved_item_subst, saved_index_subst) = unsafe {
-                let saved_item_subst = (*this).ident_subst.insert("item".to_string(), elem_at(i));
-                let saved_index_subst = (*this)
+            unsafe {
+                (*this)
+                    .ident_subst
+                    .insert("item".to_string(), format!("{recv_b}[{i}]"));
+                (*this)
                     .ident_subst
                     .insert("index".to_string(), format!("{idx_w}'d{i}"));
-                (saved_item_subst, saved_index_subst)
-            };
-            let saved_item_type = self.local_expr_types.borrow_mut().remove("item");
-            if let Some(ty) = &element_ty {
-                self.local_expr_types
-                    .borrow_mut()
-                    .insert("item".to_string(), ty.clone());
             }
             let result = if let Some(pred) = args.first() {
                 self.emit_expr_str(pred)
@@ -5872,32 +6353,8 @@ impl<'a> Codegen<'a> {
                 String::new()
             };
             unsafe {
-                match saved_item_subst {
-                    Some(value) => {
-                        (*this).ident_subst.insert("item".to_string(), value);
-                    }
-                    None => {
-                        (*this).ident_subst.remove("item");
-                    }
-                }
-                match saved_index_subst {
-                    Some(value) => {
-                        (*this).ident_subst.insert("index".to_string(), value);
-                    }
-                    None => {
-                        (*this).ident_subst.remove("index");
-                    }
-                }
-            }
-            match saved_item_type {
-                Some(ty) => {
-                    self.local_expr_types
-                        .borrow_mut()
-                        .insert("item".to_string(), ty);
-                }
-                None => {
-                    self.local_expr_types.borrow_mut().remove("item");
-                }
+                (*this).ident_subst.remove("item");
+                (*this).ident_subst.remove("index");
             }
             result
         };
@@ -5938,7 +6395,7 @@ impl<'a> Codegen<'a> {
                     return "1'b0".to_string();
                 }
                 (0..n)
-                    .map(|i| format!("({} == {x})", elem_at(i)))
+                    .map(|i| format!("({recv_b}[{i}] == {x})"))
                     .collect::<Vec<_>>()
                     .join(" || ")
             }
@@ -5946,19 +6403,28 @@ impl<'a> Codegen<'a> {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n).map(elem_at).collect::<Vec<_>>().join(" | ")
+                (0..n)
+                    .map(|i| format!("{recv_b}[{i}]"))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             }
             "reduce_and" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n).map(elem_at).collect::<Vec<_>>().join(" & ")
+                (0..n)
+                    .map(|i| format!("{recv_b}[{i}]"))
+                    .collect::<Vec<_>>()
+                    .join(" & ")
             }
             "reduce_xor" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n).map(elem_at).collect::<Vec<_>>().join(" ^ ")
+                (0..n)
+                    .map(|i| format!("{recv_b}[{i}]"))
+                    .collect::<Vec<_>>()
+                    .join(" ^ ")
             }
             "find_first" => {
                 // Record the index width so a matching typedef is emitted
@@ -6033,9 +6499,60 @@ impl<'a> Codegen<'a> {
 
     /// Infer the SV bit-width of an expression as a string constant expression.
     /// Used to emit the width cast for wrapping arithmetic operators (+%, -%, *%).
+    ///
+    /// Ordinary (module/fsm) emission scope: expressions render through
+    /// `emit_expr_str` and bare identifiers resolve through `module_scopes`.
+    /// See `infer_sv_width_str_in` for the pipeline-scoped variant.
     fn infer_sv_width_str(&self, expr: &Expr) -> String {
+        self.infer_sv_width_str_in(expr, &|e| self.emit_expr_str(e), &|_| None)
+    }
+
+    /// `infer_sv_width_str` parameterized on the *emission scope* the width
+    /// will be used in (arch#845).
+    ///
+    /// The pipeline emitters rewrite identifiers as they go — a stage reg
+    /// `cap` renders as `s0_cap`, a cross-stage `S0.cap` read as `s0_cap` —
+    /// and pipelines have no `module_scopes` entry at all (resolve.rs builds
+    /// those for modules and fsms only). So both halves of this function are
+    /// wrong for a pipeline under the default scope: the `Ident` arm can't
+    /// resolve anything, and every `$bits(...)` fallback would name an
+    /// identifier that does not exist in the emitted SV.
+    ///
+    /// - `emit` renders a sub-expression as SV text in the caller's scope.
+    ///   It is used *only* inside `$bits(...)` fallbacks; width
+    ///   sub-expressions of a type (`UInt<W>`'s `W`, `.trunc<N>()`'s `N`)
+    ///   stay on `emit_expr_str` — those are constant/param expressions,
+    ///   never stage-rewritten signal references.
+    /// - `signal_width` optionally resolves a *plain signal reference* to
+    ///   its declared width, consulted just before each `$bits(...)`
+    ///   fallback. `|_| None` keeps the fallback (the module/fsm scope
+    ///   already resolves identifiers inline in the `Ident` arm).
+    fn infer_sv_width_str_in(
+        &self,
+        expr: &Expr,
+        emit: &dyn Fn(&Expr) -> String,
+        signal_width: &dyn Fn(&Expr) -> Option<String>,
+    ) -> String {
+        // Declared width if the caller's scope can resolve this reference,
+        // else a `$bits(...)` of the expression as *that scope* renders it.
+        let bits = |e: &Expr| signal_width(e).unwrap_or_else(|| format!("$bits({})", emit(e)));
         match &expr.kind {
             ExprKind::Ident(name) => {
+                // Inside a `function` body (`fn_local_types` is non-empty
+                // only there), arguments and `let` locals are not in
+                // `module_scopes` — resolve them here first. Falling
+                // through to `$bits(<name>)` is not merely verbose in that
+                // scope, it is *wrong*: Icarus 12.0 computes a bogus width
+                // for `$bits(<function argument>)` used in a declaration,
+                // so a hoist temp sized that way reads back all-X
+                // (arch#846).
+                if let Some(te) = self.fn_local_types.get(name.as_str()) {
+                    match te {
+                        TypeExpr::UInt(w) | TypeExpr::SInt(w) => return self.emit_expr_str(w),
+                        TypeExpr::Bool | TypeExpr::Bit => return "1".to_string(),
+                        _ => {}
+                    }
+                }
                 if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
                     if let Some((sym, _)) = scope.get(name.as_str()) {
                         let te_opt: Option<&TypeExpr> = match sym {
@@ -6081,7 +6598,7 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                format!("$bits({})", self.emit_expr_str(expr))
+                bits(expr)
             }
             // Unsized literals: compute minimum bit width from value (never 0 bits)
             ExprKind::Literal(LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v)) => {
@@ -6099,11 +6616,29 @@ impl<'a> Codegen<'a> {
             {
                 args.first()
                     .map(|w| self.emit_expr_str(w))
-                    .unwrap_or_else(|| format!("$bits({})", self.emit_expr_str(expr)))
+                    .unwrap_or_else(|| bits(expr))
             }
-            ExprKind::Cast(_, ty) => self
-                .type_expr_data_width(ty)
-                .unwrap_or_else(|| format!("$bits({})", self.emit_expr_str(expr))),
+            // `.reverse()` bit-reverses within fixed-size chunks — same
+            // total width as the receiver. Recurse into the receiver
+            // rather than falling to `$bits({<<N{e}})`: Icarus does not
+            // reliably accept a streaming-concat operator as the argument
+            // to `$bits(...)` (arch#650, discovered indexing a `.reverse()`
+            // result — same root cause class as the `$bits($signed(...))`
+            // case above, different SV shape).
+            ExprKind::MethodCall(recv, method, _) if method.name == "reverse" => {
+                self.infer_sv_width_str_in(recv, emit, signal_width)
+            }
+            ExprKind::Cast(_, ty) => self.type_expr_data_width(ty).unwrap_or_else(|| bits(expr)),
+            // `signed(e)`/`unsigned(e)` are pure bit reinterpretations
+            // (never change width) — recurse into `e` rather than falling
+            // to `$bits($signed(e))`/`$bits($unsigned(e))`. Icarus does not
+            // reliably accept `$bits(...)` wrapping a nested system-function
+            // call (arch#650); this also gives a tighter (often literal)
+            // width than the runtime-computed fallback whenever `e`'s width
+            // is statically known.
+            ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+                self.infer_sv_width_str_in(inner, emit, signal_width)
+            }
             // Vec element access: width comes from the inner element type
             ExprKind::Index(base, _) => {
                 if let ExprKind::Ident(name) = &base.kind {
@@ -6133,19 +6668,86 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                format!("$bits({})", self.emit_expr_str(expr))
+                bits(expr)
             }
             // Chained wrapping ops: result width = max(lhs width, rhs width)
             ExprKind::Binary(BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap, lhs, rhs) => {
-                let lw = self.infer_sv_width_str(lhs);
-                let rw = self.infer_sv_width_str(rhs);
+                let lw = self.infer_sv_width_str_in(lhs, emit, signal_width);
+                let rw = self.infer_sv_width_str_in(rhs, emit, signal_width);
                 if lw == rw {
                     lw
                 } else {
                     format!("({lw} > {rw} ? {lw} : {rw})")
                 }
             }
-            _ => format!("$bits({})", self.emit_expr_str(expr)),
+            // Widening arithmetic. The ARCH type system widens `a + b` / `a - b`
+            // to `max(w_a, w_b) + 1` and `a * b` to `w_a + w_b` (typecheck.rs,
+            // `binop_result_ty`), matching IEEE 1800 §11.6 plus the carry/product
+            // bit. SV's *self-determined* width — what `$bits(a + b)` reports —
+            // does NOT include those bits, so the `_ => $bits(...)` fallback
+            // under-sizes a hoist temp. A slice reaching the widened high bit
+            // then drops it: iverilog reads X, Verilator flags the select as
+            // out-of-range — a silent build-vs-sim divergence for code that
+            // `arch check` and `arch sim` both accept and compute correctly.
+            // Only reachable since #813 P1 (#875) let arithmetic bases be
+            // sliced at all. Non-widening ops (Div/Mod → lhs, bitwise/shift →
+            // max/lhs) already agree with `$bits`, so they keep the fallback.
+            ExprKind::Binary(BinOp::Add | BinOp::Sub, lhs, rhs) => {
+                let lw = self.infer_sv_width_str_in(lhs, emit, signal_width);
+                let rw = self.infer_sv_width_str_in(rhs, emit, signal_width);
+                match (lw.parse::<u64>().ok(), rw.parse::<u64>().ok()) {
+                    (Some(l), Some(r)) => (l.max(r) + 1).to_string(),
+                    _ => {
+                        let m = if lw == rw {
+                            lw
+                        } else {
+                            format!("({lw} > {rw} ? {lw} : {rw})")
+                        };
+                        format!("{} + 1", Self::paren_width(&m))
+                    }
+                }
+            }
+            ExprKind::Binary(BinOp::Mul, lhs, rhs) => {
+                let lw = self.infer_sv_width_str_in(lhs, emit, signal_width);
+                let rw = self.infer_sv_width_str_in(rhs, emit, signal_width);
+                match (lw.parse::<u64>().ok(), rw.parse::<u64>().ok()) {
+                    (Some(l), Some(r)) => (l + r).to_string(),
+                    _ => format!("{} + {}", Self::paren_width(&lw), Self::paren_width(&rw)),
+                }
+            }
+            // Concat/Repeat width for the arch#807 slice-base hoist temp:
+            // sum of part widths / count*value-width. Recurse into parts
+            // rather than falling to `$bits({...})` on the whole
+            // expression — Icarus does not reliably accept `$bits(...)`
+            // wrapping a concatenation/replication argument (same class of
+            // gap as the `$bits($signed(...))` nesting issue arch#650
+            // documents elsewhere in this function).
+            ExprKind::Concat(parts) => {
+                let widths: Vec<String> = parts
+                    .iter()
+                    .map(|p| self.infer_sv_width_str_in(p, emit, signal_width))
+                    .collect();
+                match widths
+                    .iter()
+                    .map(|w| w.parse::<u64>().ok())
+                    .sum::<Option<u64>>()
+                {
+                    Some(total) => total.to_string(),
+                    None => widths.join(" + "),
+                }
+            }
+            ExprKind::Repeat(count, value) => {
+                let vw = self.infer_sv_width_str_in(value, emit, signal_width);
+                match (literal_expr_u64(count), vw.parse::<u64>().ok()) {
+                    (Some(n), Some(w)) => (n * w).to_string(),
+                    (Some(n), None) => format!("{n} * {}", Self::paren_width(&vw)),
+                    (None, _) => {
+                        let c = self.emit_expr_str(count);
+                        format!("({c}) * {}", Self::paren_width(&vw))
+                    }
+                }
+            }
+            _ => bits(expr),
         }
     }
 
@@ -6157,6 +6759,565 @@ impl<'a> Codegen<'a> {
         } else {
             w.to_string()
         }
+    }
+
+    /// Peel `signed(...)` / `unsigned(...)` / `(... as T)` wrappers, returning
+    /// the innermost non-cast expression. All three are pure bit
+    /// reinterpretations in ARCH: `Signed`/`Unsigned` never change width, and
+    /// `Cast` is typecheck-rejected when source and target widths are both
+    /// known and differ (see `TypeChecker::resolve_expr_type`'s `Cast` arm).
+    /// So the innermost expression carries the identical bit pattern as the
+    /// wrapped form — callers that only need a single bit (`Index`'s base)
+    /// can safely use it in place of the cast. Used by arch#650's
+    /// indexed-cast portability fix; see `ExprKind::Index`.
+    fn unwrap_reinterpret_cast(mut e: &Expr) -> &Expr {
+        loop {
+            match &e.kind {
+                ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => e = inner,
+                ExprKind::Cast(inner, _) => e = inner,
+                _ => return e,
+            }
+        }
+    }
+
+    /// True when `base` is one of the SV forms that compose directly with a
+    /// trailing single-bit `[i]` index on Icarus. Starts from the same set
+    /// typecheck's `is_portable_bit_slice_base` allows as a `BitSlice`/
+    /// `PartSelect` base (spec §3.2.1: identifier, literal, indexed access,
+    /// field access, concat, replication, function/method-call result) —
+    /// reused here because `Index` (`expr[i]`) also serves ordinary `Vec`
+    /// element access (portable for any base), so typecheck does not gate
+    /// it the way it gates `BitSlice`/`PartSelect`. But the two forms are
+    /// *not* portable-equivalent on Icarus: empirically (Icarus 12.0),
+    /// `{a, b}[i]`, `{2{a}}[i]`, and `{<<1{a}}[i]` are all rejected the same
+    /// way an indexed cast is, even though the corresponding `[hi:lo]`
+    /// range form is accepted bare (arch#653/#656/#659) — so `Concat`/
+    /// `Repeat` are *not* atomic here despite being portable `BitSlice`
+    /// bases. (This file's `BitSlice` arm is unchanged — that shipped,
+    /// tested behavior is out of this fix's scope; see arch#650's PR body
+    /// for the follow-up filed to track it.)
+    /// The only bases SystemVerilog lets a `[hi:lo]` bit-slice or
+    /// `[start +: w]` part-select apply to directly. Everything else is
+    /// bound to a named temp by `hoist_slice_base` (arch#813 P1).
+    ///
+    /// This replaced typecheck's `is_portable_bit_slice_base` allowlist,
+    /// which named the base kinds `arch check` would *accept* and had been
+    /// wrong in both directions: too permissive for `Concat`/`Repeat`
+    /// (arch#807), `FunctionCall`/`MethodCall` (arch#810) and `Literal`
+    /// (`8'hff[i +: 2]`, rejected by both frontends), and too restrictive
+    /// for `BitSlice`/`PartSelect`/`Bool`/`EnumVariant`, which arch#653
+    /// turned into a permanent user-visible language restriction to work
+    /// around a codegen limitation. Stating the rule the other way round —
+    /// what SV can select from, everything else hoisted — makes a new
+    /// `ExprKind` safe by default instead of silently non-portable until
+    /// someone runs the right simulator.
+    ///
+    /// Deliberately *not* shared with `is_atomic_index_base`: the
+    /// single-bit `Index` form has a different accepted set (a
+    /// `FunctionCall` result can be indexed but not sliced) and its own
+    /// history. Keeping them separate keeps each honest about what was
+    /// actually measured.
+    fn is_bare_selectable_slice_base(base: &Expr) -> bool {
+        matches!(
+            base.kind,
+            ExprKind::Ident(_)
+                | ExprKind::SynthIdent(_, _)
+                | ExprKind::Index(_, _)
+                | ExprKind::FieldAccess(_, _)
+        )
+    }
+
+    fn is_atomic_index_base(base: &Expr) -> bool {
+        match &base.kind {
+            ExprKind::Ident(_)
+            | ExprKind::SynthIdent(_, _)
+            | ExprKind::Literal(_)
+            | ExprKind::Index(_, _)
+            | ExprKind::FieldAccess(_, _)
+            | ExprKind::FunctionCall(_, _) => true,
+            // `trunc`/`zext`/`resize` lower to an SV size-cast (`N'(...)`);
+            // `sext`/`reverse` lower to a replication/concat/streaming-
+            // concat (`{...}`). Both shapes are rejected by Icarus when
+            // directly indexed (`N'(x)[i]`, `{...}[i]`) — the same
+            // "indexed cast/conversion" and brace-index issues above,
+            // just reached via a method call instead of a bare literal
+            // concat/repeat. Everything else (any/all/count/contains/
+            // reduce_*/find_first, to_fp32/to_bf16/to_fp8*/to_uint/
+            // to_sint, or a generic pass-through `.method()`) keeps the
+            // prior atomic classification — those don't produce a `{...}`
+            // or `N'(...)` wrapper around the receiver.
+            ExprKind::MethodCall(_, method, _) => !matches!(
+                method.name.as_str(),
+                "trunc" | "zext" | "resize" | "sext" | "reverse"
+            ),
+            _ => false,
+        }
+    }
+
+    /// True when `.sext<N>()`'s replicand (`base`, already run through
+    /// `unwrap_reinterpret_cast`) is safe to reference bare — twice, once
+    /// indexed at its own top bit (`base[sw-1]`) and once whole — in the
+    /// hand-emitted `{{(w-sw){base[sw-1]}}, base}` expansion (arch#827
+    /// B1/B2). `sext`'s emitter builds that string directly rather than
+    /// going through `hoist_slice_base`/the `ExprKind::Index` codegen arm,
+    /// so it needs its own atomicity check rather than inheriting theirs
+    /// automatically — see below for why the two existing checks
+    /// (`is_bare_selectable_slice_base`, `is_atomic_index_base`) are each
+    /// close but not quite right here.
+    ///
+    /// `Concat`/`Repeat`/`FunctionCall`/`MethodCall` bases are never atomic
+    /// — same reasoning `hoist_slice_base` documents for `BitSlice`/
+    /// `PartSelect`: none of them compose with a further `[...]` select on
+    /// either frontend.
+    ///
+    /// A non-constant-indexed `Index` (`din[sel]`) is *also* not atomic
+    /// here, even though both `is_bare_selectable_slice_base` and
+    /// `is_atomic_index_base` classify bare `Index` as safe. Verified
+    /// against raw hand-written SV, independent of any ARCH codegen path:
+    /// `din[sel]` (a dynamic/indexed select into a packed multi-dim array,
+    /// which is how a `Vec` element read with a runtime index lowers)
+    /// does not compose with a further select layered on top — Icarus
+    /// 12.0 rejects `din[sel][7]` and `din[sel][7:4]` identically
+    /// ("reference... not allowed in a constant expression"), and binding
+    /// `din[sel]` to a plain temp first (`logic [7:0] t = din[sel]; ...
+    /// t[7] ...`) fixes both. A *constant*-indexed `Index` (`din[2]`) is
+    /// fine bare — it folds to a plain element reference.
+    ///
+    /// This predicate is deliberately scoped to `sext`'s own hand-rolled
+    /// emission rather than folded into `is_bare_selectable_slice_base`/
+    /// `is_atomic_index_base`: those two are also reached from the bare
+    /// `ExprKind::Index` codegen arm and `hoist_slice_base` respectively,
+    /// used far beyond synthesized sext/zext, and widening them to also
+    /// catch a non-const-indexed `Index` base is a separate, wider-blast-
+    /// radius fix — `din[sel][7]`/`din[sel][7:4]` written directly by a
+    /// user hits the identical bug today, tracked as a follow-up rather
+    /// than folded into this one.
+    ///
+    /// `ExprKind::LatencyAt(inner, n)` (`pipe_reg` `@N` read, e.g.
+    /// `x_pipe@1`) is atomic when `inner` is itself a plain identifier:
+    /// codegen's own `LatencyAt` arm (below) renders that shape to a bare
+    /// name — the pipe_reg's source, its final flop, or a synthesized
+    /// `{name}_stg{n}` — never anything requiring a select. Found via a
+    /// real crash: `tests/cvdp/iir_filter.arch`'s `x_pipe@1.sext<48>()`
+    /// has `LatencyAt` fall through this predicate's `_ => false` arm,
+    /// hoisting it into `logic [$bits(x_pipe_stg1)-1:0] arch_idx_base_1;`
+    /// — a `$bits(<plain identifier>)` *declaration* width, which
+    /// segfaults Icarus 12.0 outright (reproduced in isolation with just
+    /// `logic [$bits(x)-1:0] t; assign t = x;`, independent of sext or
+    /// pipe_reg — a `$bits()`-in-declaration-width crash, not a `sext`
+    /// bug). The pre-fix code never hit this because it never hoisted
+    /// `LatencyAt` at all; avoiding the hoist here avoids the crash the
+    /// same way. `n` doesn't need checking — it's already a parsed `u32`,
+    /// not a runtime expression, so there is no non-constant case.
+    fn is_atomic_sext_receiver(base: &Expr) -> bool {
+        match &base.kind {
+            ExprKind::Ident(_) | ExprKind::SynthIdent(_, _) | ExprKind::FieldAccess(_, _) => true,
+            ExprKind::Index(_, idx) => literal_expr_u64(idx).is_some(),
+            ExprKind::LatencyAt(inner, _) => {
+                matches!(inner.kind, ExprKind::Ident(_) | ExprKind::SynthIdent(_, _))
+            }
+            _ => false,
+        }
+    }
+
+    /// True if `e` contains a bare `Ident` whose name is in `names`.
+    /// Conservative and shallow-recursive (walks every expression kind that
+    /// can appear inside an arithmetic/logical sub-expression) — used only to
+    /// decide whether an `Index`-hoist temp (module scope) would reference an
+    /// out-of-scope runtime `for`-loop variable; false positives just mean a
+    /// missed portability fix (falls back to prior behavior), never a
+    /// miscompile.
+    fn expr_references_any(e: &Expr, names: &std::collections::HashSet<String>) -> bool {
+        match &e.kind {
+            ExprKind::Ident(n) => names.contains(n),
+            ExprKind::Binary(_, a, b) => {
+                Self::expr_references_any(a, names) || Self::expr_references_any(b, names)
+            }
+            ExprKind::Unary(_, a) => Self::expr_references_any(a, names),
+            ExprKind::Ternary(c, t, f) => {
+                Self::expr_references_any(c, names)
+                    || Self::expr_references_any(t, names)
+                    || Self::expr_references_any(f, names)
+            }
+            ExprKind::Index(base, idx) => {
+                Self::expr_references_any(base, names) || Self::expr_references_any(idx, names)
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                Self::expr_references_any(base, names)
+                    || Self::expr_references_any(hi, names)
+                    || Self::expr_references_any(lo, names)
+            }
+            ExprKind::PartSelect(base, start, width, _) => {
+                Self::expr_references_any(base, names)
+                    || Self::expr_references_any(start, names)
+                    || Self::expr_references_any(width, names)
+            }
+            ExprKind::FieldAccess(base, _) => Self::expr_references_any(base, names),
+            ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+                Self::expr_references_any(inner, names)
+            }
+            ExprKind::Cast(inner, _) => Self::expr_references_any(inner, names),
+            ExprKind::MethodCall(base, _, args) => {
+                Self::expr_references_any(base, names)
+                    || args.iter().any(|a| Self::expr_references_any(a, names))
+            }
+            ExprKind::FunctionCall(_, args) => {
+                args.iter().any(|a| Self::expr_references_any(a, names))
+            }
+            ExprKind::Concat(parts) => parts.iter().any(|p| Self::expr_references_any(p, names)),
+            ExprKind::Repeat(count, value) => {
+                Self::expr_references_any(count, names) || Self::expr_references_any(value, names)
+            }
+            _ => false,
+        }
+    }
+
+    /// Fresh id for an `Index`-hoist temp name (`arch_idx_base_<n>`, see
+    /// `index_hoist_temps`). Monotonic for the whole file — uniqueness
+    /// within one module is all that's required, and a file-wide counter is
+    /// simplest and rules out any cross-module collision.
+    fn next_index_hoist_id(&self) -> u32 {
+        let id = self.index_hoist_counter.get();
+        self.index_hoist_counter.set(id + 1);
+        id
+    }
+
+    /// Queue one hoist temp for the next `line()` to place (see
+    /// `index_hoist_temps` / `HoistScope`). Pushed in generation order,
+    /// which is also dependency order: a nested hoist is created while the
+    /// outer hoist's RHS is being emitted, so it lands ahead of it.
+    ///
+    /// `in_loop` is `true` when `rhs` references a live runtime `for`-loop
+    /// iterator — see `HoistTemp::in_loop` (arch#861). There used to be a
+    /// `push_hoist_temp` convenience wrapper that hardcoded `in_loop:
+    /// false`; arch#861 retrofitted every existing hoist site (the
+    /// `Index` arm, `hoist_slice_base_in`) to compute a real `in_loop`
+    /// instead, and every hoist site added since (this one included) needs
+    /// the same check, so nothing has called the always-false wrapper in
+    /// a long time — removed as dead code rather than kept around as an
+    /// easy-to-reach-for-but-wrong shortcut for a future hoist site.
+    fn push_hoist_temp_in_loop(&self, width: String, name: String, rhs: String, in_loop: bool) {
+        self.index_hoist_temps.borrow_mut().push(HoistTemp {
+            width,
+            name,
+            rhs,
+            in_loop,
+        });
+    }
+
+    /// Does `expr` reference a `for`-loop iterator whose SV loop body is
+    /// currently being emitted? Such a base cannot be bound by a
+    /// module-scope continuous `assign` (the iterator does not exist
+    /// there), so its temp is flagged `in_loop` and the assignment stays
+    /// inside the loop (arch#861).
+    fn base_references_live_loop_var(&self, base: &Expr) -> bool {
+        !self.runtime_for_loop_vars.is_empty()
+            && Self::expr_references_any(base, &self.runtime_for_loop_vars)
+    }
+
+    /// Portability hoist for a non-atomic `BitSlice`/`PartSelect` base
+    /// (`{a,c}[hi:lo]`, `{N{a}}[start +: w]`, `f(x)[hi:lo]`,
+    /// `x.trunc<N>()[hi:lo]`, ...). All of these base kinds are classified
+    /// portable by typecheck's `is_portable_bit_slice_base` (spec §3.2.1)
+    /// and were emitted bare — but no SV frontend actually accepts the
+    /// bare form for any of them:
+    ///
+    /// - **`Concat`/`Repeat`** (arch#807): Icarus 12.0 rejects
+    ///   `{a,c}[hi:lo]`/`{N{a}}[hi:lo]` outright, bare *or* parenthesized;
+    ///   Verilator accepts. PR #656's own repro (`{2{a}}[3:0]`) fails
+    ///   `iverilog -g2012` with a syntax error. The spec text claiming
+    ///   iverilog acceptance was never verified against a real iverilog
+    ///   binary when PR #656 shipped it — only Verilator 5.048 was tested.
+    /// - **`FunctionCall`** (arch#810): Icarus 12.0 rejects
+    ///   `f(x)[hi:lo]`; Verilator accepts.
+    /// - **`MethodCall`** (arch#810): rejected by *both* frontends. The
+    ///   width-cast methods lower to an SV size cast — `x.trunc<8>()`
+    ///   emits `8'(x)`, `x.zext<16>()` emits `16'($unsigned(x))` — and
+    ///   neither Icarus 12.0 nor Verilator 5.048 accepts a select applied
+    ///   to a size cast (`%Error: syntax error, unexpected '['`). So this
+    ///   arm is not a portability nicety: without the hoist, `arch build`
+    ///   emits SystemVerilog that the project's primary simulator refuses
+    ///   to compile. `.reverse<C>()` is covered by the same arm — since
+    ///   PR #834 lowers it to a chunked ordinary concatenation, its result
+    ///   used as a slice base reintroduced exactly the bare-`{...}[hi:lo]`
+    ///   shape arch#807 fixed, because this guard keys on the *ARCH*
+    ///   `ExprKind`, not on the emitted SV shape.
+    ///
+    /// Fix: hoist the base to a named module-scope temp, the same "bind to
+    /// a named `let`" strategy the spec already recommends at the source
+    /// level for non-portable bases, and the same mechanism arch#650 uses
+    /// for a non-atomic single-bit `Index` base. The hoisted form was
+    /// verified to compile clean on both Icarus 12.0 and Verilator 5.048
+    /// for all three shapes.
+    ///
+    /// Returns `None` (caller falls back to its prior bare-emission
+    /// behavior) for a base that *is* directly selectable
+    /// (`Ident`/`SynthIdent`/`Index`/`FieldAccess`, plus `Literal`, which
+    /// the `BitSlice` emitter const-folds before reaching here), or when
+    /// the base references a live runtime `for`-loop variable — a
+    /// module-scope temp can't see a loop-local index, and Icarus doesn't
+    /// support `logic` declarations inside `always_*` blocks either (same
+    /// reasoning as the `Index` hoist's loop-var skip).
+    fn hoist_slice_base(&self, base: &Expr) -> Option<String> {
+        self.hoist_slice_base_in(base, &|e| self.emit_expr_str(e), &|_| None)
+    }
+
+    /// `hoist_slice_base` parameterized on the emission scope (arch#845).
+    ///
+    /// The `pipeline` construct has its own expression emitters, which
+    /// rewrite identifiers as they render (a stage reg `cap` becomes
+    /// `s0_cap`, a cross-stage `S0.cap` read becomes `s0_cap`). Reusing
+    /// `hoist_slice_base` there would emit a temp whose RHS — and whose
+    /// `$bits(...)` width fallback — named the *un-prefixed* AST
+    /// identifiers, i.e. signals that don't exist in the emitted SV. So the
+    /// pipeline emitters pass their own `emit`/`signal_width` pair instead
+    /// of getting a second copy of the hoist. See `infer_sv_width_str_in`
+    /// for what each callback is responsible for.
+    ///
+    /// Everything else — which base kinds are claimed, the runtime
+    /// `for`-loop-variable bail, the shared `arch_idx_base_<n>` counter and
+    /// the `index_hoist_temps` queue — is identical for every scope, so it
+    /// lives here and only here. Note that *where* the queued temp is
+    /// finally written is decided later, by `line()`'s `HoistScope`
+    /// (arch#846), keyed on the SV block being emitted rather than on which
+    /// emitter queued it — so a pipeline's `always_ff`/`always_comb` gets
+    /// the module-scope splice with no pipeline-specific machinery.
+    fn hoist_slice_base_in(
+        &self,
+        base: &Expr,
+        emit: &dyn Fn(&Expr) -> String,
+        signal_width: &dyn Fn(&Expr) -> Option<String>,
+    ) -> Option<String> {
+        if Self::is_bare_selectable_slice_base(base) {
+            return None;
+        }
+        let in_loop = self.base_references_live_loop_var(base);
+        let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
+        let w = Self::paren_width(&self.infer_sv_width_str_in(base, emit, signal_width));
+        let rhs = emit(base);
+        self.push_hoist_temp_in_loop(w, tmp.clone(), rhs, in_loop);
+        Some(tmp)
+    }
+
+    /// Params of the construct currently being emitted (module / fsm /
+    /// pipeline), for `eval_const_u32` width resolution. `None` when the
+    /// current construct can't be found by name — callers fall back
+    /// conservatively.
+    fn current_construct_params(&self) -> Option<&[ParamDecl]> {
+        self.source.items.iter().find_map(|item| match item {
+            Item::Module(m) if m.name.name == self.current_construct => Some(m.params.as_slice()),
+            Item::Fsm(f) if f.name.name == self.current_construct => Some(f.params.as_slice()),
+            Item::Pipeline(p) if p.name.name == self.current_construct => Some(p.params.as_slice()),
+            _ => None,
+        })
+    }
+
+    /// Numeric bit-width of a `TypeExpr`, const-evaluating the width
+    /// sub-expression through `params` (unlike `type_expr_width`, which
+    /// only folds literals). Covers just the shapes a `.reverse()`
+    /// receiver can legally have (typecheck restricts it to
+    /// UInt/SInt/Bool) — everything else is `None`.
+    fn type_expr_width_const(&self, ty: &TypeExpr, params: &[ParamDecl]) -> Option<u32> {
+        match ty {
+            TypeExpr::UInt(w) | TypeExpr::SInt(w) => self.eval_const_u32(w, params),
+            TypeExpr::Bool | TypeExpr::Bit => Some(1),
+            _ => None,
+        }
+    }
+
+    /// Declared `TypeExpr` of a plain identifier in the current
+    /// module/fsm scope (ports, regs, typed lets, wires). Pipelines have
+    /// no `module_scopes` entry (resolve.rs builds those for modules and
+    /// fsms only) — the pipeline emitters resolve through the pipeline's
+    /// own AST via `pipeline_ident_type` instead.
+    fn construct_ident_type(&self, name: &str) -> Option<TypeExpr> {
+        let scope = self.symbols.module_scopes.get(&self.current_construct)?;
+        match scope.get(name)? {
+            (Symbol::Port(p), _) => Some(p.ty.clone()),
+            (Symbol::Reg(r), _) => Some(r.ty.clone()),
+            (Symbol::Let(_), _) => self.source.items.iter().find_map(|item| match item {
+                Item::Module(m) if m.name.name == self.current_construct => {
+                    m.body.iter().find_map(|bi| match bi {
+                        ModuleBodyItem::LetBinding(l) if l.name.name == name => l.ty.clone(),
+                        ModuleBodyItem::WireDecl(wd) if wd.name.name == name => Some(wd.ty.clone()),
+                        _ => None,
+                    })
+                }
+                Item::Fsm(f) if f.name.name == self.current_construct => f
+                    .lets
+                    .iter()
+                    .find(|l| l.name.name == name)
+                    .and_then(|l| l.ty.clone())
+                    .or_else(|| {
+                        f.wires
+                            .iter()
+                            .find(|w| w.name.name == name)
+                            .map(|w| w.ty.clone())
+                    }),
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Numeric bit-width of a `.reverse()` receiver — `None` when it
+    /// can't be proven here (the caller then falls back to the
+    /// streaming-concat emission, i.e. the pre-arch#808 Verilator-only
+    /// behavior). `lookup_ident` abstracts over module/fsm scope lookup
+    /// vs the pipeline emitters' stage-aware lookup.
+    fn reverse_recv_width_u32(
+        &self,
+        recv: &Expr,
+        params: &[ParamDecl],
+        lookup_ident: &dyn Fn(&str) -> Option<TypeExpr>,
+    ) -> Option<u32> {
+        match &recv.kind {
+            ExprKind::Ident(n) => self.type_expr_width_const(&lookup_ident(n)?, params),
+            ExprKind::SynthIdent(_, ty) => self.type_expr_width_const(ty, params),
+            ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+                self.reverse_recv_width_u32(inner, params, lookup_ident)
+            }
+            ExprKind::Cast(_, ty) => self.type_expr_width_const(ty, params),
+            ExprKind::Literal(LitKind::Sized(w, _)) => Some(*w as u32),
+            // Unsized literals: minimum bit width from the value, never 0
+            // bits — same rule as `infer_sv_width_str`.
+            ExprKind::Literal(LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v)) => {
+                Some(if *v == 0 { 1 } else { 64 - v.leading_zeros() })
+            }
+            ExprKind::MethodCall(inner, method, margs) => match method.name.as_str() {
+                "trunc" | "zext" | "sext" | "resize" => self.eval_const_u32(margs.first()?, params),
+                "reverse" => self.reverse_recv_width_u32(inner, params, lookup_ident),
+                _ => None,
+            },
+            ExprKind::BitSlice(_, hi, lo) => {
+                let h = self.eval_const_u32(hi, params)?;
+                let l = self.eval_const_u32(lo, params)?;
+                (h >= l).then(|| h - l + 1)
+            }
+            ExprKind::PartSelect(_, _, w, _) => self.eval_const_u32(w, params),
+            // `v[i].reverse<C>()` — the element width of an
+            // identifier-typed `Vec` receiver.
+            ExprKind::Index(base, _) => match &base.kind {
+                ExprKind::Ident(n) => match lookup_ident(n)? {
+                    TypeExpr::Vec(inner, _) => self.type_expr_width_const(&inner, params),
+                    _ => None,
+                },
+                _ => None,
+            },
+            // Operator result widths — these MUST mirror typecheck's
+            // `resolve_expr_type` rules (IEEE 1800 §11.6) exactly: the
+            // width computed here sizes both the hoist temp and the
+            // chunk part-selects, so a divergence from the checked type
+            // would be a silent miscompile, not merely a portability
+            // miss. Anything uncertain returns `None` (streaming-concat
+            // fallback).
+            ExprKind::Binary(op, l, r) => {
+                let lw = self.reverse_recv_width_u32(l, params, lookup_ident);
+                let rw = self.reverse_recv_width_u32(r, params, lookup_ident);
+                match op {
+                    BinOp::Eq
+                    | BinOp::Neq
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::Lte
+                    | BinOp::Gte
+                    | BinOp::And
+                    | BinOp::Or
+                    | BinOp::Implies
+                    | BinOp::ImpliesNext => Some(1),
+                    BinOp::Add | BinOp::Sub => Some(lw?.max(rw?) + 1),
+                    BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap => Some(lw?.max(rw?)),
+                    BinOp::Mul => Some(lw? + rw?),
+                    BinOp::Div | BinOp::Mod => lw,
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => Some(lw?.max(rw?)),
+                    BinOp::Shl | BinOp::Shr => lw,
+                }
+            }
+            ExprKind::Unary(op, operand) => match op {
+                UnaryOp::Not | UnaryOp::RedAnd | UnaryOp::RedOr | UnaryOp::RedXor => Some(1),
+                UnaryOp::BitNot => self.reverse_recv_width_u32(operand, params, lookup_ident),
+                // typecheck: `-UInt<w>` → `SInt<w+1>`, `-SInt<w>` → `SInt<w>`
+                // — receiver signedness isn't tracked here, so bail.
+                UnaryOp::Neg => None,
+            },
+            // typecheck takes the then-branch type.
+            ExprKind::Ternary(_, then_e, _) => {
+                self.reverse_recv_width_u32(then_e, params, lookup_ident)
+            }
+            ExprKind::Concat(parts) => parts.iter().try_fold(0u32, |acc, p| {
+                Some(acc + self.reverse_recv_width_u32(p, params, lookup_ident)?)
+            }),
+            ExprKind::Repeat(count, value) => Some(
+                self.eval_const_u32(count, params)?
+                    * self.reverse_recv_width_u32(value, params, lookup_ident)?,
+            ),
+            _ => None,
+        }
+    }
+
+    /// arch#808: portable lowering for `.reverse<C>()`. Icarus Verilog
+    /// (12.0) rejects the SV streaming-concat operator `{<<C{x}}` in
+    /// every context, so when the receiver width `w` is known, emit an
+    /// ordinary concatenation of the receiver's C-bit chunks in reversed
+    /// order — bit-identical to `{<<C{x}}` (the receiver's lowest chunk
+    /// lands most-significant; verified exhaustively against Verilator
+    /// for chunks 1/2/4 over all 8-bit inputs) and accepted by both
+    /// simulators. `w == c` (single chunk) is the identity — still
+    /// emitted as a singleton concat `{x}` so the result stays an
+    /// unsigned self-determined vector, exactly like the streaming form.
+    fn emit_reverse_chunks(sel: &str, w: u32, c: u32) -> String {
+        if w == c {
+            return format!("{{{sel}}}");
+        }
+        let parts: Vec<String> = (0..w / c)
+            .map(|i| {
+                if c == 1 {
+                    format!("{sel}[{i}]")
+                } else {
+                    format!("{sel}[{} +: {c}]", i * c)
+                }
+            })
+            .collect();
+        format!("{{{}}}", parts.join(", "))
+    }
+
+    /// Attempt the arch#808 portable `.reverse<chunk>()` lowering in the
+    /// main (module/fsm) expression emitter. `None` — the caller keeps
+    /// the streaming-concat emission — when the chunk or receiver width
+    /// can't be const-resolved here, the divisibility doesn't hold
+    /// (typecheck rejects both upstream), or the receiver needs a hoist
+    /// temp but references a live runtime `for`-loop variable
+    /// (module-scope temps can't see loop-locals; same guard as the
+    /// `Index`/`BitSlice` hoists).
+    fn try_emit_reverse_chunked(&self, base: &Expr, chunk: &Expr) -> Option<String> {
+        let params = self.current_construct_params()?;
+        let c = self.eval_const_u32(chunk, params)?;
+        let unwrapped = Self::unwrap_reinterpret_cast(base);
+        let w =
+            self.reverse_recv_width_u32(unwrapped, params, &|n| self.construct_ident_type(n))?;
+        if c == 0 || w == 0 || w % c != 0 {
+            return None;
+        }
+        let sel = match &unwrapped.kind {
+            // Directly part-selectable SV shapes — the same family the
+            // `Index` emitter treats as atomic (minus literals, which
+            // can't take a select at all).
+            ExprKind::Ident(_)
+            | ExprKind::SynthIdent(_, _)
+            | ExprKind::Index(_, _)
+            | ExprKind::FieldAccess(_, _) => self.emit_expr_str(unwrapped),
+            // Anything else (a computation, literal, cast, or `{...}`
+            // shape) can't take a part-select — hoist it to a named
+            // module-scope temp, the same mechanism arch#650/#807 use.
+            _ => {
+                let in_loop = self.base_references_live_loop_var(unwrapped);
+                let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
+                let rhs = self.emit_expr_str(unwrapped);
+                self.push_hoist_temp_in_loop(w.to_string(), tmp.clone(), rhs, in_loop);
+                tmp
+            }
+        };
+        Some(Self::emit_reverse_chunks(&sel, w, c))
     }
 
     /// Emit an expression, wrapping in parens only when its precedence is
@@ -6183,6 +7344,26 @@ impl<'a> Codegen<'a> {
             // as a loud backstop rather than silently falling back to a
             // comb cone, which would misrepresent an un-retimed operator
             // as pipelined.
+            // `scaled_quantize<Fmt, policy, rounding>(v)` — the block shape
+            // comes from the EXPRESSION's own format argument, not from the
+            // assignment target, so nothing here has to be inferred.
+            ExprKind::ScaledQuantize(value, fmt, policy, round) => {
+                let shape = crate::fp_block::shape_of_type(fmt).unwrap_or_else(|| {
+                    panic!(
+                        "scaled_quantize format has no resolvable block shape — \
+                         typecheck accepts only `ScaledVec` formats, so this means the \
+                         block size did not fold to a literal (arch#884)"
+                    )
+                });
+                let h = crate::fp_block::BlockHelper::Quantize {
+                    shape,
+                    policy: policy.unwrap_or_else(|| shape.scale.default_policy()),
+                    round: *round,
+                };
+                self.fp_helpers_used.set(true);
+                self.block_helpers.borrow_mut().insert(h);
+                format!("{}({})", h.sv_name(), self.emit_expr_str(value))
+            }
             ExprKind::PipelinedCall(name, _, stages) => unreachable!(
                 "codegen reached `{name}<pipelined, {stages}>(...)` — this should have been \
                  lowered by pipelined_ops::lower_pipelined_calls before codegen started"
@@ -6249,6 +7430,9 @@ impl<'a> Codegen<'a> {
                 LitKind::TypedFloat(fmt, bits) => match fmt {
                     FloatLitFmt::Fp32 => format!("32'h{bits:08X}"),
                     FloatLitFmt::Bf16 => format!("16'h{bits:04X}"),
+                    FloatLitFmt::E4m3 | FloatLitFmt::E5m2 => format!("8'h{bits:02X}"),
+                    FloatLitFmt::E2m1 => format!("4'h{bits:01X}"),
+                    FloatLitFmt::E2m3 | FloatLitFmt::E3m2 => format!("6'h{bits:02X}"),
                 },
             },
             ExprKind::Bool(true) => "1'b1".to_string(),
@@ -6370,8 +7554,35 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Unary(op, operand) => {
-                // Unary has prec 14 — wrap child only if it's a binary/ternary
-                let o = self.emit_expr_prec(operand, 14);
+                // Unary has prec 14 — wrap child only if it's a binary/ternary.
+                //
+                // A nested unary is the exception (arch#892): two adjacent
+                // prefix operators have equal precedence, so the generic
+                // rule leaves them juxtaposed, and every same-operator pair
+                // is then either a syntax error or a different token:
+                //
+                //   ~~a    Icarus 12.0: syntax error   (Verilator accepts)
+                //   !!a    Icarus 12.0: syntax error   (Verilator accepts)
+                //   ^^a    Icarus 12.0: syntax error   (Verilator accepts)
+                //   - -a   Icarus 12.0: syntax error even with the space
+                //   --a    BOTH reject — lexes as the decrement token
+                //   &&a    BOTH reject — lexes as logical-AND
+                //   ||a    BOTH reject — lexes as logical-OR
+                //
+                // Parenthesizing the operand fixes all of them and is
+                // always legal, so the rule is uniform rather than a list
+                // of unsafe pairs — a new `UnaryOp` can't reintroduce the
+                // bug. (`~&a`/`~^a` do happen to be valid NAND/XNOR
+                // reduction tokens meaning the same thing, but they are
+                // parenthesized too rather than special-cased.)
+                //
+                // Folding `~~x` to `x` would be wrong: the operators are
+                // width- and sign-significant in a self-determined context.
+                let o = if matches!(operand.kind, ExprKind::Unary(..)) {
+                    format!("({})", self.emit_expr_prec(operand, 0))
+                } else {
+                    self.emit_expr_prec(operand, 14)
+                };
                 match op {
                     UnaryOp::Not => format!("!{o}"),
                     UnaryOp::BitNot => format!("~{o}"),
@@ -6486,142 +7697,18 @@ impl<'a> Codegen<'a> {
                 let b = self.emit_expr_str(base);
                 format!("{b}.{}", field.name)
             }
-            ExprKind::MethodCall(base, method, args) => {
-                let b = self.emit_expr_str(base);
-                match method.name.as_str() {
-                    "trunc" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            // SV size cast: valid on any expression, including compound ones.
-                            // e.g. (count_r + 1).trunc<8>() → 8'(count_r + 1)
-                            let wp = Self::paren_width(&w);
-                            format!("{wp}'({b})")
-                        } else {
-                            b
-                        }
-                    }
-                    "zext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            // $unsigned prevents context-dependent width expansion before the cast
-                            let wp = Self::paren_width(&w);
-                            format!("{wp}'($unsigned({b}))")
-                        } else {
-                            b
-                        }
-                    }
-                    "sext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            // Sign-extension: replicate the MSB into the upper bits.
-                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
-                        } else {
-                            b
-                        }
-                    }
-                    "resize" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            // Direction-agnostic resize: pads or truncates, preserving
-                            // signedness. SV's `N'(expr)` size cast inherits the
-                            // signedness of `expr` and — critically — forwards
-                            // context-determined evaluation through arithmetic
-                            // operators inside it. Earlier emission used
-                            // `N'($signed(expr))` / `N'($unsigned(expr))`, but
-                            // `$signed`/`$unsigned` evaluate their argument in
-                            // self-determined context (LRM §11.6.1, §20.5), which
-                            // truncates a multiply like `a * b` to operand width
-                            // BEFORE the outer cast widens — silently losing the
-                            // upper bits of any product. Dropping the wrapper lets
-                            // `N'(a * b)` widen both operands to N before the
-                            // multiply. For non-arithmetic `expr` (idents, slices),
-                            // the cast still preserves signedness from the
-                            // underlying declaration, so no behaviour changes.
-                            let wp = Self::paren_width(&w);
-                            format!("{wp}'({b})")
-                        } else {
-                            b
-                        }
-                    }
-                    // as_clock removed — use `as Clock<Domain>` cast syntax // identity — 1-bit logic used as clock
-                    "reverse" => {
-                        if let Some(chunk) = args.first() {
-                            let c = self.emit_expr_str(chunk);
-                            format!("{{<<{c}{{{b}}}}}")
-                        } else {
-                            b
-                        }
-                    }
-                    "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and"
-                    | "reduce_xor" | "find_first" => self.emit_vec_method(&b, base, method, args),
-                    // Float conversions → emitted helper functions.
-                    "to_fp32" => {
-                        self.fp_helpers_used.set(true);
-                        match self.expr_float_fmt(base) {
-                            Some("bf16") => format!("arch_bf16_to_f32({b})"),
-                            Some("f32") => b,
-                            _ => {
-                                // int -> f32 (RNE) via the synthesizable helper.
-                                if self.expr_is_signed(base) {
-                                    format!("arch_i64_to_f32(64'($signed({b})))")
-                                } else {
-                                    format!("arch_u64_to_f32(64'($unsigned({b})))")
-                                }
-                            }
-                        }
-                    }
-                    "to_bf16" => {
-                        self.fp_helpers_used.set(true);
-                        match self.expr_float_fmt(base) {
-                            Some("f32") => format!("arch_f32_to_bf16({b})"),
-                            Some("bf16") => b,
-                            _ => {
-                                // int -> f32 (RNE) -> bf16 (RNE). DECLARED semantics
-                                // (issue #629, resolved as f32-routed / VR(f32)):
-                                // int.to_bf16() == narrow_bf16(f32(i)), matching the
-                                // bf16 fma f32-accumulate convention (PR #627). This
-                                // is a *double* rounding and is NOT correctly-rounded
-                                // int->bf16 for |i| >= 2^24 — the f32 step can land
-                                // exactly on a bf16 midpoint and tie-to-even the
-                                // wrong way (witness i=16842753 -> 0x4b80, correctly
-                                // rounded 0x4b81). Routing via f32 is hardware-
-                                // realistic (no direct int->bf16 in RISC-V) and
-                                // intended, not a bug — see doc/ARCH_HDL_Specification.md
-                                // §3.8 "Rounding convention" and doc/proposal_fp_rounding_semantics.md.
-                                // Sim mirror: src/sim_codegen _arch_{i,u}_to_bf16.
-                                if self.expr_is_signed(base) {
-                                    format!("arch_f32_to_bf16(arch_i64_to_f32(64'($signed({b}))))")
-                                } else {
-                                    format!(
-                                        "arch_f32_to_bf16(arch_u64_to_f32(64'($unsigned({b}))))"
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    "to_uint" | "to_sint" => {
-                        self.fp_helpers_used.set(true);
-                        let width = args
-                            .first()
-                            .map(|w| self.emit_expr_str(w))
-                            .unwrap_or_else(|| "32".to_string());
-                        let wp = Self::paren_width(&width);
-                        let f32bits = match self.expr_float_fmt(base) {
-                            Some("bf16") => format!("arch_bf16_to_f32({b})"),
-                            _ => b.clone(),
-                        };
-                        // Toward-zero, saturating to the N-bit target, NaN -> type max
-                        // (synthesizable helper; returns a 64-bit value truncated to N).
-                        let conv = if method.name == "to_sint" {
-                            "arch_f32_to_sint"
-                        } else {
-                            "arch_f32_to_uint"
-                        };
-                        format!("{wp}'({conv}({f32bits}, {width}))")
-                    }
-                    _ => format!("{b}.{}()", method.name),
-                }
-            }
+            ExprKind::MethodCall(base, method, args) => self.emit_method_call_str(
+                base,
+                method,
+                args,
+                MethodCallHost::Main,
+                &|e: &Expr| self.emit_expr_str(e),
+                // The main emitter's chunked lowering re-emits the receiver
+                // itself; the pre-emitted receiver string is unused.
+                &|recv: &Expr, chunk: &Expr, _emitted: &str| {
+                    self.try_emit_reverse_chunked(recv, chunk)
+                },
+            ),
             ExprKind::Cast(expr, ty) => {
                 let e = self.emit_expr_str(expr);
                 match &**ty {
@@ -6642,7 +7729,100 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
-            ExprKind::Index(base, idx) => self.emit_index_expr_str(base, idx, true),
+            ExprKind::Index(base, idx) => {
+                if let (Some(v), Some(idx_v)) = (literal_expr_u64(base), literal_expr_u64(idx)) {
+                    if idx_v < 64 {
+                        return format!("1'd{}", (v >> idx_v) & 1);
+                    }
+                }
+                // Vec-of-const param `B[i]`: rewrite to packed part-select
+                // `B[i*W +: W]` since iverilog rejects unpacked-array params.
+                if let ExprKind::Ident(name) = &base.kind {
+                    if let Some(elem_ty) = self.vec_params.get(name) {
+                        let w = match elem_ty {
+                            TypeExpr::UInt(w) | TypeExpr::SInt(w) => self.emit_expr_str(w),
+                            _ => "1".to_string(),
+                        };
+                        let i = self.emit_expr_str(idx);
+                        // The packed param is declared `signed` for SInt
+                        // elements, so the part-select inherits signedness
+                        // without an explicit `$signed()` wrap.
+                        return format!("{name}[({i}) * ({w}) +: ({w})]");
+                    }
+                }
+                // Icarus portability (arch#650): unlike `BitSlice`/`PartSelect`,
+                // typecheck's `is_portable_bit_slice_base` does not gate the
+                // single-bit `Index` form — it also serves plain `Vec`-element
+                // access (`v[i]`), which is portable for *any* `v`. So
+                // `unsigned(x)[i]`, `signed(x)[i]`, `(x as T)[i]`, and
+                // `(a - b)[i]` all pass `arch check` today, and previously hit
+                // this arm's unconditional bare `{b}[{i}]` emission.
+                //
+                // `unsigned(...)`/`signed(...)`/`as T` casts are pure bit
+                // reinterpretations — typecheck requires same-width casts, so
+                // indexing the cast reads the identical bit as indexing the
+                // cast's inner expression. Unwrap them rather than emitting
+                // e.g. `$unsigned(x)[i]`: Verilator accepts an indexed
+                // system-function-call result, but Icarus rejects it.
+                let unwrapped = Self::unwrap_reinterpret_cast(base);
+                if Self::is_atomic_index_base(unwrapped) {
+                    let b = self.emit_expr_str(unwrapped);
+                    let i = self.emit_expr_str(idx);
+                    return format!("{b}[{i}]");
+                }
+                // Remaining case: a real computation (arithmetic, logical,
+                // ternary, ...) as the base — e.g. `(a - b)[i]`. Parenthesizing
+                // doesn't help (`(a - b)[i]` is illegal SV on both Verilator
+                // and Icarus — bit-select doesn't compose with a parenthesized
+                // non-selectable expression, same rule spec §3.2.1 documents
+                // for `BitSlice`/`PartSelect`); emitting it bare is worse than
+                // nonportable — with no base handling at all, this arm used to
+                // literally concatenate `base` and `[idx]` as text, so
+                // `(a - b)[i]` silently became `a - b[i]`, reparsed as
+                // `a - (b[i])` — a precedence miscompile, not merely
+                // non-portable SV. Hoist to a module-scope named temp instead,
+                // the same "bind to a let" fix the spec recommends at the
+                // source level for BitSlice/PartSelect.
+                //
+                // This hoist is unconditional. It used to be skipped when
+                // the base referenced a live runtime `for`-loop variable,
+                // on the grounds that a module-scope temp can't see a
+                // loop-local `int` — but "skipped" meant falling back to
+                // exactly the bare text concatenation described above, so
+                // the loop-var case kept emitting the precedence
+                // miscompile this arm exists to prevent: `(a + v[i])[3]`
+                // became `a + v[i][3]`, which Verilator compiles silently
+                // and evaluates as `a + (v[i][3])` (arch#861).
+                //
+                // The premise was also only half true. The *declaration*
+                // must indeed leave the loop, but the *assignment* must
+                // stay in it — so the temp is flagged `in_loop` and
+                // `place_hoist_temps` splits it: declaration spliced to
+                // module scope, value computed inside the loop body as a
+                // blocking assignment, where the iterator is in scope.
+                // Same split `HoistScope::Function` already uses for a
+                // base referencing function arguments (arch#846).
+                let in_loop = self.base_references_live_loop_var(unwrapped);
+                // Deliberately NOT underscore-prefixed (unlike most other
+                // compiler-synthesized names in this file, e.g.
+                // `__shared_*_out`, `_auto_bound_*`): Icarus Verilog 12.0
+                // segfaults elaborating `logic [$bits(...)-1:0] <name>;`
+                // when `<name>` starts with `_` — reproduced in isolation
+                // (crashes for `_tmp`/`_x`/`_0`/..., but not for the
+                // identical declaration renamed to e.g. `tmp`). The width
+                // computed by `infer_sv_width_str` below routinely falls
+                // back to `$bits(<expr>)` for a non-const-foldable
+                // arithmetic base, so this hoist temp hits that combination
+                // whenever it's needed — avoid the crash outright rather
+                // than depend on which fallback width shape happens to be
+                // "safe" today.
+                let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
+                let w = Self::paren_width(&self.infer_sv_width_str(unwrapped));
+                let rhs = self.emit_expr_str(unwrapped);
+                self.push_hoist_temp_in_loop(w, tmp.clone(), rhs, in_loop);
+                let i = self.emit_expr_str(idx);
+                format!("{tmp}[{i}]")
+            }
             ExprKind::BitSlice(base, hi, lo) => {
                 if let (Some(v), Some(hi_v), Some(lo_v)) = (
                     literal_expr_u64(base),
@@ -6659,39 +7839,43 @@ impl<'a> Codegen<'a> {
                         return format!("{width}'d{}", (v >> lo_v) & mask);
                     }
                 }
-                let b = self.emit_selection_base_str(base);
-                // Parenthesize complex base expressions to avoid precedence issues.
-                // SynthIdent is a compiler-renamed bare identifier with the same
-                // semantics as Ident — no parens needed (Verilator rejects
-                // `(__name)[hi:lo]` as a syntax error). Concat is also accepted
-                // bare per SV-2009 §11.4.12 (concatenation with bit-select):
-                // Verilator rejects `({a, b})[hi:lo]` for the same reason.
-                // FunctionCall / MethodCall result bit-select is similarly
-                // accepted bare; `(func())[hi:lo]` is rejected by Verilator
-                // because bit-select doesn't compose with the parenthesized
-                // expression — but `func()[hi:lo]` is valid (function-call
-                // result is an "lvalue-like" form per the SV grammar).
-                // Repeat (replication `{N{a}}`) is the same grammar class as
-                // Concat (multiple_concatenation): Verilator/iverilog accept
-                // `{2{a}}[hi:lo]` bare but reject `({2{a}})[hi:lo]`. Without
-                // this arm the paren'd form is emitted and fails Verilator with
-                // a syntax error even though typecheck's
-                // `is_portable_bit_slice_base` classifies Repeat as portable.
-                let b = if matches!(
-                    base.kind,
-                    ExprKind::Ident(_)
-                        | ExprKind::SynthIdent(_, _)
-                        | ExprKind::Literal(_)
-                        | ExprKind::Index(_, _)
-                        | ExprKind::FieldAccess(_, _)
-                        | ExprKind::Concat(_)
-                        | ExprKind::Repeat(_, _)
-                        | ExprKind::FunctionCall(_, _)
-                        | ExprKind::MethodCall(_, _, _)
-                ) {
-                    b
+                // Portability (arch#807, arch#810): a `Concat`/`Repeat`/
+                // `FunctionCall`/`MethodCall` base must be hoisted to a
+                // named module-scope temp rather than emitted bare — see
+                // `hoist_slice_base` for why (Icarus 12.0 rejects all four
+                // bare, contra the spec's old §3.2.1 claim that iverilog
+                // accepts them; Verilator additionally rejects the
+                // `MethodCall` size-cast shape `8'(x)[hi:lo]`).
+                let b = if let Some(tmp) = self.hoist_slice_base(base) {
+                    tmp
                 } else {
-                    format!("({})", b)
+                    let b = self.emit_expr_str(base);
+                    // Parenthesize complex base expressions to avoid precedence issues.
+                    // SynthIdent is a compiler-renamed bare identifier with the same
+                    // semantics as Ident — no parens needed (Verilator rejects
+                    // `(__name)[hi:lo]` as a syntax error).
+                    // `FunctionCall`/`MethodCall` normally never reach here
+                    // — `hoist_slice_base` above claims them — but they do
+                    // when the base references a live runtime `for`-loop
+                    // variable and the hoist bails. Bare is still the best
+                    // available fallback there: `(func())[hi:lo]` is
+                    // rejected by *both* frontends (a select doesn't
+                    // compose with a parenthesized expression), whereas
+                    // `func()[hi:lo]` at least compiles on Verilator.
+                    if matches!(
+                        base.kind,
+                        ExprKind::Ident(_)
+                            | ExprKind::SynthIdent(_, _)
+                            | ExprKind::Literal(_)
+                            | ExprKind::Index(_, _)
+                            | ExprKind::FieldAccess(_, _)
+                            | ExprKind::FunctionCall(_, _)
+                            | ExprKind::MethodCall(_, _, _)
+                    ) {
+                        b
+                    } else {
+                        format!("({})", b)
+                    }
                 };
                 // Try to emit indexed part-select: base[lo +: width]
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
@@ -6704,7 +7888,17 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_selection_base_str(base);
+                // Portability (arch#807, arch#810): same hoist as BitSlice
+                // above — `{a,c}[start +: w]`, `{N{a}}[start +: w]`,
+                // `f(x)[start +: w]` are rejected by Icarus 12.0 (bare or
+                // parenthesized) and `8'(x)[start +: w]` by Verilator too,
+                // despite all being portable `is_portable_bit_slice_base`
+                // bases.
+                let b = if let Some(tmp) = self.hoist_slice_base(base) {
+                    tmp
+                } else {
+                    self.emit_expr_str(base)
+                };
                 let s = self.emit_expr_str(start);
                 let w = self.emit_expr_str(width);
                 let op = if *up { "+:" } else { "-:" };
@@ -6848,65 +8042,173 @@ impl<'a> Codegen<'a> {
                 format!("{s} inside {{{}}}", member_strs.join(", "))
             }
             ExprKind::FunctionCall(name, args) => {
-                // `shared function` rewrite: if this call site was
-                // collected by the pre-pass, return the shared output
-                // wire instead of the inline `FN(args)` form. The
-                // harness `assign __shared_FN_out = FN(...)` emitted at
-                // module scope is the single textual call site that
-                // carries the operand mux.
-                if let Some(out_wire) = self.shared_call_sites.get(&expr.span.start) {
-                    return out_wire.clone();
-                }
-                let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
-                // Built-in SVA: past/rose/fell → SV $past/$rose/$fell
-                if name == "past" || name == "rose" || name == "fell" {
-                    return format!("${name}({})", arg_strs.join(", "));
-                }
-                // Float intrinsics → emitted helper functions.
-                if name == "fma" && args.len() == 3 {
-                    self.fp_helpers_used.set(true);
-                    let fmt = self
-                        .expr_float_fmt(&args[0])
-                        .or_else(|| self.expr_float_fmt(&args[1]))
-                        .or_else(|| self.expr_float_fmt(&args[2]))
-                        .unwrap_or("f32");
-                    return format!("arch_fma_{fmt}({})", arg_strs.join(", "));
-                }
-                if name == "is_nan" && args.len() == 1 {
-                    // exponent all-ones and mantissa nonzero.
-                    let a = &arg_strs[0];
-                    return match self.expr_float_fmt(&args[0]) {
-                        Some("bf16") => format!("(({a}[14:7] == 8'hFF) && ({a}[6:0] != 7'b0))"),
-                        _ => format!("(({a}[30:23] == 8'hFF) && ({a}[22:0] != 23'b0))"),
-                    };
-                }
-                // Resolve mangled name if this is an overloaded function.
-                let sv_name = if let Some((Symbol::Function(overloads), _)) =
-                    self.symbols.globals.get(name)
-                {
-                    if overloads.len() > 1 {
-                        let idx = self
-                            .overload_map
-                            .get(&expr.span.start)
-                            .copied()
-                            .unwrap_or(0);
-                        let ov = &overloads[idx];
-                        let suffix: String = ov
-                            .arg_types
-                            .iter()
-                            .map(|t| Self::type_mangle_tag(t))
-                            .collect::<Vec<_>>()
-                            .join("_");
-                        format!("{name}_{suffix}")
-                    } else {
-                        name.clone()
-                    }
-                } else {
-                    name.clone()
-                };
-                format!("{sv_name}({})", arg_strs.join(", "))
+                self.emit_function_call_str_in(expr, name, args, &|a| self.emit_expr_str(a))
             }
         }
+    }
+
+    /// Emit a `FunctionCall` — the `shared function` output-wire rewrite,
+    /// the SVA (`past`/`rose`/`fell`) and float (`fma`/`is_nan`) intrinsics,
+    /// and overload name mangling — with each argument rendered by
+    /// `emit_arg`.
+    ///
+    /// Parameterized on the argument emitter so a context with its own
+    /// identifier rewriting reuses all of the above instead of forking it:
+    /// the `pipeline` emitters prefix a stage signal `r` as `<stage>_r`, and
+    /// before arch#852 their fall-through to `emit_expr_str` emitted the
+    /// bare source name, so `Ident8(r)` referenced a signal that does not
+    /// exist in the emitted SV. Mirrors `hoist_slice_base_in`'s `emit`
+    /// parameter (arch#845).
+    fn emit_function_call_str_in(
+        &self,
+        expr: &Expr,
+        name: &str,
+        args: &[Expr],
+        emit_arg: &dyn Fn(&Expr) -> String,
+    ) -> String {
+        // `shared function` rewrite: if this call site was
+        // collected by the pre-pass, return the shared output
+        // wire instead of the inline `FN(args)` form. The
+        // harness `assign __shared_FN_out = FN(...)` emitted at
+        // module scope is the single textual call site that
+        // carries the operand mux.
+        if let Some(out_wire) = self.shared_call_sites.get(&expr.span.start) {
+            return out_wire.clone();
+        }
+        let arg_strs: Vec<String> = args.iter().map(emit_arg).collect();
+        // `scaled_dequantize(b)` → the generated block helper. The shape comes
+        // from the OPERAND's declared type; typecheck has already refused a
+        // non-block operand, so a `None` here means the block's `N` did not
+        // fold to a literal, which is a real limitation and must not be
+        // guessed at.
+        if name == "scaled_dequantize" && args.len() == 1 {
+            let shape = self
+                .expr_decl_type(&args[0])
+                .as_ref()
+                .and_then(|t| crate::fp_block::shape_of_type(t))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "scaled_dequantize operand has no resolvable block shape — \
+                         typecheck accepts only `ScaledVec` operands, so this means the \
+                         block size did not fold to a literal (arch#884)"
+                    )
+                });
+            let h = crate::fp_block::BlockHelper::Dequantize { shape };
+            self.fp_helpers_used.set(true);
+            self.block_helpers.borrow_mut().insert(h);
+            return format!("{}({})", h.sv_name(), arg_strs[0]);
+        }
+        // `scaled_dot(a, b)` → the generated block helper. Unlike quantize /
+        // dequantize this returns a scalar FP32, so it stays an ordinary
+        // expression on both backends rather than needing a statement form.
+        if name == "scaled_dot" && args.len() == 2 {
+            let shape = self
+                .expr_decl_type(&args[0])
+                .as_ref()
+                .and_then(|t| crate::fp_block::shape_of_type(t))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "scaled_dot operand has no resolvable block shape — typecheck accepts \
+                         only matching `ScaledVec` operands, so this means the block size did \
+                         not fold to a literal (arch#884 phase 3)"
+                    )
+                });
+            let h = crate::fp_block::BlockHelper::Dot { shape };
+            self.fp_helpers_used.set(true);
+            self.block_helpers.borrow_mut().insert(h);
+            return format!("{}({}, {})", h.sv_name(), arg_strs[0], arg_strs[1]);
+        }
+        // Built-in SVA: past/rose/fell → SV $past/$rose/$fell
+        if name == "past" || name == "rose" || name == "fell" {
+            return format!("${name}({})", arg_strs.join(", "));
+        }
+        // Float intrinsics → emitted helper functions.
+        if name == "fma" && args.len() == 3 {
+            self.fp_helpers_used.set(true);
+            let fmt = self
+                .expr_float_fmt(&args[0])
+                .or_else(|| self.expr_float_fmt(&args[1]))
+                .or_else(|| self.expr_float_fmt(&args[2]))
+                .unwrap_or("f32");
+            return format!("arch_fma_{fmt}({})", arg_strs.join(", "));
+        }
+        if name == "is_nan" && args.len() == 1 {
+            // exponent all-ones and mantissa nonzero.
+            let a = &arg_strs[0];
+            // E8M0 is a SCALE type, not a float, so it carries no
+            // float tag and would otherwise fall through to the f32
+            // test — reading bits [30:23] of an 8-bit signal, which
+            // SV zero-fills into a silent constant false. Its NaN is
+            // the single code 0xFF.
+            if matches!(self.scale_type_of(&args[0]), Some(TypeExpr::E8M0)) {
+                return format!("({a} == 8'hFF)");
+            }
+            // UE4M3 is the OTHER scale type, and its sole NaN is a DIFFERENT
+            // code: 0x7F, not 0xFF. Sharing E8M0's arm would make `is_nan`
+            // silently constant-false on every NVFP4 scale.
+            if matches!(self.scale_type_of(&args[0]), Some(TypeExpr::UE4M3)) {
+                return format!("({a} == 8'h7F)");
+            }
+            // The NaN test is DERIVED from the format table rather
+            // than tabulated per tag. The old hand-written match
+            // ended in `_ =>` returning the f32 test — at f32's bit
+            // offsets — so any format it did not name was silently
+            // probed at the wrong bits. Deriving it means a new
+            // format is a table row, not a fifth arm here.
+            let tag = self.expr_float_fmt(&args[0]).unwrap_or("f32");
+            let d = crate::fp_format::by_tag(tag)
+                .unwrap_or_else(|| crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32));
+            return match d.nan_rule {
+                crate::fp_format::NanRule::IeeeExpAllOnes => {
+                    let (eh, el) = d.exp_field();
+                    let (mh, ml) = d
+                        .mant_field()
+                        .expect("IEEE-shaped format must have a mantissa");
+                    let exp_ones = (1u64 << d.exp_bits) - 1;
+                    format!(
+                        "(({a}[{eh}:{el}] == {}'h{exp_ones:X}) && ({a}[{mh}:{ml}] != {}'b0))",
+                        d.exp_bits, d.mant_bits
+                    )
+                }
+                crate::fp_format::NanRule::OcpAllMagnitudeOnes => {
+                    let (gh, gl) = d.magnitude_field();
+                    let mag_bits = d.magnitude_bits();
+                    let mag_ones = (1u64 << mag_bits) - 1;
+                    format!("({a}[{gh}:{gl}] == {mag_bits}'h{mag_ones:X})")
+                }
+                // Unreachable: typecheck rejects `is_nan` on a format
+                // with no NaN encoding (`Ty::is_float_arith`).
+                crate::fp_format::NanRule::NoNan => unreachable!(
+                    "is_nan on `{}`, which has no NaN encoding — typecheck \
+                         should have rejected this",
+                    d.type_name
+                ),
+            };
+        }
+        // Resolve mangled name if this is an overloaded function.
+        let sv_name = if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name)
+        {
+            if overloads.len() > 1 {
+                let idx = self
+                    .overload_map
+                    .get(&expr.span.start)
+                    .copied()
+                    .unwrap_or(0);
+                let ov = &overloads[idx];
+                let suffix: String = ov
+                    .arg_types
+                    .iter()
+                    .map(|t| Self::type_mangle_tag(t))
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("{name}_{suffix}")
+            } else {
+                name.to_string()
+            }
+        } else {
+            name.to_string()
+        };
+        format!("{sv_name}({})", arg_strs.join(", "))
     }
 
     /// Convert a width expression to a Verilog range string `[N:0]`.
@@ -6921,6 +8223,33 @@ impl<'a> Codegen<'a> {
                 let ws = self.emit_expr_str(w);
                 format!("{ws}-1:0")
             }
+        }
+    }
+
+    /// Width of the element plane of a `ScaledVec` (`N * elem_w`) as an SV
+    /// expression, folded to a literal when `N` is constant. `"0"` if `ty` is
+    /// not a ScaledVec.
+    pub(crate) fn scaled_vec_elems_width(&self, ty: &TypeExpr) -> String {
+        let TypeExpr::ScaledVec(elem, n, _) = ty else {
+            return "0".to_string();
+        };
+        let ew = self
+            .type_expr_data_width(elem)
+            .unwrap_or_else(|| "0".to_string());
+        let nstr = self.emit_expr_str(n);
+        match (ew.parse::<u64>(), nstr.parse::<u64>()) {
+            (Ok(e), Ok(k)) => (e * k).to_string(),
+            _ => format!("({ew}) * ({nstr})"),
+        }
+    }
+
+    /// Width of the scale field of a `ScaledVec`. `"0"` if not a ScaledVec.
+    pub(crate) fn scaled_vec_scale_width(&self, ty: &TypeExpr) -> String {
+        match ty {
+            TypeExpr::ScaledVec(_, _, scale) => self
+                .type_expr_data_width(scale)
+                .unwrap_or_else(|| "0".to_string()),
+            _ => "0".to_string(),
         }
     }
 
@@ -6951,6 +8280,18 @@ impl<'a> Codegen<'a> {
             // operate on the raw [W-1:0] bit pattern).
             TypeExpr::FP32 => "logic [31:0]".to_string(),
             TypeExpr::BF16 => "logic [15:0]".to_string(),
+            TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => "logic [7:0]".to_string(),
+            TypeExpr::FP4E2M1 => "logic [3:0]".to_string(),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => "logic [5:0]".to_string(),
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => "logic [7:0]".to_string(),
+            // One packed word `{scale, P[N-1], …, P[0]}` — NOT an array, so
+            // there is no dimension suffix to carry (contrast Vec below).
+            TypeExpr::ScaledVec(..) => {
+                let w = self
+                    .type_expr_data_width(ty)
+                    .unwrap_or_else(|| "0".to_string());
+                format!("logic [{}]", Self::fold_width_str(&w))
+            }
             TypeExpr::Clock(_) => "logic".to_string(),
             TypeExpr::Reset(_, _) => "logic".to_string(),
             TypeExpr::Vec(_, _) => {

@@ -123,6 +123,12 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations (arch#852) — a state's `comb`/`seq` body,
+        // a transition guard or an `assert` may call one, and SV has no
+        // free functions.
+        self.emit_pending_functions();
+
         // ── State type ───────────────────────────────────────────────────────
         self.line(&format!(
             "typedef enum logic [{}:0] {{",
@@ -384,8 +390,11 @@ impl<'a> Codegen<'a> {
             self.line("end");
         }
 
-        // Auto-generated FSM safety assertions and coverage
-        {
+        // Auto-generated FSM safety assertions and coverage. Suppressed
+        // under `--no-auto-asserts` (issue #649) — compiler-generated
+        // SVA only, the user-written `assert`/`cover` block below is
+        // unaffected.
+        if !self.suppress_auto_sva {
             let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
             let clk = clk_port
                 .map(|p| p.name.name.clone())

@@ -1,20 +1,28 @@
-// E203 SoC Top-Level Integration
-// Connects: CoreTop + ICB Arbiter + SRAM + PPI + FIO + GPIO + UART + SPI
-//           + DebugModule + IrqCtrl
-// The core's internal BIU handles ITCM/DTCM. External bus accesses
-// (peripherals, SRAM) go through the ICB fabric.
+// E203 SoC top — hierarchical integration fixture (second-generation).
+// e203_core_top (real ICB fabric) + ITCM/DTCM controller+RAM pairs + CLINT
+// timer + peripheral fabric: PPI ICB -> APB bridge (GPIO/UART/SPI), FIO ICB
+// -> fast I/O, MEM ICB -> arbiter -> SRAM, plus IRQ ctrl and debug module.
+// Memory map (BIU matches addr[31:16] against each region indic):
+//   ITCM 0x0000_xxxx (core boots at 0x0), DTCM 0x9000_xxxx,
+//   PPI 0x1000_xxxx, CLINT 0x0200_xxxx, FIO 0x0300_xxxx, rest -> MEM/SRAM.
 
 module e203_soc_top
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
+  // The CLINT timer is the one Reset<Sync, High> island in this Async-Low
+  // SoC; RDC phase 2d requires a plain Reset source, so it gets its own pin.
+  port timer_rst: in Reset<Sync, High>;
 
-  // ── ITCM loader (testbench) ────────────────────────────────────
+  // ── Boot ───────────────────────────────────────────────────────
+  port pc_rtvec: in UInt<32>;
+
+  // ── ITCM loader (testbench writes program via ext2itcm ICB) ────
   port itcm_wr_en:   in Bool;
   port itcm_wr_addr: in UInt<14>;
   port itcm_wr_data: in UInt<32>;
 
-  // ── External ICB master (from core BIU, directly wired for SoC) ──
+  // ── External ICB master (second SRAM-fabric master, via arbiter) ─
   port ext_cmd_valid: in Bool;
   port ext_cmd_addr:  in UInt<32>;
   port ext_cmd_wdata: in UInt<32>;
@@ -40,7 +48,7 @@ module e203_soc_top
   port fio_out_0: out UInt<32>;
   port fio_out_1: out UInt<32>;
 
-  // ── Debug interface ────────────────────────────────────────────
+  // ── Debug interface (APB) ──────────────────────────────────────
   port dbg_psel:    in  Bool;
   port dbg_penable: in  Bool;
   port dbg_paddr:   in  UInt<32>;
@@ -49,128 +57,644 @@ module e203_soc_top
   port dbg_prdata:  out UInt<32>;
 
   // ── Status ─────────────────────────────────────────────────────
-  port core_commit: out Bool;
-  port core_instr:  out UInt<32>;
-  port core_pc:     out UInt<32>;
-  port core_valid:  out Bool;
-  port gpio_irq:    out Bool;
-  port uart_irq:    out Bool;
-  port spi_irq:     out Bool;
+  port inspect_pc: out UInt<32>;
+  port core_wfi:   out Bool;
+  port gpio_irq:   out Bool;
+  port uart_irq:   out Bool;
+  port spi_irq:    out Bool;
 
-  // ── Bus interconnect wires (driven in comb, consumed by inst) ──
-  wire bus_cmd_ready: Bool;
-  wire bus_rsp_valid: Bool;
-  wire bus_rsp_rdata: UInt<32>;
-  wire bus_rsp_err:   Bool;
+  // ── Core <-> ITCM ctrl ─────────────────────────────────────────
+  wire ifu2itcm_icb_cmd_valid: Bool;
+  wire ifu2itcm_icb_cmd_ready: Bool;
+  wire ifu2itcm_icb_cmd_addr:  UInt<16>;
+  wire ifu2itcm_icb_rsp_valid: Bool;
+  wire ifu2itcm_icb_rsp_ready: Bool;
+  wire ifu2itcm_icb_rsp_err:   Bool;
+  wire ifu2itcm_icb_rsp_rdata: UInt<64>;
+  wire ifu2itcm_holdup:        Bool;
+  wire lsu2itcm_icb_cmd_valid: Bool;
+  wire lsu2itcm_icb_cmd_ready: Bool;
+  wire lsu2itcm_icb_cmd_addr:  UInt<16>;
+  wire lsu2itcm_icb_cmd_read:  Bool;
+  wire lsu2itcm_icb_cmd_wdata: UInt<32>;
+  wire lsu2itcm_icb_cmd_wmask: UInt<4>;
+  wire lsu2itcm_icb_rsp_valid: Bool;
+  wire lsu2itcm_icb_rsp_ready: Bool;
+  wire lsu2itcm_icb_rsp_err:   Bool;
+  wire lsu2itcm_icb_rsp_rdata: UInt<32>;
+
+  // ── Core <-> DTCM ctrl ─────────────────────────────────────────
+  wire lsu2dtcm_icb_cmd_valid: Bool;
+  wire lsu2dtcm_icb_cmd_ready: Bool;
+  wire lsu2dtcm_icb_cmd_addr:  UInt<16>;
+  wire lsu2dtcm_icb_cmd_read:  Bool;
+  wire lsu2dtcm_icb_cmd_wdata: UInt<32>;
+  wire lsu2dtcm_icb_cmd_wmask: UInt<4>;
+  wire lsu2dtcm_icb_rsp_valid: Bool;
+  wire lsu2dtcm_icb_rsp_ready: Bool;
+  wire lsu2dtcm_icb_rsp_err:   Bool;
+  wire lsu2dtcm_icb_rsp_rdata: UInt<32>;
+
+  // ── TCM RAM interfaces ─────────────────────────────────────────
+  wire itcm_ram_cs:   Bool;
+  wire itcm_ram_we:   Bool;
+  wire itcm_ram_addr: UInt<13>;
+  wire itcm_ram_wem:  UInt<8>;
+  wire itcm_ram_din:  UInt<64>;
+  wire itcm_ram_dout: UInt<64>;
+  wire clk_itcm_ram_nc: Bool;
+  wire dtcm_ram_cs:   Bool;
+  wire dtcm_ram_we:   Bool;
+  wire dtcm_ram_addr: UInt<14>;
+  wire dtcm_ram_wem:  UInt<4>;
+  wire dtcm_ram_din:  UInt<32>;
+  wire dtcm_ram_dout: UInt<32>;
+  wire clk_dtcm_ram_nc: Bool;
+  wire itcm_active_nc: Bool;
+  wire dtcm_active_nc: Bool;
+
+  // ── Core PPI / CLINT / FIO / MEM ICBs ──────────────────────────
+  wire ppi_icb_cmd_valid: Bool;
+  wire ppi_icb_cmd_ready: Bool;
+  wire ppi_icb_cmd_addr:  UInt<32>;
+  wire ppi_icb_cmd_read:  Bool;
+  wire ppi_icb_cmd_wdata: UInt<32>;
+  wire ppi_icb_cmd_wmask: UInt<4>;
+  wire ppi_icb_rsp_valid: Bool;
+  wire ppi_icb_rsp_ready: Bool;
+  wire ppi_icb_rsp_err:   Bool;
+  wire ppi_icb_rsp_rdata: UInt<32>;
+
+  wire clint_icb_cmd_valid: Bool;
+  wire clint_icb_cmd_addr:  UInt<32>;
+  wire clint_icb_cmd_read:  Bool;
+  wire clint_icb_cmd_wdata: UInt<32>;
+  wire clint_icb_rsp_ready: Bool;
+
+  wire fio_icb_cmd_valid: Bool;
+  wire fio_icb_cmd_ready: Bool;
+  wire fio_icb_cmd_addr:  UInt<32>;
+  wire fio_icb_cmd_read:  Bool;
+  wire fio_icb_cmd_wdata: UInt<32>;
+  wire fio_icb_cmd_wmask: UInt<4>;
+  wire fio_icb_rsp_valid: Bool;
+  wire fio_icb_rsp_ready: Bool;
+  wire fio_icb_rsp_err:   Bool;
+  wire fio_icb_rsp_rdata: UInt<32>;
+
+  wire mem_icb_cmd_valid: Bool;
+  wire mem_icb_cmd_ready: Bool;
+  wire mem_icb_cmd_addr:  UInt<32>;
+  wire mem_icb_cmd_read:  Bool;
+  wire mem_icb_cmd_wdata: UInt<32>;
+  wire mem_icb_cmd_wmask: UInt<4>;
+  wire mem_icb_rsp_valid: Bool;
+  wire mem_icb_rsp_ready: Bool;
+  wire mem_icb_rsp_err:   Bool;
+  wire mem_icb_rsp_rdata: UInt<32>;
+
+  // Unused core outputs (kept on wires so every connection is explicit)
+  wire tm_stop_nc:      Bool;
+  wire core_cgstop_nc:  Bool;
+  wire tcm_cgstop:      Bool;
+  wire exu_active_nc:   Bool;
+  wire ifu_active_nc:   Bool;
+  wire lsu_active_nc:   Bool;
+  wire biu_active_nc:   Bool;
+  wire wr_dcsr_ena_nc:     Bool;
+  wire wr_dpc_ena_nc:      Bool;
+  wire wr_dscratch_ena_nc: Bool;
+  wire wr_csr_nxt_nc:      UInt<32>;
+  wire cmt_dpc_nc:         UInt<32>;
+  wire cmt_dpc_ena_nc:     Bool;
+  wire cmt_dcause_nc:      UInt<3>;
+  wire cmt_dcause_ena_nc:  Bool;
+  wire lsu2itcm_icb_cmd_lock_nc: Bool;
+  wire lsu2itcm_icb_cmd_excl_nc: Bool;
+  wire lsu2itcm_icb_cmd_size_nc: UInt<2>;
+  wire lsu2dtcm_icb_cmd_lock_nc: Bool;
+  wire lsu2dtcm_icb_cmd_excl_nc: Bool;
+  wire lsu2dtcm_icb_cmd_size_nc: UInt<2>;
+  wire ppi_icb_cmd_lock_nc:  Bool;
+  wire ppi_icb_cmd_excl_nc:  Bool;
+  wire ppi_icb_cmd_size_nc:  UInt<2>;
+  wire ppi_icb_cmd_burst_nc: UInt<2>;
+  wire ppi_icb_cmd_beat_nc:  UInt<2>;
+  wire clint_icb_cmd_wmask_nc: UInt<4>;
+  wire clint_icb_cmd_lock_nc:  Bool;
+  wire clint_icb_cmd_excl_nc:  Bool;
+  wire clint_icb_cmd_size_nc:  UInt<2>;
+  wire clint_icb_cmd_burst_nc: UInt<2>;
+  wire clint_icb_cmd_beat_nc:  UInt<2>;
+  wire plic_icb_cmd_valid_nc: Bool;
+  wire plic_icb_cmd_addr_nc:  UInt<32>;
+  wire plic_icb_cmd_read_nc:  Bool;
+  wire plic_icb_cmd_wdata_nc: UInt<32>;
+  wire plic_icb_cmd_wmask_nc: UInt<4>;
+  wire plic_icb_cmd_lock_nc:  Bool;
+  wire plic_icb_cmd_excl_nc:  Bool;
+  wire plic_icb_cmd_size_nc:  UInt<2>;
+  wire plic_icb_cmd_burst_nc: UInt<2>;
+  wire plic_icb_cmd_beat_nc:  UInt<2>;
+  wire plic_icb_rsp_ready_nc: Bool;
+  wire fio_icb_cmd_lock_nc:  Bool;
+  wire fio_icb_cmd_excl_nc:  Bool;
+  wire fio_icb_cmd_size_nc:  UInt<2>;
+  wire fio_icb_cmd_burst_nc: UInt<2>;
+  wire fio_icb_cmd_beat_nc:  UInt<2>;
+  wire mem_icb_cmd_lock_nc:  Bool;
+  wire mem_icb_cmd_excl_nc:  Bool;
+  wire mem_icb_cmd_size_nc:  UInt<2>;
+  wire mem_icb_cmd_burst_nc: UInt<2>;
+  wire mem_icb_cmd_beat_nc:  UInt<2>;
+  wire nice_req_valid_nc: Bool;
+  wire nice_req_inst_nc:  UInt<32>;
+  wire nice_req_rs1_nc:   UInt<32>;
+  wire nice_req_rs2_nc:   UInt<32>;
+  wire nice_rsp_multicyc_ready_nc: Bool;
+  wire nice_icb_cmd_ready_nc: Bool;
+  wire nice_icb_rsp_valid_nc: Bool;
+  wire nice_icb_rsp_rdata_nc: UInt<32>;
+  wire nice_icb_rsp_err_nc:   Bool;
+
+  // ── IRQ / debug wires ──────────────────────────────────────────
+  wire tmr_irq_w:    Bool;
+  wire gpio_irq_w:   Bool;
+  wire uart_irq_w:   Bool;
+  wire spi_irq_w:    Bool;
+  wire irq_req_w:    Bool;
+  wire irq_cause_w:  UInt<32>;
+  wire irq_mip_meip: Bool;
+  wire irq_mip_mtip: Bool;
+  wire irq_mip_msip: Bool;
+  wire dbg_halt_req:   Bool;
+  wire dbg_resume_req: Bool;
+  wire dbg_prdata_w:   UInt<32>;
+  wire dbg_pready_w:   Bool;
+  wire dbg_reg_addr_w:  UInt<16>;
+  wire dbg_reg_wdata_w: UInt<32>;
+  wire dbg_reg_wen_w:   Bool;
+
+  // ── APB fabric wires (PPI bridge -> GPIO/UART/SPI) ─────────────
+  wire gpio_psel:    Bool;
+  wire gpio_penable: Bool;
+  wire gpio_paddr:   UInt<32>;
+  wire gpio_pwdata:  UInt<32>;
+  wire gpio_pwrite:  Bool;
+  wire gpio_prdata_w: UInt<32>;
+  wire gpio_pready_w: Bool;
+  wire uart_psel:    Bool;
+  wire uart_penable: Bool;
+  wire uart_paddr:   UInt<32>;
+  wire uart_pwdata:  UInt<32>;
+  wire uart_pwrite:  Bool;
+  wire uart_prdata_w: UInt<32>;
+  wire uart_pready_w: Bool;
+  wire spi_psel:    Bool;
+  wire spi_penable: Bool;
+  wire spi_paddr:   UInt<32>;
+  wire spi_pwdata:  UInt<32>;
+  wire spi_pwrite:  Bool;
+  wire spi_prdata_w: UInt<32>;
+  wire spi_pready_w: Bool;
+  wire apb3_psel_w:    Bool;
+  wire apb3_penable_w: Bool;
+  wire apb3_paddr_w:   UInt<32>;
+  wire apb3_pwdata_w:  UInt<32>;
+  wire apb3_pwrite_w:  Bool;
+
+  // ── SRAM fabric wires (core MEM ICB + ext port -> arbiter -> SRAM) ──
+  wire arbt_s_cmd_valid: Bool;
+  wire arbt_s_cmd_addr:  UInt<32>;
+  wire arbt_s_cmd_wdata: UInt<32>;
+  wire arbt_s_cmd_wmask: UInt<4>;
+  wire arbt_s_cmd_read:  Bool;
+  wire arbt_s_rsp_ready: Bool;
+  wire sram_ready:       Bool;
+  wire sram_rsp_valid:   Bool;
+  wire sram_rsp_rdata:   UInt<32>;
+  wire sram_rsp_err:     Bool;
+  wire gpio_out_w: UInt<32>;
+  wire gpio_oe_w:  UInt<32>;
+  wire uart_tx_w:  Bool;
+  wire spi_sclk_w: Bool;
+  wire spi_mosi_w: Bool;
+  wire spi_cs_n_w: Bool;
+  wire fio_out_0_w: UInt<32>;
+  wire fio_out_1_w: UInt<32>;
+  wire fio_out_2_w: UInt<32>;
+  wire fio_out_3_w: UInt<32>;
+
+  // ── TB loader -> ext2itcm ICB adapter (word addr -> byte addr) ──
+  let ext2itcm_cmd_addr: UInt<16> = itcm_wr_addr.zext<16>() << 2;
+
+  // ── CLINT ICB -> timer register adapter (fixed 1-cycle response) ──
+  let clint_reg_addr: UInt<4> = clint_icb_cmd_addr[5:2];
+  let clint_reg_wen:  Bool    = clint_icb_cmd_valid & (!clint_icb_cmd_read);
+  wire clint_reg_rdata: UInt<32>;
+  reg clint_rsp_valid_r: Bool     reset rst_n => false;
+  reg clint_rsp_rdata_r: UInt<32> reset rst_n => 0;
+  seq on clk rising
+    clint_rsp_valid_r <= clint_icb_cmd_valid;
+    clint_rsp_rdata_r <= clint_reg_rdata;
+  end seq
 
   // ══════════════════════════════════════════════════════════════
-  // CPU Core
+  // CPU core (IFU + EXU + LSU + BIU on the real ICB fabric)
   // ══════════════════════════════════════════════════════════════
   inst core: e203_core_top
-    clk            <- clk;
-    rst_n          <- rst_n;
-    itcm_wr_en     <- itcm_wr_en;
-    itcm_wr_addr   <- itcm_wr_addr;
-    itcm_wr_data   <- itcm_wr_data;
-    exu_redirect   <- false;
-    exu_redirect_pc <- 0;
-    commit_valid   -> core_commit_w;
-    o_instr        -> core_instr_w;
-    o_pc           -> core_pc_w;
-    o_valid        -> core_valid_w;
-    tmr_irq        -> tmr_irq_w;
+    clk       <- clk;
+    rst_n     <- rst_n;
+    test_mode <- false;
+    inspect_pc  -> inspect_pc;
+    core_wfi    -> core_wfi;
+    tm_stop     -> tm_stop_nc;
+    core_cgstop -> core_cgstop_nc;
+    tcm_cgstop  -> tcm_cgstop;
+    exu_active  -> exu_active_nc;
+    ifu_active  -> ifu_active_nc;
+    lsu_active  -> lsu_active_nc;
+    biu_active  -> biu_active_nc;
+    pc_rtvec     <- pc_rtvec;
+    core_mhartid <- 0;
+    dbg_irq_r <- dbg_halt_req;
+    lcl_irq_r <- false;
+    evt_r     <- false;
+    ext_irq_r <- irq_mip_meip;
+    sft_irq_r <- irq_mip_msip;
+    tmr_irq_r <- irq_mip_mtip;
+    wr_dcsr_ena     -> wr_dcsr_ena_nc;
+    wr_dpc_ena      -> wr_dpc_ena_nc;
+    wr_dscratch_ena -> wr_dscratch_ena_nc;
+    wr_csr_nxt      -> wr_csr_nxt_nc;
+    dcsr_r     <- 0;
+    dpc_r      <- 0;
+    dscratch_r <- 0;
+    cmt_dpc        -> cmt_dpc_nc;
+    cmt_dpc_ena    -> cmt_dpc_ena_nc;
+    cmt_dcause     -> cmt_dcause_nc;
+    cmt_dcause_ena -> cmt_dcause_ena_nc;
+    dbg_mode      <- false;
+    dbg_halt_r    <- dbg_halt_req;
+    dbg_step_r    <- false;
+    dbg_ebreakm_r <- false;
+    dbg_stopcycle <- false;
+    itcm_region_indic <- 0;
+    ifu2itcm_holdup   <- ifu2itcm_holdup;
+    ifu2itcm_icb_cmd_valid -> ifu2itcm_icb_cmd_valid;
+    ifu2itcm_icb_cmd_ready <- ifu2itcm_icb_cmd_ready;
+    ifu2itcm_icb_cmd_addr  -> ifu2itcm_icb_cmd_addr;
+    ifu2itcm_icb_rsp_valid <- ifu2itcm_icb_rsp_valid;
+    ifu2itcm_icb_rsp_ready -> ifu2itcm_icb_rsp_ready;
+    ifu2itcm_icb_rsp_err   <- ifu2itcm_icb_rsp_err;
+    ifu2itcm_icb_rsp_rdata <- ifu2itcm_icb_rsp_rdata;
+    lsu2itcm_icb_cmd_valid -> lsu2itcm_icb_cmd_valid;
+    lsu2itcm_icb_cmd_ready <- lsu2itcm_icb_cmd_ready;
+    lsu2itcm_icb_cmd_addr  -> lsu2itcm_icb_cmd_addr;
+    lsu2itcm_icb_cmd_read  -> lsu2itcm_icb_cmd_read;
+    lsu2itcm_icb_cmd_wdata -> lsu2itcm_icb_cmd_wdata;
+    lsu2itcm_icb_cmd_wmask -> lsu2itcm_icb_cmd_wmask;
+    lsu2itcm_icb_cmd_lock  -> lsu2itcm_icb_cmd_lock_nc;
+    lsu2itcm_icb_cmd_excl  -> lsu2itcm_icb_cmd_excl_nc;
+    lsu2itcm_icb_cmd_size  -> lsu2itcm_icb_cmd_size_nc;
+    lsu2itcm_icb_rsp_valid <- lsu2itcm_icb_rsp_valid;
+    lsu2itcm_icb_rsp_ready -> lsu2itcm_icb_rsp_ready;
+    lsu2itcm_icb_rsp_err   <- lsu2itcm_icb_rsp_err;
+    lsu2itcm_icb_rsp_excl_ok <- false;
+    lsu2itcm_icb_rsp_rdata <- lsu2itcm_icb_rsp_rdata;
+    dtcm_region_indic <- 0x90000000;
+    lsu2dtcm_icb_cmd_valid -> lsu2dtcm_icb_cmd_valid;
+    lsu2dtcm_icb_cmd_ready <- lsu2dtcm_icb_cmd_ready;
+    lsu2dtcm_icb_cmd_addr  -> lsu2dtcm_icb_cmd_addr;
+    lsu2dtcm_icb_cmd_read  -> lsu2dtcm_icb_cmd_read;
+    lsu2dtcm_icb_cmd_wdata -> lsu2dtcm_icb_cmd_wdata;
+    lsu2dtcm_icb_cmd_wmask -> lsu2dtcm_icb_cmd_wmask;
+    lsu2dtcm_icb_cmd_lock  -> lsu2dtcm_icb_cmd_lock_nc;
+    lsu2dtcm_icb_cmd_excl  -> lsu2dtcm_icb_cmd_excl_nc;
+    lsu2dtcm_icb_cmd_size  -> lsu2dtcm_icb_cmd_size_nc;
+    lsu2dtcm_icb_rsp_valid <- lsu2dtcm_icb_rsp_valid;
+    lsu2dtcm_icb_rsp_ready -> lsu2dtcm_icb_rsp_ready;
+    lsu2dtcm_icb_rsp_err   <- lsu2dtcm_icb_rsp_err;
+    lsu2dtcm_icb_rsp_excl_ok <- false;
+    lsu2dtcm_icb_rsp_rdata <- lsu2dtcm_icb_rsp_rdata;
+    ppi_region_indic <- 0x10000000;
+    ppi_icb_enable   <- true;
+    ppi_icb_cmd_valid -> ppi_icb_cmd_valid;
+    ppi_icb_cmd_ready <- ppi_icb_cmd_ready;
+    ppi_icb_cmd_addr  -> ppi_icb_cmd_addr;
+    ppi_icb_cmd_read  -> ppi_icb_cmd_read;
+    ppi_icb_cmd_wdata -> ppi_icb_cmd_wdata;
+    ppi_icb_cmd_wmask -> ppi_icb_cmd_wmask;
+    ppi_icb_cmd_lock  -> ppi_icb_cmd_lock_nc;
+    ppi_icb_cmd_excl  -> ppi_icb_cmd_excl_nc;
+    ppi_icb_cmd_size  -> ppi_icb_cmd_size_nc;
+    ppi_icb_cmd_burst -> ppi_icb_cmd_burst_nc;
+    ppi_icb_cmd_beat  -> ppi_icb_cmd_beat_nc;
+    ppi_icb_rsp_valid <- ppi_icb_rsp_valid;
+    ppi_icb_rsp_ready -> ppi_icb_rsp_ready;
+    ppi_icb_rsp_err   <- ppi_icb_rsp_err;
+    ppi_icb_rsp_excl_ok <- false;
+    ppi_icb_rsp_rdata <- ppi_icb_rsp_rdata;
+    clint_region_indic <- 0x02000000;
+    clint_icb_enable   <- true;
+    clint_icb_cmd_valid -> clint_icb_cmd_valid;
+    clint_icb_cmd_ready <- true;
+    clint_icb_cmd_addr  -> clint_icb_cmd_addr;
+    clint_icb_cmd_read  -> clint_icb_cmd_read;
+    clint_icb_cmd_wdata -> clint_icb_cmd_wdata;
+    clint_icb_cmd_wmask -> clint_icb_cmd_wmask_nc;
+    clint_icb_cmd_lock  -> clint_icb_cmd_lock_nc;
+    clint_icb_cmd_excl  -> clint_icb_cmd_excl_nc;
+    clint_icb_cmd_size  -> clint_icb_cmd_size_nc;
+    clint_icb_cmd_burst -> clint_icb_cmd_burst_nc;
+    clint_icb_cmd_beat  -> clint_icb_cmd_beat_nc;
+    clint_icb_rsp_valid <- clint_rsp_valid_r;
+    clint_icb_rsp_ready -> clint_icb_rsp_ready;
+    clint_icb_rsp_err   <- false;
+    clint_icb_rsp_excl_ok <- false;
+    clint_icb_rsp_rdata <- clint_rsp_rdata_r;
+    plic_region_indic <- 0x0C000000;
+    plic_icb_enable   <- false;
+    plic_icb_cmd_valid -> plic_icb_cmd_valid_nc;
+    plic_icb_cmd_ready <- true;
+    plic_icb_cmd_addr  -> plic_icb_cmd_addr_nc;
+    plic_icb_cmd_read  -> plic_icb_cmd_read_nc;
+    plic_icb_cmd_wdata -> plic_icb_cmd_wdata_nc;
+    plic_icb_cmd_wmask -> plic_icb_cmd_wmask_nc;
+    plic_icb_cmd_lock  -> plic_icb_cmd_lock_nc;
+    plic_icb_cmd_excl  -> plic_icb_cmd_excl_nc;
+    plic_icb_cmd_size  -> plic_icb_cmd_size_nc;
+    plic_icb_cmd_burst -> plic_icb_cmd_burst_nc;
+    plic_icb_cmd_beat  -> plic_icb_cmd_beat_nc;
+    plic_icb_rsp_valid <- false;
+    plic_icb_rsp_ready -> plic_icb_rsp_ready_nc;
+    plic_icb_rsp_err   <- false;
+    plic_icb_rsp_excl_ok <- false;
+    plic_icb_rsp_rdata <- 0;
+    fio_region_indic <- 0x03000000;
+    fio_icb_enable   <- true;
+    fio_icb_cmd_valid -> fio_icb_cmd_valid;
+    fio_icb_cmd_ready <- fio_icb_cmd_ready;
+    fio_icb_cmd_addr  -> fio_icb_cmd_addr;
+    fio_icb_cmd_read  -> fio_icb_cmd_read;
+    fio_icb_cmd_wdata -> fio_icb_cmd_wdata;
+    fio_icb_cmd_wmask -> fio_icb_cmd_wmask;
+    fio_icb_cmd_lock  -> fio_icb_cmd_lock_nc;
+    fio_icb_cmd_excl  -> fio_icb_cmd_excl_nc;
+    fio_icb_cmd_size  -> fio_icb_cmd_size_nc;
+    fio_icb_cmd_burst -> fio_icb_cmd_burst_nc;
+    fio_icb_cmd_beat  -> fio_icb_cmd_beat_nc;
+    fio_icb_rsp_valid <- fio_icb_rsp_valid;
+    fio_icb_rsp_ready -> fio_icb_rsp_ready;
+    fio_icb_rsp_err   <- fio_icb_rsp_err;
+    fio_icb_rsp_excl_ok <- false;
+    fio_icb_rsp_rdata <- fio_icb_rsp_rdata;
+    mem_icb_enable   <- true;
+    mem_icb_cmd_valid -> mem_icb_cmd_valid;
+    mem_icb_cmd_ready <- mem_icb_cmd_ready;
+    mem_icb_cmd_addr  -> mem_icb_cmd_addr;
+    mem_icb_cmd_read  -> mem_icb_cmd_read;
+    mem_icb_cmd_wdata -> mem_icb_cmd_wdata;
+    mem_icb_cmd_wmask -> mem_icb_cmd_wmask;
+    mem_icb_cmd_lock  -> mem_icb_cmd_lock_nc;
+    mem_icb_cmd_excl  -> mem_icb_cmd_excl_nc;
+    mem_icb_cmd_size  -> mem_icb_cmd_size_nc;
+    mem_icb_cmd_burst -> mem_icb_cmd_burst_nc;
+    mem_icb_cmd_beat  -> mem_icb_cmd_beat_nc;
+    mem_icb_rsp_valid <- mem_icb_rsp_valid;
+    mem_icb_rsp_ready -> mem_icb_rsp_ready;
+    mem_icb_rsp_err   <- mem_icb_rsp_err;
+    mem_icb_rsp_excl_ok <- false;
+    mem_icb_rsp_rdata <- mem_icb_rsp_rdata;
+    nice_mem_holdup <- false;
+    nice_req_valid  -> nice_req_valid_nc;
+    nice_req_ready  <- false;
+    nice_req_inst   -> nice_req_inst_nc;
+    nice_req_rs1    -> nice_req_rs1_nc;
+    nice_req_rs2    -> nice_req_rs2_nc;
+    nice_rsp_multicyc_valid <- false;
+    nice_rsp_multicyc_ready -> nice_rsp_multicyc_ready_nc;
+    nice_rsp_multicyc_dat   <- 0;
+    nice_rsp_multicyc_err   <- false;
+    nice_icb_cmd_valid <- false;
+    nice_icb_cmd_ready -> nice_icb_cmd_ready_nc;
+    nice_icb_cmd_addr  <- 0;
+    nice_icb_cmd_read  <- true;
+    nice_icb_cmd_wdata <- 0;
+    nice_icb_cmd_size  <- 0;
+    nice_icb_rsp_valid -> nice_icb_rsp_valid_nc;
+    nice_icb_rsp_ready <- true;
+    nice_icb_rsp_rdata -> nice_icb_rsp_rdata_nc;
+    nice_icb_rsp_err   -> nice_icb_rsp_err_nc;
   end inst core
 
   // ══════════════════════════════════════════════════════════════
-  // ICB Bus Arbiter: M0=external port, M1=unused → Slave bus
+  // ITCM: controller + RAM (loader enters via ext2itcm ICB)
+  // ══════════════════════════════════════════════════════════════
+  inst itcm_ctrl: e203_itcm_ctrl
+    clk   <- clk;
+    rst_n <- rst_n;
+    test_mode  <- false;
+    tcm_cgstop <- tcm_cgstop;
+    itcm_active -> itcm_active_nc;
+    ifu2itcm_icb_cmd_valid <- ifu2itcm_icb_cmd_valid;
+    ifu2itcm_icb_cmd_ready -> ifu2itcm_icb_cmd_ready;
+    ifu2itcm_icb_cmd_addr  <- ifu2itcm_icb_cmd_addr;
+    ifu2itcm_icb_cmd_read  <- true;
+    ifu2itcm_icb_cmd_wdata <- 0;
+    ifu2itcm_icb_cmd_wmask <- 0;
+    ifu2itcm_icb_rsp_valid -> ifu2itcm_icb_rsp_valid;
+    ifu2itcm_icb_rsp_ready <- ifu2itcm_icb_rsp_ready;
+    ifu2itcm_icb_rsp_err   -> ifu2itcm_icb_rsp_err;
+    ifu2itcm_icb_rsp_rdata -> ifu2itcm_icb_rsp_rdata;
+    ifu2itcm_holdup        -> ifu2itcm_holdup;
+    lsu2itcm_icb_cmd_valid <- lsu2itcm_icb_cmd_valid;
+    lsu2itcm_icb_cmd_ready -> lsu2itcm_icb_cmd_ready;
+    lsu2itcm_icb_cmd_addr  <- lsu2itcm_icb_cmd_addr;
+    lsu2itcm_icb_cmd_read  <- lsu2itcm_icb_cmd_read;
+    lsu2itcm_icb_cmd_wdata <- lsu2itcm_icb_cmd_wdata;
+    lsu2itcm_icb_cmd_wmask <- lsu2itcm_icb_cmd_wmask;
+    lsu2itcm_icb_rsp_valid -> lsu2itcm_icb_rsp_valid;
+    lsu2itcm_icb_rsp_ready <- lsu2itcm_icb_rsp_ready;
+    lsu2itcm_icb_rsp_err   -> lsu2itcm_icb_rsp_err;
+    lsu2itcm_icb_rsp_rdata -> lsu2itcm_icb_rsp_rdata;
+    ext2itcm_icb_cmd_valid <- itcm_wr_en;
+    ext2itcm_icb_cmd_ready -> ext2itcm_cmd_ready_nc;
+    ext2itcm_icb_cmd_addr  <- ext2itcm_cmd_addr;
+    ext2itcm_icb_cmd_read  <- false;
+    ext2itcm_icb_cmd_wdata <- itcm_wr_data;
+    ext2itcm_icb_cmd_wmask <- 15;
+    ext2itcm_icb_rsp_valid -> ext2itcm_rsp_valid_nc;
+    ext2itcm_icb_rsp_ready <- true;
+    ext2itcm_icb_rsp_err   -> ext2itcm_rsp_err_nc;
+    ext2itcm_icb_rsp_rdata -> ext2itcm_rsp_rdata_nc;
+    itcm_ram_cs   -> itcm_ram_cs;
+    itcm_ram_we   -> itcm_ram_we;
+    itcm_ram_addr -> itcm_ram_addr;
+    itcm_ram_wem  -> itcm_ram_wem;
+    itcm_ram_din  -> itcm_ram_din;
+    itcm_ram_dout <- itcm_ram_dout;
+    clk_itcm_ram  -> clk_itcm_ram_nc;
+  end inst itcm_ctrl
+
+  wire ext2itcm_cmd_ready_nc: Bool;
+  wire ext2itcm_rsp_valid_nc: Bool;
+  wire ext2itcm_rsp_err_nc:   Bool;
+  wire ext2itcm_rsp_rdata_nc: UInt<32>;
+
+  inst itcm_ram: e203_itcm_ram
+    clk   <- clk;
+    rst_n <- rst_n;
+    sd <- false;
+    ds <- false;
+    ls <- false;
+    cs   <- itcm_ram_cs;
+    we   <- itcm_ram_we;
+    addr <- itcm_ram_addr;
+    wem  <- itcm_ram_wem;
+    din  <- itcm_ram_din;
+    dout -> itcm_ram_dout;
+  end inst itcm_ram
+
+  // ══════════════════════════════════════════════════════════════
+  // DTCM: controller + RAM (no external master)
+  // ══════════════════════════════════════════════════════════════
+  inst dtcm_ctrl: e203_dtcm_ctrl
+    clk   <- clk;
+    rst_n <- rst_n;
+    test_mode  <- false;
+    tcm_cgstop <- tcm_cgstop;
+    dtcm_active -> dtcm_active_nc;
+    lsu2dtcm_icb_cmd_valid <- lsu2dtcm_icb_cmd_valid;
+    lsu2dtcm_icb_cmd_ready -> lsu2dtcm_icb_cmd_ready;
+    lsu2dtcm_icb_cmd_addr  <- lsu2dtcm_icb_cmd_addr;
+    lsu2dtcm_icb_cmd_read  <- lsu2dtcm_icb_cmd_read;
+    lsu2dtcm_icb_cmd_wdata <- lsu2dtcm_icb_cmd_wdata;
+    lsu2dtcm_icb_cmd_wmask <- lsu2dtcm_icb_cmd_wmask;
+    lsu2dtcm_icb_rsp_valid -> lsu2dtcm_icb_rsp_valid;
+    lsu2dtcm_icb_rsp_ready <- lsu2dtcm_icb_rsp_ready;
+    lsu2dtcm_icb_rsp_err   -> lsu2dtcm_icb_rsp_err;
+    lsu2dtcm_icb_rsp_rdata -> lsu2dtcm_icb_rsp_rdata;
+    ext2dtcm_icb_cmd_valid <- false;
+    ext2dtcm_icb_cmd_ready -> ext2dtcm_cmd_ready_nc;
+    ext2dtcm_icb_cmd_addr  <- 0;
+    ext2dtcm_icb_cmd_read  <- true;
+    ext2dtcm_icb_cmd_wdata <- 0;
+    ext2dtcm_icb_cmd_wmask <- 0;
+    ext2dtcm_icb_rsp_valid -> ext2dtcm_rsp_valid_nc;
+    ext2dtcm_icb_rsp_ready <- true;
+    ext2dtcm_icb_rsp_err   -> ext2dtcm_rsp_err_nc;
+    ext2dtcm_icb_rsp_rdata -> ext2dtcm_rsp_rdata_nc;
+    dtcm_ram_cs   -> dtcm_ram_cs;
+    dtcm_ram_we   -> dtcm_ram_we;
+    dtcm_ram_addr -> dtcm_ram_addr;
+    dtcm_ram_wem  -> dtcm_ram_wem;
+    dtcm_ram_din  -> dtcm_ram_din;
+    dtcm_ram_dout <- dtcm_ram_dout;
+    clk_dtcm_ram  -> clk_dtcm_ram_nc;
+  end inst dtcm_ctrl
+
+  wire ext2dtcm_cmd_ready_nc: Bool;
+  wire ext2dtcm_rsp_valid_nc: Bool;
+  wire ext2dtcm_rsp_err_nc:   Bool;
+  wire ext2dtcm_rsp_rdata_nc: UInt<32>;
+
+  inst dtcm_ram: e203_dtcm_ram
+    clk   <- clk;
+    rst_n <- rst_n;
+    sd <- false;
+    ds <- false;
+    ls <- false;
+    cs   <- dtcm_ram_cs;
+    we   <- dtcm_ram_we;
+    addr <- dtcm_ram_addr;
+    wem  <- dtcm_ram_wem;
+    din  <- dtcm_ram_din;
+    dout -> dtcm_ram_dout;
+  end inst dtcm_ram
+
+  // ══════════════════════════════════════════════════════════════
+  // CLINT timer (behind the ICB -> register adapter above)
+  // ══════════════════════════════════════════════════════════════
+  inst timer: e203_clint_timer
+    clk       <- clk;
+    rst       <- timer_rst;
+    reg_addr  <- clint_reg_addr;
+    reg_wdata <- clint_icb_cmd_wdata;
+    reg_wen   <- clint_reg_wen;
+    reg_rdata -> clint_reg_rdata;
+    tmr_irq   -> tmr_irq_w;
+  end inst timer
+
+  // ══════════════════════════════════════════════════════════════
+  // SRAM fabric: core MEM ICB (m0) + external port (m1) -> arbiter -> SRAM
   // ══════════════════════════════════════════════════════════════
   inst arbt: e203_icb_arbt
     clk   <- clk;
     rst_n <- rst_n;
-    m0_cmd_valid <- ext_cmd_valid;
-    m0_cmd_addr  <- ext_cmd_addr;
-    m0_cmd_wdata <- ext_cmd_wdata;
-    m0_cmd_wmask <- ext_cmd_wmask;
-    m0_cmd_read  <- ext_cmd_read;
-    m0_cmd_ready -> arbt_m0_ready;
-    m0_rsp_valid -> arbt_m0_rsp_valid;
-    m0_rsp_ready <- true;
-    m0_rsp_rdata -> arbt_m0_rsp_rdata;
-    m0_rsp_err   -> arbt_m0_rsp_err;
-    m1_cmd_valid <- false;
-    m1_cmd_addr  <- 0;
-    m1_cmd_wdata <- 0;
-    m1_cmd_wmask <- 0;
-    m1_cmd_read  <- false;
-    m1_cmd_ready -> arbt_m1_ready;
-    m1_rsp_valid -> arbt_m1_rsp_valid;
+    m0_cmd_valid <- mem_icb_cmd_valid;
+    m0_cmd_addr  <- mem_icb_cmd_addr;
+    m0_cmd_wdata <- mem_icb_cmd_wdata;
+    m0_cmd_wmask <- mem_icb_cmd_wmask;
+    m0_cmd_read  <- mem_icb_cmd_read;
+    m0_cmd_ready -> mem_icb_cmd_ready;
+    m0_rsp_valid -> mem_icb_rsp_valid;
+    m0_rsp_ready <- mem_icb_rsp_ready;
+    m0_rsp_rdata -> mem_icb_rsp_rdata;
+    m0_rsp_err   -> mem_icb_rsp_err;
+    m1_cmd_valid <- ext_cmd_valid;
+    m1_cmd_addr  <- ext_cmd_addr;
+    m1_cmd_wdata <- ext_cmd_wdata;
+    m1_cmd_wmask <- ext_cmd_wmask;
+    m1_cmd_read  <- ext_cmd_read;
+    m1_cmd_ready -> ext_cmd_ready;
+    m1_rsp_valid -> ext_rsp_valid;
     m1_rsp_ready <- true;
-    m1_rsp_rdata -> arbt_m1_rsp_rdata;
-    m1_rsp_err   -> arbt_m1_rsp_err;
-    s_cmd_valid -> bus_cmd_valid;
-    s_cmd_ready <- bus_cmd_ready;
-    s_cmd_addr  -> bus_cmd_addr;
-    s_cmd_wdata -> bus_cmd_wdata;
-    s_cmd_wmask -> bus_cmd_wmask;
-    s_cmd_read  -> bus_cmd_read;
-    s_rsp_valid <- bus_rsp_valid;
-    s_rsp_ready -> bus_rsp_ready;
-    s_rsp_rdata <- bus_rsp_rdata;
-    s_rsp_err   <- bus_rsp_err;
+    m1_rsp_rdata -> ext_rsp_rdata;
+    m1_rsp_err   -> ext_rsp_err;
+    s_cmd_valid -> arbt_s_cmd_valid;
+    s_cmd_ready <- sram_ready;
+    s_cmd_addr  -> arbt_s_cmd_addr;
+    s_cmd_wdata -> arbt_s_cmd_wdata;
+    s_cmd_wmask -> arbt_s_cmd_wmask;
+    s_cmd_read  -> arbt_s_cmd_read;
+    s_rsp_valid <- sram_rsp_valid;
+    s_rsp_ready -> arbt_s_rsp_ready;
+    s_rsp_rdata <- sram_rsp_rdata;
+    s_rsp_err   <- sram_rsp_err;
   end inst arbt
 
-  // Address decode (combinational — valid only while bus_cmd_valid)
-  let sel_sram: Bool = bus_cmd_addr[31:28] == 2;
-  let sel_ppi:  Bool = bus_cmd_addr[31:28] == 1;
-  let sel_fio:  Bool = bus_cmd_addr[31:28] == 3;
-
-  // Latched peripheral select for response mux (holds after cmd completes)
-  reg sel_sram_r: Bool init false reset rst_n=>false;
-  reg sel_ppi_r:  Bool init false reset rst_n=>false;
-  reg sel_fio_r:  Bool init false reset rst_n=>false;
-
-  seq on clk rising
-    if bus_cmd_valid & bus_cmd_ready
-      sel_sram_r <= sel_sram;
-      sel_ppi_r  <= sel_ppi;
-      sel_fio_r  <= sel_fio;
-    end if
-  end seq
-
-  // ══════════════════════════════════════════════════════════════
-  // SRAM Controller
-  // ══════════════════════════════════════════════════════════════
   inst sram: e203_sram_ctrl
     clk           <- clk;
     rst_n         <- rst_n;
-    icb_cmd_valid <- bus_cmd_valid & sel_sram;
+    icb_cmd_valid <- arbt_s_cmd_valid;
     icb_cmd_ready -> sram_ready;
-    icb_cmd_addr  <- bus_cmd_addr;
-    icb_cmd_wdata <- bus_cmd_wdata;
-    icb_cmd_wmask <- bus_cmd_wmask;
-    icb_cmd_read  <- bus_cmd_read;
+    icb_cmd_addr  <- arbt_s_cmd_addr;
+    icb_cmd_wdata <- arbt_s_cmd_wdata;
+    icb_cmd_wmask <- arbt_s_cmd_wmask;
+    icb_cmd_read  <- arbt_s_cmd_read;
     icb_rsp_valid -> sram_rsp_valid;
-    icb_rsp_ready <- bus_rsp_ready;
+    icb_rsp_ready <- arbt_s_rsp_ready;
     icb_rsp_rdata -> sram_rsp_rdata;
     icb_rsp_err   -> sram_rsp_err;
   end inst sram
 
   // ══════════════════════════════════════════════════════════════
-  // Fast I/O
+  // Fast I/O (core FIO ICB)
   // ══════════════════════════════════════════════════════════════
   inst fio: e203_fio
     clk           <- clk;
     rst_n         <- rst_n;
-    icb_cmd_valid <- bus_cmd_valid & sel_fio;
-    icb_cmd_ready -> fio_ready;
-    icb_cmd_addr  <- bus_cmd_addr;
-    icb_cmd_wdata <- bus_cmd_wdata;
-    icb_cmd_wmask <- bus_cmd_wmask;
-    icb_cmd_read  <- bus_cmd_read;
-    icb_rsp_valid -> fio_rsp_valid;
-    icb_rsp_ready <- bus_rsp_ready;
-    icb_rsp_rdata -> fio_rsp_rdata;
-    icb_rsp_err   -> fio_rsp_err;
+    icb_cmd_valid <- fio_icb_cmd_valid;
+    icb_cmd_ready -> fio_icb_cmd_ready;
+    icb_cmd_addr  <- fio_icb_cmd_addr;
+    icb_cmd_wdata <- fio_icb_cmd_wdata;
+    icb_cmd_wmask <- fio_icb_cmd_wmask;
+    icb_cmd_read  <- fio_icb_cmd_read;
+    icb_rsp_valid -> fio_icb_rsp_valid;
+    icb_rsp_ready <- fio_icb_rsp_ready;
+    icb_rsp_rdata -> fio_icb_rsp_rdata;
+    icb_rsp_err   -> fio_icb_rsp_err;
     fio_in_0      <- fio_in_0;
     fio_in_1      <- fio_in_1;
     fio_out_0     -> fio_out_0_w;
@@ -180,21 +704,21 @@ module e203_soc_top
   end inst fio
 
   // ══════════════════════════════════════════════════════════════
-  // PPI: ICB → APB bridge with 4-slave address decode
+  // PPI: ICB -> APB bridge with 4-slave decode (core PPI ICB)
   // ══════════════════════════════════════════════════════════════
   inst ppi: e203_ppi
     clk           <- clk;
     rst_n         <- rst_n;
-    icb_cmd_valid <- bus_cmd_valid & sel_ppi;
-    icb_cmd_ready -> ppi_ready;
-    icb_cmd_addr  <- bus_cmd_addr;
-    icb_cmd_wdata <- bus_cmd_wdata;
-    icb_cmd_wmask <- bus_cmd_wmask;
-    icb_cmd_read  <- bus_cmd_read;
-    icb_rsp_valid -> ppi_rsp_valid;
-    icb_rsp_ready <- bus_rsp_ready;
-    icb_rsp_rdata -> ppi_rsp_rdata;
-    icb_rsp_err   -> ppi_rsp_err;
+    icb_cmd_valid <- ppi_icb_cmd_valid;
+    icb_cmd_ready -> ppi_icb_cmd_ready;
+    icb_cmd_addr  <- ppi_icb_cmd_addr;
+    icb_cmd_wdata <- ppi_icb_cmd_wdata;
+    icb_cmd_wmask <- ppi_icb_cmd_wmask;
+    icb_cmd_read  <- ppi_icb_cmd_read;
+    icb_rsp_valid -> ppi_icb_rsp_valid;
+    icb_rsp_ready <- ppi_icb_rsp_ready;
+    icb_rsp_rdata -> ppi_icb_rsp_rdata;
+    icb_rsp_err   -> ppi_icb_rsp_err;
     apb0_psel     -> gpio_psel;
     apb0_penable  -> gpio_penable;
     apb0_paddr    -> gpio_paddr;
@@ -226,7 +750,7 @@ module e203_soc_top
   end inst ppi
 
   // ══════════════════════════════════════════════════════════════
-  // GPIO Peripheral
+  // GPIO / UART / SPI peripherals (APB)
   // ══════════════════════════════════════════════════════════════
   inst gpio_p: e203_gpio
     clk     <- clk;
@@ -244,9 +768,6 @@ module e203_soc_top
     gpio_irq -> gpio_irq_w;
   end inst gpio_p
 
-  // ══════════════════════════════════════════════════════════════
-  // UART Peripheral
-  // ══════════════════════════════════════════════════════════════
   inst uart_p: e203_uart
     clk     <- clk;
     rst_n   <- rst_n;
@@ -262,9 +783,6 @@ module e203_soc_top
     uart_irq -> uart_irq_w;
   end inst uart_p
 
-  // ══════════════════════════════════════════════════════════════
-  // SPI Peripheral
-  // ══════════════════════════════════════════════════════════════
   inst spi_p: e203_spi
     clk     <- clk;
     rst_n   <- rst_n;
@@ -283,7 +801,7 @@ module e203_soc_top
   end inst spi_p
 
   // ══════════════════════════════════════════════════════════════
-  // Interrupt Controller
+  // Interrupt controller (feeds the core's irq inputs)
   // ══════════════════════════════════════════════════════════════
   inst irq: e203_irq_ctrl
     clk          <- clk;
@@ -296,7 +814,7 @@ module e203_soc_top
     mie_mtie     <- true;
     mie_msie     <- true;
     pipe_flush_ack <- false;
-    commit_valid   <- core_commit_w;
+    commit_valid   <- false;
     irq_req      -> irq_req_w;
     irq_cause    -> irq_cause_w;
     mip_meip     -> irq_mip_meip;
@@ -305,7 +823,7 @@ module e203_soc_top
   end inst irq
 
   // ══════════════════════════════════════════════════════════════
-  // Debug Module
+  // Debug module (halt request feeds the core's debug inputs)
   // ══════════════════════════════════════════════════════════════
   inst dbg: e203_debug_module
     clk          <- clk;
@@ -327,61 +845,20 @@ module e203_soc_top
     dbg_reg_rdata <- 0;
   end inst dbg
 
-  // ══════════════════════════════════════════════════════════════
-  // Bus response mux
-  // ══════════════════════════════════════════════════════════════
+  // ── Pin fan-out ────────────────────────────────────────────────
   comb
-    // Command-path mux: use combinational sel (valid while cmd active)
-    if sel_sram
-      bus_cmd_ready = sram_ready;
-    elsif sel_ppi
-      bus_cmd_ready = ppi_ready;
-    elsif sel_fio
-      bus_cmd_ready = fio_ready;
-    else
-      bus_cmd_ready = true;
-    end if
-
-    // Response-path mux: use latched sel (holds after cmd completes)
-    if sel_sram_r
-      bus_rsp_valid = sram_rsp_valid;
-      bus_rsp_rdata = sram_rsp_rdata;
-      bus_rsp_err   = sram_rsp_err;
-    elsif sel_ppi_r
-      bus_rsp_valid = ppi_rsp_valid;
-      bus_rsp_rdata = ppi_rsp_rdata;
-      bus_rsp_err   = ppi_rsp_err;
-    elsif sel_fio_r
-      bus_rsp_valid = fio_rsp_valid;
-      bus_rsp_rdata = fio_rsp_rdata;
-      bus_rsp_err   = fio_rsp_err;
-    else
-      bus_rsp_valid = false;
-      bus_rsp_rdata = 0;
-      bus_rsp_err   = true;
-    end if
-
-    ext_cmd_ready = arbt_m0_ready;
-    ext_rsp_valid = arbt_m0_rsp_valid;
-    ext_rsp_rdata = arbt_m0_rsp_rdata;
-    ext_rsp_err   = arbt_m0_rsp_err;
-
-    core_commit = core_commit_w;
-    core_instr  = core_instr_w;
-    core_pc     = core_pc_w;
-    core_valid  = core_valid_w;
-    gpio_out    = gpio_out_w;
-    gpio_oe     = gpio_oe_w;
-    gpio_irq    = gpio_irq_w;
-    uart_tx     = uart_tx_w;
-    uart_irq    = uart_irq_w;
-    spi_sclk    = spi_sclk_w;
-    spi_mosi    = spi_mosi_w;
-    spi_cs_n    = spi_cs_n_w;
-    spi_irq     = spi_irq_w;
-    fio_out_0   = fio_out_0_w;
-    fio_out_1   = fio_out_1_w;
-    dbg_prdata  = dbg_prdata_w;
+    gpio_out  = gpio_out_w;
+    gpio_oe   = gpio_oe_w;
+    gpio_irq  = gpio_irq_w;
+    uart_tx   = uart_tx_w;
+    uart_irq  = uart_irq_w;
+    spi_sclk  = spi_sclk_w;
+    spi_mosi  = spi_mosi_w;
+    spi_cs_n  = spi_cs_n_w;
+    spi_irq   = spi_irq_w;
+    fio_out_0 = fio_out_0_w;
+    fio_out_1 = fio_out_1_w;
+    dbg_prdata = dbg_prdata_w;
   end comb
 
 end module e203_soc_top

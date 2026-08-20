@@ -12,17 +12,40 @@ impl<'a> Codegen<'a> {
 
         let n = &a.name.name.clone();
 
-        // Find NUM_REQ param
+        // Requester count. The request port array's `[N]` shape is the
+        // source of truth — it is what sizes `request_valid` /
+        // `request_ready` in the port list — and `NUM_REQ` is only the
+        // conventional spelling for it. Looking only for a param literally
+        // named `NUM_REQ` meant an arbiter declared `param N: const = 8;`
+        // + `ports[N] request` fell through to the hardcoded `4`: ports
+        // came out `[N-1:0]` (8 wide) while the grant scan, the
+        // `rr_ptr_r` width and the `grant_requester` cast all used 4, so
+        // requesters 4..7 could never be granted. Resolve the count
+        // expression first, keep the `NUM_REQ` lookup as the fallback for
+        // arbiters declared without a request port array.
         let num_req_default = a
-            .params
-            .iter()
-            .find(|p| p.name.name == "NUM_REQ")
-            .and_then(|p| p.default.as_ref())
-            .map(|e| self.emit_expr_str(e))
+            .port_arrays
+            .first()
+            .map(|pa| self.emit_expr_str(&pa.count_expr))
+            .or_else(|| {
+                a.params
+                    .iter()
+                    .find(|p| p.name.name == "NUM_REQ")
+                    .and_then(|p| p.default.as_ref())
+                    .map(|e| self.emit_expr_str(e))
+            })
             .unwrap_or_else(|| "4".to_string());
 
-        // Parse NUM_REQ as integer for bit width calculations
-        let num_req_int: u64 = num_req_default.parse().unwrap_or(4);
+        // Integer form for bit-width and loop-bound calculations. The
+        // count expression is usually a param reference, so fold it
+        // against the arbiter's params before falling back to parsing.
+        let num_req_int: u64 = a
+            .port_arrays
+            .first()
+            .and_then(|pa| self.eval_const_u32(&pa.count_expr, &a.params))
+            .map(u64::from)
+            .or_else(|| num_req_default.parse().ok())
+            .unwrap_or(4);
         let req_width = crate::width::index_width(num_req_int as u64);
 
         let clk = a
@@ -89,16 +112,14 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
-        // Emit hook function inside arbiter module if custom policy
-        if let ArbiterPolicy::Custom(ref fn_ident) = a.policy {
-            let fns = std::mem::take(&mut self.pending_functions);
-            for f in &fns {
-                if f.name.name == fn_ident.name {
-                    self.emit_function(f);
-                }
-            }
-            self.pending_functions = fns;
-        }
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations. A `policy <FnName>` arbiter calls its
+        // hook function from the grant logic; an `assert`/`cover` on any
+        // arbiter may call one too. Emitting the whole set (instead of just
+        // the hook, as this did before arch#852) matches every other
+        // construct emitter — SV has no free functions, so each module
+        // carries its own copies.
+        self.emit_pending_functions();
 
         // ── Detect request/grant signal names from port arrays ─────────────────
         // The first port array is assumed to be the request ports.
@@ -128,17 +149,9 @@ impl<'a> Codegen<'a> {
         // When latency > 1, grant logic targets intermediate _comb signals
         // which are then pipelined to the actual output ports.
         let (gv_sig, gr_sig, rr_sig) = if latency > 1 {
-            let num_req_str = self.emit_expr_str(
-                &a.params
-                    .iter()
-                    .find(|p| p.name.name == "NUM_REQ")
-                    .and_then(|p| p.default.clone())
-                    .unwrap_or(crate::ast::Expr {
-                        kind: crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(num_req_int)),
-                        span: a.span,
-                        parenthesized: false,
-                    }),
-            );
+            // Same width expression the port list uses for
+            // `request_ready` — see the `num_req_default` comment above.
+            let num_req_str = &num_req_default;
             self.line(&format!("logic grant_valid_comb;"));
             self.line(&format!(
                 "logic [{}:0] grant_requester_comb;",
@@ -379,7 +392,11 @@ impl<'a> Codegen<'a> {
         // emission byte-for-byte for those arbiters. The blank-line
         // separator lives inside the emitter so it is also elided when
         // every channel's variant has no Tier-2 v1 property to emit.
-        self.emit_arbiter_handshake_asserts(a);
+        // Compiler-generated SVA — suppressed under `--no-auto-asserts`
+        // (issue #649).
+        if !self.suppress_auto_sva {
+            self.emit_arbiter_handshake_asserts(a);
+        }
 
         self.indent -= 1;
         self.line("");
@@ -589,26 +606,19 @@ impl<'a> Codegen<'a> {
         self.line("end");
         self.line("");
 
-        // Build function call arguments from hook bindings
+        // Build function call arguments from hook bindings. `check_arbiter`
+        // (typecheck.rs) has already verified every arg is either
+        // `req_mask`/`last_grant` — the two internal signals substituted
+        // below — or the name of a real arbiter port/param, so every other
+        // name is already the correct SV identifier and is emitted as-is.
         let hook = a.hook.as_ref().unwrap();
         let args: Vec<String> = hook
             .fn_args
             .iter()
-            .map(|arg| {
-                let name = &arg.name;
-                // Map hook formal param names to actual SV signals
-                let hook_param = hook.params.iter().find(|p| p.name.name == *name);
-                if hook_param.is_some() {
-                    // This is a hook formal param — map known names to SV signals
-                    match name.as_str() {
-                        "req_mask" => req_valid.to_string(),
-                        "last_grant" => "last_grant_r".to_string(),
-                        _ => name.clone(),
-                    }
-                } else {
-                    // Must be a port or param name on the arbiter — use as-is
-                    name.clone()
-                }
+            .map(|arg| match arg.name.as_str() {
+                "req_mask" => req_valid.to_string(),
+                "last_grant" => "last_grant_r".to_string(),
+                _ => arg.name.clone(),
             })
             .collect();
         let args_str = args.join(", ");

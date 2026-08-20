@@ -1,0 +1,25 @@
+// NVFP4 `UE4M3` — the NVIDIA block SCALE type (phase 5).
+//
+// PTX: a 7-bit unsigned float, MSB padded with zero, NaN limited to 0x7F.
+// It is NOT `FP8E4M3` (that one is signed, and its NaN is sign-agnostic) but
+// it IS numerically E4M3 restricted to sign 0, which is why its conversions
+// route through the proven E4M3 helpers.
+//
+// `rt` is the chained form `v.to_ue4m3().to_fp32()`. It is here deliberately:
+// the equivalent E8M0 chain used to emit an INTEGER widen and reinterpret the
+// 8-bit code as a whole number (arch#904), because both backends routed
+// `.to_fp32()` by the receiver's DECLARED type and a method call has none.
+module Ue4m3Probe
+  port s: in UE4M3;
+  port v: in FP32;
+  port val: out FP32;
+  port nan: out Bool;
+  port enc: out UE4M3;
+  port rt: out FP32;
+  comb
+    val = s.to_fp32();
+    nan = is_nan(s);
+    enc = v.to_ue4m3();
+    rt  = v.to_ue4m3().to_fp32();
+  end comb
+end module Ue4m3Probe

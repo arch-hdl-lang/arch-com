@@ -1,0 +1,50 @@
+// Regression test for the sim `~` clamp on COMPOUND 1-bit expressions.
+//
+// Sibling of sim_bool_not_regression.arch, which covers the bare-Ident case.
+//
+// Pre-fix: cpp_unary's BitNot arm only took the "clamp to logical !" path when
+// the operand was a bare Ident whose width was 1. Any compound operand — even
+// one that is plainly 1 bit wide, like `~(a & b)` on two Bools — fell through
+// to an unmasked C `~` on the uint8_t carrier, yielding 254/255 instead of 1/0.
+// So `~(a & b)` was truthy for every input combination, and comparing it
+// against a Bool never matched. SystemVerilog's `~` on a 1-bit operand is
+// correctly 1/0, so this was a silent sim-vs-SV divergence.
+//
+// Post-fix: the width check falls back to infer_expr_width for non-Ident
+// operands, so any 1-bit-typed operand is clamped.
+//
+// Found via the e203_exu_oitf fixture, whose `dis_ready = ~(alloc_0 & alloc_1)`
+// evaluated to 255 in arch sim.
+
+module sim_bitnot_compound_regression
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port a:   in Bool;
+  port b:   in Bool;
+
+  // The OITF shape: NAND of two 1-bit signals, consumed as a Bool.
+  port nand_ab:          out Bool;
+  // Same value compared against a Bool literal — the comparison that broke.
+  port nand_ab_eq_true:  out Bool;
+  // Compound operand behind a parenthesized OR, and a nested double negation.
+  port nor_ab:           out Bool;
+  port double_neg:       out Bool;
+  // Counts iterations entered under a compound-`~` predicate (loop-guard shape).
+  port guard_count:      out UInt<8>;
+
+  comb
+    nand_ab         = ~(a & b);
+    nand_ab_eq_true = (~(a & b)) == true;
+    nor_ab          = ~(a | b);
+    double_neg      = ~(~(a & b));
+  end comb
+
+  comb
+    guard_count = 0;
+    for i in 0..3
+      if ~(a & b)
+        guard_count = (guard_count + 1).trunc<8>();
+      end if
+    end for
+  end comb
+end module sim_bitnot_compound_regression

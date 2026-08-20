@@ -1,0 +1,11 @@
+// Float bus-field arithmetic (`m.data = s.data + s.data`). Pre-fix
+// hazard: bus FieldAccess resolved to flat signals with no float
+// format in either backend -> integer add on the FP32 pattern.
+module FpBusMod
+  port s: target FpStreamBus;
+  port m: initiator FpStreamBus;
+  comb
+    m.valid = s.valid;
+    m.data = s.data + s.data;
+  end comb
+end module FpBusMod

@@ -1,0 +1,61 @@
+// Custom-policy arbiter — `policy <FnName>` + `hook grant_select(...)`.
+//
+// Regression fixture for arch-hdl-lang/arch-com#912: `arch sim` had no
+// `ArbiterPolicy::Custom` arm at all, so every custom-policy arbiter
+// simulated as a fixed lowest-index-wins priority encoder while its
+// emitted SV called the hook function. The two backends disagreed with
+// no error, warning, or `todo!`-style abort.
+//
+// The fixture is deliberately shaped to catch two distinct defects:
+//
+//  1. The hook must actually be called, with `last_grant` fed back as a
+//     one-hot mask. Under the pre-fix priority scan, requester 0 wins
+//     every cycle instead of rotating.
+//  2. The requester count must come from the request port array's `[N]`
+//     shape, not from a param that happens to be spelled `NUM_REQ`.
+//     This arbiter uses `param N`, which pre-fix missed — the sim fell
+//     back to a hardcoded 2 (requesters 2 and 3 unreachable) and the SV
+//     emitter to a hardcoded 4 (correct only by coincidence at N=4).
+//
+// The `prio` port additionally covers the third hook-argument path: an
+// ordinary arbiter port passed through to the policy function by name.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+/// Grant policy: a requester flagged in `prio` wins immediately (lowest
+/// index first); otherwise strict round-robin against the one-hot
+/// `last_grant`. Returns a one-hot grant mask.
+function CustomRrGrant(req_mask: UInt<4>, last_grant: UInt<4>, prio: UInt<4>) -> UInt<4>
+  // Priority override.
+  let urgent: UInt<4> = req_mask & prio;
+  // Bits strictly above the one-hot `last_grant`; all bits on wrap
+  // (last_grant == 8) or out of reset (last_grant == 0).
+  let above: UInt<4> = (last_grant == 4'd1 ? 4'd14
+                     : (last_grant == 4'd2 ? 4'd12
+                     : (last_grant == 4'd4 ? 4'd8
+                     : (last_grant == 4'd8 ? 4'd0 : 4'd15))));
+  let rotated: UInt<4> = req_mask & above;
+  let fair: UInt<4> = rotated != 0 ? rotated : req_mask;
+  let pick: UInt<4> = urgent != 0 ? urgent : fair;
+  // Isolate the lowest set bit: pick & (-pick), 4-bit two's complement.
+  let pick_neg: UInt<5> = (pick ^ 15).zext<5>() + 1;
+  return pick & pick_neg.trunc<4>();
+end function CustomRrGrant
+
+arbiter CustomRrArb4
+  policy CustomRrGrant;
+  param N: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port prio: in UInt<4>;
+  ports[N] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+  hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>, prio_in: UInt<4>) -> UInt<4>
+    = CustomRrGrant(req_mask, last_grant, prio);
+end arbiter CustomRrArb4

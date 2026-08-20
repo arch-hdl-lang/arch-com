@@ -74,12 +74,68 @@
       ]
     },
     {
+      "name": "sim_ranged_slice_regression",
+      "arch_files": [
+        "tests/sim_ranged_slice_regression.arch"
+      ],
+      "tb_files": [
+        "tests/sim_ranged_slice_regression_tb.cpp"
+      ]
+    },
+    {
+      "name": "sim_wide_runtime_slice_u128",
+      "arch_files": [
+        "tests/sim_wide_runtime_slice_u128.arch"
+      ],
+      "tb_files": [
+        "tests/sim_wide_runtime_slice_u128_tb.cpp"
+      ]
+    },
+    {
+      "name": "sim_wide_runtime_slice_vlwide",
+      "arch_files": [
+        "tests/sim_wide_runtime_slice_vlwide.arch"
+      ],
+      "tb_files": [
+        "tests/sim_wide_runtime_slice_vlwide_tb.cpp"
+      ]
+    },
+    {
+      "name": "sim_bus_vec_elem_width",
+      "arch_files": [
+        "tests/sim_bus_vec_elem_width.arch"
+      ],
+      "tb_files": [
+        "tests/sim_bus_vec_elem_width_tb.cpp"
+      ]
+    },
+    {
+      "name": "sim_vec_elem_width_regression",
+      "arch_files": [
+        "tests/sim_vec_elem_width_regression.arch"
+      ],
+      "tb_files": [
+        "tests/sim_vec_elem_width_regression_tb.cpp"
+      ]
+    },
+    {
       "name": "thread__basic_thread",
       "arch_files": [
         "tests/thread/basic_thread.arch"
       ],
       "tb_files": [
         "tests/thread/tb_basic_thread.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_ifu_ifetch",
+      "arch_files": [
+        "tests/e203/e203_ifu_ifetch.arch",
+        "tests/e203/e203_ifu_minidec.arch",
+        "tests/e203/e203_ifu_litebpu.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ifu_ifetch_tb.cpp"
       ]
     },
     {
@@ -143,6 +199,447 @@
       ],
       "tb_files": [
         "tests/axi_dma_tlm/tb_tlm_one_to_many_resp.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_gpio",
+      "arch_files": [
+        "tests/e203/e203_gpio.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_gpio_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_uart",
+      "arch_files": [
+        "tests/e203/e203_uart.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_uart_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_spi",
+      "arch_files": [
+        "tests/e203/e203_spi.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_spi_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_ppi",
+      "arch_files": [
+        "tests/e203/e203_ppi.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ppi_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_debug_module",
+      "arch_files": [
+        "tests/e203/e203_debug_module.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_debug_module_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_clint_timer",
+      "arch_files": [
+        "tests/e203/e203_clint_timer.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_clint_timer_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_icb_arbt",
+      "arch_files": [
+        "tests/e203/e203_icb_arbt.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_icb_arbt_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_icb2apb",
+      "arch_files": [
+        "tests/e203/e203_icb2apb.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_icb2apb_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_sram_ctrl",
+      "arch_files": [
+        "tests/e203/e203_sram_ctrl.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_sram_ctrl_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_fio",
+      "arch_files": [
+        "tests/e203/e203_fio.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_fio_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_irq_ctrl",
+      "arch_files": [
+        "tests/e203/e203_irq_ctrl.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_irq_ctrl_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_clk_ctrl",
+      "arch_files": [
+        "tests/e203/e203_clk_ctrl.arch",
+        "tests/e203/e203_clkgate.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_clk_ctrl_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_itcm",
+      "arch_files": [
+        "tests/e203/e203_itcm.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_itcm_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_dtcm",
+      "arch_files": [
+        "tests/e203/e203_dtcm.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_dtcm_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_agu",
+      "arch_files": [
+        "tests/e203/e203_exu_agu.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_agu_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_alu_bjp",
+      "arch_files": [
+        "tests/e203/e203_exu_alu_bjp.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_alu_bjp_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_alu_dpath",
+      "arch_files": [
+        "tests/e203/e203_exu_alu_dpath.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_alu_dpath_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_alu",
+      "arch_files": [
+        "tests/e203/e203_exu_alu.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_alu_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_oitf",
+      "arch_files": [
+        "tests/e203/e203_exu_oitf.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_oitf_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_regfile",
+      "arch_files": [
+        "tests/e203/e203_exu_regfile.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_regfile_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_wbck",
+      "arch_files": [
+        "tests/e203/e203_exu_wbck.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_wbck_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_longpwbck",
+      "arch_files": [
+        "tests/e203/e203_exu_longpwbck.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_longpwbck_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_muldiv",
+      "arch_files": [
+        "tests/e203/e203_exu_muldiv.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_muldiv_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_csr",
+      "arch_files": [
+        "tests/e203/e203_exu_csr.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_csr_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_decode",
+      "arch_files": [
+        "tests/e203/e203_exu_decode.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_decode_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_disp",
+      "arch_files": [
+        "tests/e203/e203_exu_disp.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_disp_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_commit",
+      "arch_files": [
+        "tests/e203/e203_exu_commit.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_commit_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_ifu_litebpu",
+      "arch_files": [
+        "tests/e203/e203_ifu_litebpu.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ifu_litebpu_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_ifu_litedec",
+      "arch_files": [
+        "tests/e203/e203_ifu_litedec.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ifu_litedec_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_ifu_minidec",
+      "arch_files": [
+        "tests/e203/e203_ifu_minidec.arch",
+        "tests/e203/e203_exu_decode.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ifu_minidec_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_lsu_ctrl",
+      "arch_files": [
+        "tests/e203/e203_lsu_ctrl.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_lsu_ctrl_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_biu",
+      "arch_files": [
+        "tests/e203/e203_biu.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_biu_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_ifu_top",
+      "arch_files": [
+        "tests/e203/e203_ifu_top.arch",
+        "tests/e203/e203_ifu_ifetch.arch",
+        "tests/e203/e203_ifu_ift2icb.arch",
+        "tests/e203/e203_ifu_minidec.arch",
+        "tests/e203/e203_ifu_litebpu.arch",
+        "tests/e203/e203_exu_decode.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ifu_top_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_exu_top",
+      "arch_files": [
+        "tests/e203/e203_exu_top.arch",
+        "tests/e203/e203_exu_decode.arch",
+        "tests/e203/e203_exu_disp.arch",
+        "tests/e203/e203_exu_oitf.arch",
+        "tests/e203/e203_exu_alu.arch",
+        "tests/e203/e203_exu_longpwbck.arch",
+        "tests/e203/e203_exu_wbck.arch",
+        "tests/e203/e203_exu_commit.arch",
+        "tests/e203/e203_exu_csr.arch",
+        "tests/e203/e203_exu_regfile.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_exu_top_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_core_top",
+      "arch_files": [
+        "tests/e203/e203_core_top.arch",
+        "tests/e203/e203_ifu_top.arch",
+        "tests/e203/e203_ifu_ifetch.arch",
+        "tests/e203/e203_ifu_ift2icb.arch",
+        "tests/e203/e203_ifu_minidec.arch",
+        "tests/e203/e203_ifu_litebpu.arch",
+        "tests/e203/e203_exu_top.arch",
+        "tests/e203/e203_exu_decode.arch",
+        "tests/e203/e203_exu_disp.arch",
+        "tests/e203/e203_exu_oitf.arch",
+        "tests/e203/e203_exu_alu.arch",
+        "tests/e203/e203_exu_longpwbck.arch",
+        "tests/e203/e203_exu_wbck.arch",
+        "tests/e203/e203_exu_commit.arch",
+        "tests/e203/e203_exu_csr.arch",
+        "tests/e203/e203_exu_regfile.arch",
+        "tests/e203/e203_lsu.arch",
+        "tests/e203/e203_biu.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_core_top_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_soc_top",
+      "arch_files": [
+        "tests/e203/e203_soc_top.arch",
+        "tests/e203/e203_core_top.arch",
+        "tests/e203/e203_ifu_top.arch",
+        "tests/e203/e203_ifu_ifetch.arch",
+        "tests/e203/e203_ifu_ift2icb.arch",
+        "tests/e203/e203_ifu_minidec.arch",
+        "tests/e203/e203_ifu_litebpu.arch",
+        "tests/e203/e203_exu_top.arch",
+        "tests/e203/e203_exu_decode.arch",
+        "tests/e203/e203_exu_disp.arch",
+        "tests/e203/e203_exu_oitf.arch",
+        "tests/e203/e203_exu_alu.arch",
+        "tests/e203/e203_exu_longpwbck.arch",
+        "tests/e203/e203_exu_wbck.arch",
+        "tests/e203/e203_exu_commit.arch",
+        "tests/e203/e203_exu_csr.arch",
+        "tests/e203/e203_exu_regfile.arch",
+        "tests/e203/e203_lsu.arch",
+        "tests/e203/e203_biu.arch",
+        "tests/e203/e203_itcm_ctrl.arch",
+        "tests/e203/e203_itcm_ram.arch",
+        "tests/e203/e203_dtcm_ctrl.arch",
+        "tests/e203/e203_dtcm_ram.arch",
+        "tests/e203/e203_clint_timer.arch",
+        "tests/e203/e203_icb_arbt.arch",
+        "tests/e203/e203_sram_ctrl.arch",
+        "tests/e203/e203_fio.arch",
+        "tests/e203/e203_ppi.arch",
+        "tests/e203/e203_gpio.arch",
+        "tests/e203/e203_uart.arch",
+        "tests/e203/e203_spi.arch",
+        "tests/e203/e203_irq_ctrl.arch",
+        "tests/e203/e203_debug_module.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_soc_top_tb.cpp"
+      ],
+      "env": {
+        "ARCH_OPT": "-O0"
+      }
+    },
+    {
+      "name": "e203__e203_ifu_ift2icb",
+      "arch_files": [
+        "tests/e203/e203_ifu_ift2icb.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ifu_ift2icb_tb.cpp"
+      ]
+    },
+    {
+      "name": "noc_credit__noc_credit",
+      "arch_files": [
+        "tests/noc_credit/noc_credit.arch"
+      ],
+      "tb_files": [
+        "tests/noc_credit/noc_credit_tb.cpp"
+      ]
+    },
+    {
+      "name": "buf_mgr_sm",
+      "arch_files": [
+        "tests/buf_mgr_sm/buf_mgr_sm.arch",
+        "tests/buf_mgr_sm/data_mem_sm.arch",
+        "tests/buf_mgr_sm/domain.arch",
+        "tests/buf_mgr_sm/free_list_mem_sm.arch",
+        "tests/buf_mgr_sm/next_ptr_mem_sm.arch"
+      ],
+      "tb_files": [
+        "tests/buf_mgr_sm/buf_mgr_sm_tb.cpp"
+      ]
+    },
+    {
+      "name": "sim_bitnot_compound_regression",
+      "arch_files": [
+        "tests/sim_bitnot_compound_regression.arch"
+      ],
+      "tb_files": [
+        "tests/sim_bitnot_compound_regression_tb.cpp"
+      ]
+    },
+    {
+      "name": "sim_fp_narrow_mx_regression",
+      "arch_files": [
+        "tests/sim_fp_narrow_mx_regression.arch"
+      ],
+      "tb_files": [
+        "tests/sim_fp_narrow_mx_regression_tb.cpp"
       ]
     }
   ]

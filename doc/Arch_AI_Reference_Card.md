@@ -37,6 +37,8 @@ keyword Name
 end keyword Name
 ```
 
+**Identifiers:** casing (PascalCase modules, snake_case signals, UPPER_SNAKE params) is a recommendation, not enforced. One naming rule *is* a hard error: an identifier must not collide with an IEEE 1800-2017 SystemVerilog reserved word (`always`, `case`, `logic`, `priority`, `table`, `wire`, ... ~240 total) — every declared name is emitted verbatim as the SV identifier of the same spelling, so `reg table: ...` fails `arch check` with `'table' is a reserved SystemVerilog keyword`. Rename it (`table_`, `s_table`, `lut`, ...).
+
 **Signal assignment:**
 
 ```
@@ -160,6 +162,9 @@ Range `for` = runtime SV loop; value-list `for` = compile-time unroll; `generate
 ```
 UInt<N>  SInt<N>  Bool  Bit
 FP32  BF16                                    // IEEE-754 binary32 / bfloat16 (v1; see §2a)
+FP8E4M3  FP8E5M2                              // OCP OFP8 8-bit floats (v1; see §2a)
+FP4E2M1  FP6E2M3  FP6E3M2                     // OCP MX sub-8-bit elements: STORAGE-ONLY (conversions + literals; no + - * / compares / is_nan)
+E8M0                                          // MX block SCALE (2^(e-127)): NOT a float; no zero (0x00 = min scale), 0xFF = NaN; no arithmetic
 Clock<Domain>  Reset<Sync|Async, High|Low>   // polarity defaults High
 Vec<T,N>
 struct S  { f: T; }
@@ -188,7 +193,7 @@ x[start -: w]  // variable part-select, grows down from start (SV: x[start -: w]
 x[i]           // single bit extract
 ```
 
-**Portable bit-slice/part-select base (compiler-enforced):** `[hi:lo]` and `[start +: w]`/`[start -: w]` require the base to be one of: identifier, literal, indexed access (`v[i]`), field access (`s.field`), concat (`{a,b}`), replication (`{N{a}}`), or function/method-call result. Anything else — an arithmetic/logical/shift expression, or **another bit-slice/part-select result** (chained slicing like `a[7:4][1:0]`) — is a compile error (`cannot bit-slice`/`cannot part-select this expression directly`), because the parenthesized form is *also* illegal SV (Verilator/iverilog reject it even parenthesized). Fix: bind to a named `let` first — `let sum = a + b; let y = sum[s +: 4];` — or use a wrapping op (`+%`/`-%`/`*%`) for same-width modular arithmetic.
+**Bit-slice/part-select base — any expression (arch#813 P1):** `[hi:lo]` and `[start +: w]`/`[start -: w]` accept any base, including arithmetic/logical/shift/ternary expressions and chained slices (`a[7:4][1:0]`). SystemVerilog's own select grammar composes only with an identifier, indexed access, or field access — not a parenthesized expression — so a base SV can select from directly (`a`, `v[i]`, `s.field`) is emitted as-is, and any other base is bound to a compiler-generated named temporary (`arch_idx_base_N`) that the slice then applies to: `(a + b)[s +: 4]` emits `logic [...] arch_idx_base_0; assign arch_idx_base_0 = a + b; assign w = arch_idx_base_0[s +: 4];`. This is the same automatic hoist the single-bit `expr[i]` form has always used (arch#650), including for a base that reads a `for`-loop iterator, hoisted into the loop body (arch#861). No source-level workaround needed. For same-width modular arithmetic specifically, prefer a wrapping op (`+%`/`-%`/`*%`) — it produces a same-width value with no temporary at all. Verified dual-simulator: Icarus Verilog 12.0 (`iverilog -g2012` + `vvp`) and Verilator 5.048, both compiling and agreeing on values for arithmetic/chained-slice/shift/ternary/literal/concat/replication/function-call/size-cast bases. Full rationale and examples: spec §3.2.1.
 
 **Cast direction rules** (compiler-enforced when source width is known):
 
@@ -244,22 +249,29 @@ let gt: Bool = a > b;       // == != < > <= >=  → Bool
 let nan: Bool = is_nan(a);  // qNaN/sNaN test → Bool
 ```
 
-**No implicit conversion** — mixing `FP32`/`BF16`, or float↔int, is a compile error. Convert explicitly:
+**No implicit conversion** — mixing float formats (`FP32`/`BF16`/`FP8E4M3`/`FP8E5M2`), or float↔int, is a compile error. Convert explicitly:
 
 ```
-x.to_fp32()      // BF16→FP32 (exact widen) or SInt/UInt→FP32 (RNE)
-x.to_bf16()      // FP32→BF16 (round-to-nearest-even)
+x.to_fp32()      // BF16/FP8E4M3/FP8E5M2/FP4E2M1→FP32 (exact widen) or SInt/UInt→FP32 (RNE)
+x.to_fp4e2m1()   // →FP4E2M1 (RNE, saturating; no inf/NaN exists in the format)
+x.to_fp6e2m3()  x.to_fp6e3m2()   // →FP6 (same storage-only rules)
+s.to_fp32()      // E8M0→FP32 scale value 2^(e-127);  x.to_e8m0() → floor to power of two
+x.to_bf16()      // FP32→BF16 (RNE); fp8→BF16 (exact); int→BF16 (f32-routed)
+x.to_fp8e4m3()   // FP32/BF16/FP8E5M2/int→FP8E4M3 (CR; overflow per --fp-compat)
+x.to_fp8e5m2()   // FP32/BF16/FP8E4M3/int→FP8E5M2 (CR; overflow per --fp-compat)
 x.to_sint<N>()   // float→SInt<N>: toward-zero, per-N saturating, NaN→type-max (riscv)
 x.to_uint<N>()   // float→UInt<N>: toward-zero, per-N saturating, negatives/NaN handling per profile
 ```
 
-**Float literals are context-typed** (like integer literals): a literal in a slot with a known float type takes that type, correctly rounded (RNE) at compile time — no `.to_bf16()`/`.to_fp32()` cast needed. `let h: BF16 = 1.5;`, `reg acc: BF16 init 1.5;`, `reg acc: BF16 reset rst => 1.5;`, and comparisons/arithmetic against a known-format operand (`a_bf16 > 0.5`) all just work. A standalone/ambiguous literal (no float context) still defaults to **FP32**. An integer literal in a float slot (`reg acc: BF16 init 1;`) is always a type error — write `1.0`. `.to_bf16()`/`.to_fp32()` are still needed only for a *non-literal* value (converting a variable/signal between formats).
+**FP8 (v1):** `FP8E4M3` = OCP OFP8 (bias 7, **no infinities**, sole NaN `0x7F`, exponent 15 + mantissa < 7 are finite 256…448, max finite 448); `FP8E5M2` = IEEE-style (bias 15, ±inf `0x7C`, max finite 57344). Same op surface (`+ - *`, `fma`, compares, `is_nan`); all ops widen→f32→narrow; `+ - *` machine-proved correctly rounded (exhaustive SMT, both profiles); `fma` = fused f32-accumulate — proved CR for E4M3 (SMT unsat + 0/2²⁴ sweep), 1-ULP deviations on ~0.1% of E5M2 inputs. fp8↔BF16, fp8↔int, and cross-fp8 conversions are direct (f32-routed compositions, each exact or singly-rounded = CR; fp8→BF16 fully exact). **Accumulation loops: hold the accumulator in FP32, narrow once at the end** (`acc <= fma(a.to_fp32(), b.to_fp32(), acc);` then `result = acc.to_fp8e5m2();`) — hardware-realistic (tensor cores accumulate wide, convert per tile) and numerically superior to per-step fp8 narrowing. Overflowing fp8 *literal* = compile error. Runtime narrow overflow per profile: riscv → E5M2 ±inf / E4M3 NaN `0x7F` (sign dropped); cuda → saturate to ±max-finite (`satfinite`), incl. ±inf inputs. Canonical NaNs: E4M3 `0x7F` (both), E5M2 `0x7E` riscv / `0x7F` cuda.
+
+**Float literals are context-typed** (like integer literals): a literal in a slot with a known float type takes that type, correctly rounded (RNE) at compile time — no `.to_bf16()`/`.to_fp32()` cast needed. `let h: BF16 = 1.5;`, `reg acc: BF16 init 1.5;`, `reg acc: BF16 reset rst => 1.5;`, comparisons/arithmetic against a known-format operand (`a_bf16 > 0.5`), and direct assignments to a known-format target (`h <= 0.5;`, `v[i] = 1.5;`, `s.f = 0.75;`, ternary arms included) all just work. A standalone/ambiguous literal (no float context) still defaults to **FP32**. An integer literal in a float slot (`reg acc: BF16 init 1;`) is always a type error — write `1.0`. `.to_bf16()`/`.to_fp32()` are still needed only for a *non-literal* value (converting a variable/signal between formats).
 
 **Rounding: CR vs. VR(f32).** Compile-time float constants are correctly rounded from source; two runtime `BF16` ops route through an `FP32` intermediate instead (hardware-realistic, not a bug — see #627 / #629): `fma(a,b,c)` on `BF16` operands ≡ `narrow_bf16(fma(f32(a),f32(b),f32(c)))` (fused f32-accumulate, differs from correctly-rounded `BF16` fma on ~0.37% of inputs, always by 1 ULP); `<int>.to_bf16()` ≡ `narrow_bf16(f32(i))` (double rounding, not correctly-rounded for `|i| ≥ 2²⁴` — witness `i=16842753` → `0x4b80` here vs. `0x4b81` correctly-rounded; 8064/2³⁰ mismatches, all `|i| ≥ 2²⁴`, each 1 ULP). Everything else (`+ - *`, `f32` fma, `f32`↔`BF16` narrow/widen, compares, float↔int) is correctly-rounded.
 
-**v1 scope:** floats are scalar signals + the ops above only. **Not** supported (rejected at type-check, never silently miscompiled): floats inside `Vec`, in `struct` fields, in module-local `function` signatures; `/` `%` and bitwise/shift operators on floats.
+**Composite positions (v2):** floats work inside `Vec<T,N>` (elements, loops, reg-of-Vec resets — reset takes a float literal, int literal rejected), as `struct` fields (reads + comb writes), and in `function` params/locals/returns — with full operator dispatch and context-typed literals (`v[i] + 0.5` coerces). Float `param`s work for every format (bare literal defaults context-type to the declared format). Float dispatch also covers `fsm`/`pipeline`/`thread`/`bus`/`tlm_method` contexts (float TLM args/returns work; `wait until` on float compares works). `arch formal` supports float properties (BV carriers + the proven helper define-funs; any BV solver; fp8/bf16 cones cheap, FP32 mul/fma cones SAT-hard). `assume Name: expr;` constrains inputs (BV path + SV `assume property`). `assert<bound_err> N: abs(y - exact(y)) <= C | C*abs(exact(y)) | N*ulp(exact(y));` proves numeric error bounds vs the real-valued spec via `--error-engine gappa` (range-shaped assumes required on every cone input; spec builtins exact/abs/ulp legal only there; proved bounds report the derived enclosure). Still **not** supported: `/` `%` and bitwise/shift on floats; float→int conversions inside formal properties.
 
-**Special-value profile:** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`). Identical RNE arithmetic core; differs only in canonical NaN pattern and NaN→int result.
+**Special-value profile:** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`). Identical RNE arithmetic core; differs only in canonical NaN patterns, NaN→int result, and fp8 narrowing overflow (non-saturating vs `satfinite` — see FP8 above).
 
 | profile | canonical NaN (f32 / bf16) | NaN → int |
 |---|---|---|
@@ -1292,6 +1304,8 @@ end module LoadPair
 
 Supported cohort shapes: multiple direct named worker threads, `generate_for` worker threads, and one direct-call `fork ... and ... join` thread. Blocking cohorts route responses by issue-order FIFO. `out_of_order tags N` cohorts drive `<method>_req_tag` and route by `<method>_rsp_tag`; target threads latch and echo the tag.
 
+A `fork ... and ... join` group must be class-uniform: every branch `blocking`, or every branch `out_of_order`. Mixing classes in one group is a compile error (`fork issue group mixes blocking and out_of_order calls ...`) — split into separate fork groups instead. RHS-fork groups already require every issue to target one method, so they cannot mix classes either.
+
 Timed multiple-outstanding issue in one thread:
 
 ```
@@ -1344,7 +1358,9 @@ Refining TLM into explicit threads:
 
 Use explicit threads when the protocol needs separate channels, beat-by-beat burst interleaving, registered ready paths for timing closure, protocol-specific retry/error/cancel rules, or area/power tuning beyond the generic TLM driver.
 
-Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; RHS-fork tails after `join all;` are compute-only; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
+`out_of_order tags N` sizing: `N` is the literal bit width of the generated `<method>_req_tag` / `<method>_rsp_tag` carrier, not a tag count — a cohort/fork group of `W` outstanding workers needs `2^N >= W`. Recommended cap: `N <= 8` (256 tags); the compiler does not enforce this (`tags 64`, `tags 128` both build cleanly with an `N`-bit carrier), but a needlessly large `N` widens every tag wire, drive mux, and response comparator for no prototyping benefit.
+
+Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; all branches of one `fork ... and ... join` group must be the same concurrency class (no mixing `blocking` and `out_of_order`); RHS-fork offsets require literal `wait N cycle;`; RHS-fork tails after `join all;` are compute-only; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/archive/plan_tlm_method.md`.
 

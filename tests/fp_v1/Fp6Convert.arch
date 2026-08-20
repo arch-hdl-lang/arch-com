@@ -1,0 +1,28 @@
+// OCP MX FP6 (E2M3 and E3M2) — storage-only, same contract as FP4E2M1.
+//
+// E2M3: 1+2+3, bias 1, max finite 7.5.  E3M2: 1+3+2, bias 3, max 28.0.
+// Both are all-finite (no Inf, no NaN), so they carry conversions and
+// literals only; arithmetic and `is_nan` are compile errors and the value
+// must be widened to FP32 to compute.
+module Fp6Convert
+  port a: in FP6E2M3;
+  port b: in FP6E3M2;
+  port s: in FP32;
+
+  port wide_a: out FP32;
+  port wide_b: out FP32;
+  port narrow_a: out FP6E2M3;
+  port cross:    out FP6E3M2;   // E2M3 -> FP32 -> E3M2
+  port lit:      out FP6E2M3;
+
+  let av: FP32 = a.to_fp32();
+  let bv: FP32 = b.to_fp32();
+
+  comb
+    wide_a   = av;
+    wide_b   = bv;
+    narrow_a = s.to_fp6e2m3();
+    cross    = av.to_fp6e3m2();
+    lit      = 7.5;              // exactly the E2M3 max finite
+  end comb
+end module Fp6Convert

@@ -1,0 +1,24 @@
+// `arch formal` v1 models only `credit_channel` signals on a bus port.
+// A plain (non-credit_channel) bus signal driven from a `comb` block used
+// to reach SMT emission with nothing registered in `sigs` and panic on
+// `self.sigs[tgt]` (issue #818). It must instead be a clean compile error
+// naming the v1 scope.
+//
+// A silent skip would NOT be acceptable here: the equation would vanish
+// and `arch formal` would report on a smaller design than the one
+// submitted, with no signal to the user that a driver was dropped.
+
+bus PlainStreamBus
+  valid: out Bool;
+  data:  out UInt<8>;
+end bus PlainStreamBus
+
+module PlainBusMod
+  port s: target PlainStreamBus;
+  port m: initiator PlainStreamBus;
+
+  comb
+    m.valid = s.valid;
+    m.data  = s.data;
+  end comb
+end module PlainBusMod

@@ -16,7 +16,9 @@ module QosArbiter #(
 
   function automatic logic [3:0] QosGrant(input logic [3:0] req_mask, input logic [3:0] last_grant, input logic [7:0] qos);
     logic [3:0] masked = req_mask & (last_grant ^ 'hF);
-    logic [3:0] pick = masked != 0 ? masked : req_mask;
+    logic [3:0] fair_pick = masked != 0 ? masked : req_mask;
+    logic urgent = (qos & 'h80) != 0;
+    logic [3:0] pick = urgent ? req_mask : fair_pick;
     logic [4:0] pick_neg = 5'($unsigned(pick ^ 'hF)) + 1;
     return pick & 4'(pick_neg);
   endfunction
@@ -30,7 +32,7 @@ module QosArbiter #(
   end
   
   always_comb begin
-    grant_onehot = QosGrant(request_valid, last_grant_r, qos_in);
+    grant_onehot = QosGrant(request_valid, last_grant_r, qos);
     grant_valid = |grant_onehot;
     request_ready = grant_onehot;
     grant_requester = '0;

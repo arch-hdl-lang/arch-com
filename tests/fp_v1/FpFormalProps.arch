@@ -1,0 +1,34 @@
+// Float properties through `arch formal` (v2): floats are BV carriers and
+// operator semantics come from the SAME machine-proven QF_BV define-funs
+// the SV/SMT proofs are rendered from (single-source IR — no FP theory in
+// the solver, any BV solver works). Cost note: properties whose cone holds
+// a float multiplier/fma at FP32 width can be SAT-hard; fp8/bf16 cones and
+// add/compare cones (everything here) discharge in seconds.
+module FpFormalProps
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port a: in FP8E4M3;
+  port b: in FP8E4M3;
+  port ha: in BF16;
+  port hb: in BF16;
+  port s_out: out FP8E4M3;
+  reg acc: FP8E4M3 reset rst => 0.0;
+  let s: FP8E4M3 = a + b;
+  seq on clk rising
+    acc <= s;
+  end seq
+  comb s_out = acc; end comb
+
+  // IEEE self-equality: a == a unless a is NaN (2^8 cone; instant).
+  assert eq_refl: (a == a) or is_nan(a);
+  // Strict-order asymmetry over the full 2^16 input space.
+  assert lt_asym: !((a < b) and (b < a));
+  // fp8 add commutes (proven-CR helper, both orders; 2^16).
+  assert add_comm: ((a + b) == (b + a)) or is_nan(a + b);
+  // BF16 compare sanity at 2^32: le = lt or eq.
+  assert le_split: (ha <= hb) == ((ha < hb) or (ha == hb));
+  // NaN classification consistent through fma (arg passthrough shape).
+  assert fma_nan: is_nan(fma(a, b, acc)) or !is_nan(a);
+  // Exact widen preserves order: compare-after-widen == native compare.
+  assert widen_ord: (a.to_fp32() < b.to_fp32()) == (a < b);
+end module FpFormalProps

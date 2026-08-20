@@ -1,0 +1,22 @@
+//! Regression coverage for arch#867 — native `arch sim` narrowing
+//! conversions to the sub-8-bit MX formats.
+//!
+//! Pre-fix, `src/sim_codegen/expr_codegen.rs::cpp_method_call` had
+//! dispatch arms for `to_fp8e4m3`/`to_fp8e5m2` but NONE for the three
+//! sub-8-bit narrows, so `x.to_fp4e2m1()` (and the E2M3/E3M2 siblings)
+//! fell through to the verbatim `{b}.{method}()` fallback and emitted
+//! `x.to_fp4e2m1()` straight into the generated C++ — which does not
+//! compile (`member reference base type 'uint32_t' ... is not a
+//! structure or union`). `arch build` (SV) already handled all three.
+//! The runtime helpers (`_arch_f32_to_e2m1/e2m3/e3m2`) already existed.
+module sim_fp_narrow_mx_regression
+  port x: in FP32;
+  port y1: out FP4E2M1;
+  port y2: out FP6E2M3;
+  port y3: out FP6E3M2;
+  comb
+    y1 = x.to_fp4e2m1();
+    y2 = x.to_fp6e2m3();
+    y3 = x.to_fp6e3m2();
+  end comb
+end module sim_fp_narrow_mx_regression

@@ -1,0 +1,33 @@
+// arch#813 P1 regression fixture: base kinds that `arch check` refused
+// before the `is_portable_bit_slice_base` allowlist was retired.
+//
+// Every one of these is ordinary, unambiguous ARCH whose only problem was
+// that SystemVerilog can't select from the base directly. They are now
+// bound to a compiler-generated temp and sliced through it — the same
+// automatic hoist the single-bit `Index` form has used since arch#650.
+//
+// `y_lit` is the case nobody had noticed: `Literal` was *on* the old
+// allowlist and emitted bare, but `8'hff[s +: 2]` is rejected by both
+// Icarus 12.0 and Verilator 5.048. Retiring the allowlist fixed it.
+//
+// See tests/integration_test.rs's
+// `test_universal_slice_hoist_behavioral_equivalence_verilator_and_iverilog`.
+module UniversalSliceHoist
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: in UInt<3>;
+  port c: in Bool;
+  port y_arith: out UInt<4>;
+  port y_chain: out UInt<2>;
+  port y_shift: out UInt<4>;
+  port y_tern: out UInt<4>;
+  port y_lit: out UInt<2>;
+
+  comb
+    y_arith = (a - b)[3:0];
+    y_chain = a[7:4][1:0];
+    y_shift = (a >> 1)[3:0];
+    y_tern = (c ? a : b)[3:0];
+    y_lit = 0xFF[s +: 2];
+  end comb
+end module UniversalSliceHoist

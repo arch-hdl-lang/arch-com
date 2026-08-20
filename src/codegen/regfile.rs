@@ -155,6 +155,11 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations (arch#852) — an `assert`/`cover` on this
+        // regfile may call one, and SV has no free functions.
+        self.emit_pending_functions();
+
         // ── Register array ────────────────────────────────────────────────────
         self.line(&format!(
             "logic [{}] rf_data [0:NREGS-1];",

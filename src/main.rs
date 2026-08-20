@@ -42,6 +42,17 @@ enum Command {
         /// Input .arch file(s)
         #[arg(required = true)]
         files: Vec<PathBuf>,
+        /// Opt-in naming-convention lint (issue #648): PascalCase for
+        /// construct names, snake_case for ports/regs/wires/lets/function
+        /// args, UPPER_SNAKE for params. Warning-only — never fails the
+        /// build (spec §2.1: naming conventions are recommended, not
+        /// compiler-enforced). Bare `--lint-naming` or `--lint-naming=warn`
+        /// enable it; `--lint-naming=off` (or omitting the flag) disables
+        /// it. `--lint-naming=error` is intentionally rejected — there is
+        /// no hard-error mode. Suppress per-file with a
+        /// `// arch-lint-naming: off` source-line pragma.
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
+        lint_naming: Option<String>,
     },
     /// Rebuild the learning retrieval index over ~/.arch/learn/events.jsonl
     LearnIndex,
@@ -121,9 +132,34 @@ enum Command {
         /// Input .arch file(s)
         #[arg(required = true)]
         files: Vec<PathBuf>,
-        /// Output .sv file
+        /// Output .sv file. Pass the literal value `auto` (`-o auto`) to
+        /// derive the output stem from each top-level construct's declared
+        /// name instead of the source filename — one `.sv` per construct,
+        /// written next to the first input file (issue #251). The
+        /// construct's name is used verbatim (no case conversion): ARCH
+        /// naming convention already recommends snake_case construct
+        /// names, so `module ibex_alu` in `IbexAlu.arch` writes
+        /// `ibex_alu.sv`. A construct not following the convention (e.g.
+        /// `module AXIBridge`) writes exactly `AXIBridge.sv` — `-o auto`
+        /// does not re-case names for you. Not yet supported together with
+        /// the `--emit-thread-*` / `--emit-construct-proof-*` family.
         #[arg(short, long)]
         o: Option<PathBuf>,
+        /// Suppress every compiler-generated `assert property` /
+        /// `cover property` in the emitted SV: bounds (`_auto_bound_*`),
+        /// divide-by-zero (`_auto_div0_*`), FSM legal-state / reachability
+        /// / transition coverage, FIFO overflow/underflow, counter range,
+        /// `reg ... guard` contracts, and bus handshake / credit_channel /
+        /// TLM-method protocol SVA. Also suppresses `--auto-thread-asserts`
+        /// output regardless of that flag's own value. User-written
+        /// `assert`/`cover` items declared in module/fsm/fifo/... bodies
+        /// are NOT affected — this narrower scope was chosen because the
+        /// issue (#649) only asks to suppress *generated* SVA; see the PR
+        /// description for the reasoning. Useful for Icarus-targeted flows
+        /// that reject SVA syntax even under `-gno-assertions`. Emitted
+        /// synthesizable RTL is unchanged either way.
+        #[arg(long)]
+        no_auto_asserts: bool,
         /// Emit a static HTML thread lowering map. Bare flag writes
         /// `<sv-output-stem>.thread.html`; `--emit-thread-map=PATH` writes
         /// the explicit path. The optional value requires `=`.
@@ -184,6 +220,11 @@ enum Command {
         /// `--assert` to get free spec-derived coverage.
         #[arg(long)]
         auto_thread_asserts: bool,
+        /// Opt-in naming-convention lint (issue #648) — see `arch check
+        /// --help` for the full rule set. Warning-only; never fails the
+        /// build.
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
+        lint_naming: Option<String>,
         /// Only emit constructs from the original input .arch files, not
         /// from dependency files auto-discovered via `inst` / `use`.
         /// Avoids MODDUP when sub-modules are also built as standalone
@@ -361,6 +402,11 @@ enum Command {
         /// §6.2): `riscv` (default) or `cuda`. Accepted for parity with `build`/`sim`.
         #[arg(long = "fp-compat", default_value = "riscv")]
         fp_compat: String,
+        /// Engine for `assert<bound_err>` numeric error-bound properties
+        /// (currently only `gappa`; requires the gappa binary in PATH or
+        /// $GAPPA_BIN).
+        #[arg(long = "error-engine", default_value = "gappa")]
+        error_engine: String,
     },
 }
 
@@ -492,6 +538,23 @@ impl MultiSource {
         Ok(MultiSource { segments, combined })
     }
 
+    /// Filenames whose source contains a `// arch-lint-naming: off` line
+    /// (exact match after trimming whitespace). Used to suppress
+    /// `--lint-naming` diagnostics for a single file — see issue #648's
+    /// acceptance criteria. Purely a raw-text scan over each segment's
+    /// original source, independent of parsing/AST, so it can't itself
+    /// introduce a naming-lint false positive or affect any other pass.
+    fn naming_lint_suppressed_files(&self) -> std::collections::HashSet<String> {
+        self.segments
+            .iter()
+            .filter(|(_, _, _, src)| {
+                src.lines()
+                    .any(|line| line.trim() == "// arch-lint-naming: off")
+            })
+            .map(|(_, _, name, _)| name.clone())
+            .collect()
+    }
+
     /// Find which file a byte offset belongs to and return (filename, file_source, local_offset).
     fn locate(&self, offset: usize) -> (&str, &str, usize) {
         for (start, end, name, src) in &self.segments {
@@ -509,13 +572,45 @@ impl MultiSource {
 
     /// Build a miette Report for an error, using the correct file source.
     fn report_error(&self, err: CompileError) -> Report {
-        let offset = err.span_offset();
-        let (filename, file_source, local_offset) = self.locate(offset);
-        let relocated_err = err.relocate(local_offset);
-        Report::new(relocated_err).with_source_code(NamedSource::new(
-            filename.to_string(),
-            file_source.to_string(),
-        ))
+        self.report_errors(vec![err])
+    }
+
+    /// Build one report carrying every error a pass accumulated (#750).
+    ///
+    /// The passes have always collected a `Vec<CompileError>`; the reporting
+    /// boundary used to keep element 0 and drop the rest, so a file with N
+    /// independent errors cost N compile-and-fix round trips. Each error is
+    /// relocated against its own file — a batch can span several inputs, and a
+    /// `Report` holds a single `source_code`, so the snippet travels with the
+    /// error rather than with the batch.
+    fn report_errors(&self, mut errs: Vec<CompileError>) -> Report {
+        // One error renders exactly as it always did — no "1 error" wrapper
+        // around a single diagnostic, which is still the common case.
+        if errs.len() <= 1 {
+            let err = errs.pop().unwrap_or(CompileError::UnexpectedEof);
+            let offset = err.span_offset();
+            let (filename, file_source, local_offset) = self.locate(offset);
+            return Report::new(err.relocate(local_offset)).with_source_code(NamedSource::new(
+                filename.to_string(),
+                file_source.to_string(),
+            ));
+        }
+        let sourced: Vec<(usize, arch::diagnostics::SourcedError)> = errs
+            .into_iter()
+            .map(|err| {
+                let offset = err.span_offset();
+                let (filename, file_source, local_offset) = self.locate(offset);
+                (
+                    offset,
+                    arch::diagnostics::SourcedError::new(
+                        err.relocate(local_offset),
+                        filename,
+                        file_source,
+                    ),
+                )
+            })
+            .collect();
+        Report::new(arch::diagnostics::CompileErrors::new(sourced))
     }
 }
 
@@ -755,6 +850,22 @@ fn check_construct_proof_smt_file(proof_path: &Path, solver: &str) -> miette::Re
     Ok(())
 }
 
+/// A Lean project directory is only usable once `lake build` has produced its
+/// `.olean` output. `.lake/` is gitignored build output, so a fresh clone or
+/// `git worktree add` has none, and the replay then fails deep inside Lean
+/// with `unknown module prefix 'ArchConstructProof'` — which looks like a
+/// broken proof rather than a missing build. Say what to run instead.
+fn check_lean_project_built(dir: &Path) -> miette::Result<()> {
+    if dir.join(".lake/build/lib/lean").is_dir() {
+        return Ok(());
+    }
+    Err(miette::miette!(
+        "Lean proof project at {} is not built (no .lake/build output) — run `lake build` in \
+         that directory first (it has no external dependencies; takes a few seconds)",
+        dir.display()
+    ))
+}
+
 fn thread_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::Result<PathBuf> {
     let candidate = if let Some(path) = explicit_project {
         path.to_path_buf()
@@ -769,6 +880,7 @@ fn thread_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::Res
             candidate.display()
         ));
     }
+    check_lean_project_built(&candidate)?;
     Ok(candidate)
 }
 
@@ -788,6 +900,7 @@ fn construct_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::
             candidate.display()
         ));
     }
+    check_lean_project_built(&candidate)?;
     Ok(candidate)
 }
 
@@ -861,17 +974,43 @@ where
     result
 }
 
+/// Resolve the `--lint-naming[=warn|off]` CLI value into an enabled/disabled
+/// bool. `None` (flag absent) and `Some("off")` both mean disabled — the
+/// lint is opt-in, so both spellings of "don't run it" collapse to the same
+/// behavior. `error` is intentionally rejected: the naming lint has no
+/// hard-error mode (spec §2.1 — naming conventions are recommended, not
+/// compiler-enforced), so `--lint-naming=error` would silently imply a
+/// severity this lint can never produce.
+fn resolve_lint_naming_flag(value: Option<String>) -> miette::Result<bool> {
+    match value.as_deref() {
+        None | Some("off") => Ok(false),
+        Some("warn") => Ok(true),
+        Some(other) => Err(miette::miette!(
+            "--lint-naming: expected `warn` or `off`, got `{other}` — this lint is warning-only \
+             in v1 (see issue #648 Non-goals); there is no error-severity mode"
+        )),
+    }
+}
+
 fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { files } => learn_wrap(&files, || {
-            let all_files = resolve_use_imports(&files)?;
-            let ms = MultiSource::from_files(&all_files)?;
-            run_check_multi(&ms)?;
-            eprintln!("OK: no errors");
-            Ok(())
-        }),
+        Command::Check { files, lint_naming } => {
+            let lint_naming = resolve_lint_naming_flag(lint_naming)?;
+            learn_wrap(&files, || {
+                let all_files = resolve_use_imports(&files)?;
+                let ms = MultiSource::from_files(&all_files)?;
+                run_check_multi_opts(
+                    &ms,
+                    /*skip_lower_threads=*/ false,
+                    /*auto_thread_asserts=*/ false,
+                    lint_naming,
+                )?;
+                eprintln!("OK: no errors");
+                Ok(())
+            })
+        }
         Command::LearnIndex => {
             let n = arch::learn::build_index().into_diagnostic()?;
             eprintln!("Indexed {} events.", n);
@@ -1166,11 +1305,22 @@ fn main() -> miette::Result<()> {
             check_construct_proof_smt,
             construct_proof_smt_solver,
             auto_thread_asserts,
+            lint_naming,
             no_inline_deps,
+            no_auto_asserts,
             fp_compat,
             staged_ops,
         } => {
             let fp_compat = arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
+            let lint_naming = resolve_lint_naming_flag(lint_naming)?;
+            // `-o auto` (issue #251): the literal value `auto` opts into
+            // per-construct output named after each construct's declared
+            // name, instead of a literal output path.
+            let out_is_auto = matches!(o.as_deref().and_then(|p| p.to_str()), Some("auto"));
+            // `--no-auto-asserts` (issue #649) also suppresses
+            // `--auto-thread-asserts` output, regardless of that flag's
+            // own value — the new flag is the stronger, more general knob.
+            let effective_auto_thread_asserts = auto_thread_asserts && !no_auto_asserts;
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
                 if matches!(emit_thread_map, Some(Some(_))) && files.len() > 1 && o.is_none() {
@@ -1211,6 +1361,20 @@ fn main() -> miette::Result<()> {
                     emit_construct_proof_lean.is_some() || check_construct_proof_lean;
                 let need_construct_proof_smt =
                     emit_construct_proof_smt.is_some() || check_construct_proof_smt;
+                if out_is_auto
+                    && (emit_thread_map.is_some()
+                        || emit_thread_proof.is_some()
+                        || need_thread_proof_lean
+                        || need_construct_proof_lean
+                        || need_construct_proof_smt)
+                {
+                    return Err(miette::miette!(
+                        "-o auto is not yet supported together with --emit-thread-map / \
+                         --emit-thread-proof / --emit-thread-proof-lean / \
+                         --emit-construct-proof-lean / --emit-construct-proof-smt; pass an \
+                         explicit -o PATH for those flows"
+                    ));
+                }
                 let all_files = resolve_use_imports(&files)?;
                 let ms = MultiSource::from_files(&all_files)?;
                 let collect_thread_metadata = emit_thread_map.is_some()
@@ -1224,7 +1388,8 @@ fn main() -> miette::Result<()> {
                 let (mut ast, symbols, overload_map) = run_check_multi_opts_with_thread_map(
                     &ms,
                     false,
-                    auto_thread_asserts,
+                    effective_auto_thread_asserts,
+                    lint_naming,
                     thread_map_store.clone(),
                 )?;
                 let staged_sites =
@@ -1245,7 +1410,143 @@ fn main() -> miette::Result<()> {
                     std::collections::HashSet::new()
                 };
 
-                if files.len() == 1 || o.is_some() {
+                if out_is_auto {
+                    // `-o auto` (issue #251): one `.sv` per top-level HDL
+                    // construct (module/fsm/fifo/ram/cam/counter/arbiter/
+                    // regfile/pipeline/linklist/synchronizer/clkgate),
+                    // named after the construct's declared name — used
+                    // verbatim, no case conversion (see the `-o` help
+                    // text). Type/const/function-only items (domain/
+                    // struct/enum/package/function/template/bus/use/
+                    // extern package) aren't constructs of their own, so
+                    // each is folded into *every* per-construct output —
+                    // this mirrors today's single-combined-output
+                    // behavior (where they already sit alongside every
+                    // module in the one file) and keeps each `-o auto`
+                    // output independently compilable. Trade-off: if two
+                    // constructs share a struct/enum/package and both
+                    // outputs are compiled together in one downstream
+                    // invocation, that type/package is declared twice —
+                    // acceptable for the swap-in-one-file-at-a-time
+                    // workflow this feature targets (see doc). A
+                    // thread-lowering helper module (`_<Name>_threads`)
+                    // is bundled with its public module, never split out
+                    // on its own — `generate_items`'s helper/public
+                    // blank-line trim relies on the two being adjacent in
+                    // the same call.
+                    fn is_primary_construct(item: &Item) -> bool {
+                        matches!(
+                            item,
+                            Item::Module(_)
+                                | Item::Fsm(_)
+                                | Item::Fifo(_)
+                                | Item::Ram(_)
+                                | Item::Cam(_)
+                                | Item::Counter(_)
+                                | Item::Arbiter(_)
+                                | Item::Regfile(_)
+                                | Item::Pipeline(_)
+                                | Item::Linklist(_)
+                                | Item::Synchronizer(_)
+                                | Item::Clkgate(_)
+                        )
+                    }
+                    fn is_threads_helper(item: &Item, next: Option<&Item>) -> bool {
+                        let Item::Module(m) = item else {
+                            return false;
+                        };
+                        let Some(Item::Module(next_m)) = next else {
+                            return false;
+                        };
+                        m.name.name == format!("_{}_threads", next_m.name.name)
+                    }
+
+                    let filtered: Vec<Item> = ast
+                        .items
+                        .iter()
+                        .filter(|item| {
+                            if !no_inline_deps {
+                                return true;
+                            }
+                            let s = item.span().start;
+                            ms.segments.iter().any(|(seg_start, seg_end, fname, _)| {
+                                s >= *seg_start && s < *seg_end && original_names.contains(fname)
+                            })
+                        })
+                        .cloned()
+                        .collect();
+
+                    let mut aux_items: Vec<Item> = Vec::new();
+                    for (i, item) in filtered.iter().enumerate() {
+                        if is_primary_construct(item)
+                            || is_threads_helper(item, filtered.get(i + 1))
+                        {
+                            continue;
+                        }
+                        aux_items.push(item.clone());
+                    }
+
+                    let mut groups: Vec<(String, Vec<Item>)> = Vec::new();
+                    let mut i = 0;
+                    while i < filtered.len() {
+                        let item = &filtered[i];
+                        if is_threads_helper(item, filtered.get(i + 1)) {
+                            let public = &filtered[i + 1];
+                            let mut group = aux_items.clone();
+                            group.push(item.clone());
+                            group.push(public.clone());
+                            groups.push((public.as_construct().name().name.clone(), group));
+                            i += 2;
+                        } else if is_primary_construct(item) {
+                            let mut group = aux_items.clone();
+                            group.push(item.clone());
+                            groups.push((item.as_construct().name().name.clone(), group));
+                            i += 1;
+                        } else {
+                            i += 1;
+                        }
+                    }
+
+                    if groups.is_empty() {
+                        return Err(miette::miette!(
+                            "-o auto: no emittable top-level construct (module/fsm/fifo/ram/\
+                             cam/counter/arbiter/regfile/pipeline/linklist/synchronizer/\
+                             clkgate) found in the input"
+                        ));
+                    }
+
+                    let mut seen_stems = std::collections::HashSet::new();
+                    for (stem, _) in &groups {
+                        if !seen_stems.insert(stem.clone()) {
+                            return Err(miette::miette!(
+                                "-o auto: two top-level constructs are both named `{stem}` — \
+                                 outputs would collide at `{stem}.sv`; rename one of them or \
+                                 pass an explicit -o PATH"
+                            ));
+                        }
+                    }
+
+                    let out_dir = files[0]
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .to_path_buf();
+
+                    for (stem, group) in &groups {
+                        let mut codegen = Codegen::new(&symbols, &ast, overload_map.clone())
+                            .with_fp_compat(fp_compat)
+                            .with_suppress_auto_sva(no_auto_asserts);
+                        codegen.set_staged_sites(staged_sites.clone());
+                        let sv = codegen.generate_items(group);
+                        let out_path = out_dir.join(format!("{stem}.sv"));
+                        fs::write(&out_path, &sv).into_diagnostic()?;
+                        eprintln!("Wrote {}", out_path.display());
+                        if let Some(sdc_text) = codegen.emit_sdc(&out_path.to_string_lossy()) {
+                            let sdc_path = out_path.with_extension("sdc");
+                            fs::write(&sdc_path, &sdc_text).into_diagnostic()?;
+                            eprintln!("Wrote {}", sdc_path.display());
+                        }
+                    }
+                } else if files.len() == 1 || o.is_some() {
                     // Single file or explicit -o: emit one combined SV file
                     let (sv, sdc) = if no_inline_deps {
                         // Only items from the original input files
@@ -1264,7 +1565,8 @@ fn main() -> miette::Result<()> {
                             .collect();
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map)
                             .with_comments(comments)
-                            .with_fp_compat(fp_compat);
+                            .with_fp_compat(fp_compat)
+                            .with_suppress_auto_sva(no_auto_asserts);
                         codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate_items(&file_items);
                         let out_path_hint =
@@ -1274,7 +1576,8 @@ fn main() -> miette::Result<()> {
                     } else {
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map)
                             .with_comments(comments)
-                            .with_fp_compat(fp_compat);
+                            .with_fp_compat(fp_compat)
+                            .with_suppress_auto_sva(no_auto_asserts);
                         codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate();
                         let out_path_hint =
@@ -1500,7 +1803,8 @@ fn main() -> miette::Result<()> {
 
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map.clone())
                             .with_comments(file_comments)
-                            .with_fp_compat(fp_compat);
+                            .with_fp_compat(fp_compat)
+                            .with_suppress_auto_sva(no_auto_asserts);
                         codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate_items(&file_items);
 
@@ -1643,10 +1947,10 @@ fn main() -> miette::Result<()> {
             timeout,
             auto_thread_asserts,
             fp_compat,
+            error_engine,
         } => {
-            // Validated for parity with build/sim; FP types are rejected by the
-            // formal backend in v1, so the profile has no effect here yet.
-            let _ = arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
+            let fp_compat_parsed =
+                arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
                 let all_files = resolve_use_imports(&files)?;
@@ -1672,6 +1976,7 @@ fn main() -> miette::Result<()> {
                     &ms,
                     false,
                     auto_thread_asserts,
+                    /*lint_naming=*/ false,
                     thread_map_store.clone(),
                 )?;
                 if need_thread_proof_lean {
@@ -1705,6 +2010,8 @@ fn main() -> miette::Result<()> {
                     solver: solver.clone(),
                     emit_smt: emit_smt.clone(),
                     timeout,
+                    fp_compat: fp_compat_parsed,
+                    error_engine: error_engine.clone(),
                 };
                 let report =
                     formal::run(&ast, &symbols, &args).map_err(|err| ms.report_error(err))?;
@@ -1935,12 +2242,14 @@ fn run_sim_opts(
             &ms,
             thread_sim_parallel,
             /*auto_thread_asserts=*/ false,
+            /*lint_naming=*/ false,
         )?
     } else {
         run_check_multi_opts_with_param_overrides(
             &ms,
             thread_sim_parallel,
             /*auto_thread_asserts=*/ false,
+            /*lint_naming=*/ false,
             param_overrides,
         )?
     };
@@ -2629,6 +2938,46 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                     let p = stdlib.join(&file_name);
                     if p.exists() {
                         deps.push(p);
+                    }
+                }
+            }
+        }
+
+        // An explicit `use` names the file that provides a construct, so it
+        // must win over the name-based `inst` discovery below. Seed the
+        // defined-name set from the `use` targets before that discovery runs;
+        // otherwise a construct reachable by both routes is pulled in twice
+        // and the build dies with `duplicate definition`.
+        //
+        // This is the only way to disambiguate when two files in a directory
+        // define the same construct: without it, discovery silently resolves
+        // `inst c: X` to whichever file happens to be called `X.arch`, and
+        // `use` cannot override that choice.
+        for dep in &deps {
+            let Ok(dep_src) = fs::read_to_string(dep) else {
+                continue;
+            };
+            let Ok(dep_tokens) = lexer::tokenize(&dep_src) else {
+                continue;
+            };
+            let mut dep_parser = parser::Parser::new(dep_tokens, &dep_src);
+            let Ok(dep_parsed) = dep_parser.parse_source_file() else {
+                continue;
+            };
+            for item in &dep_parsed.items {
+                match item {
+                    Item::Domain(_)
+                    | Item::Struct(_)
+                    | Item::Enum(_)
+                    | Item::Function(_)
+                    | Item::Package(_)
+                    | Item::Use(_)
+                    | Item::ExternPackage(_) => {}
+                    Item::Bus(b) => {
+                        all_defined_buses.insert(b.name.name.clone());
+                    }
+                    instantiable => {
+                        all_defined_modules.insert(instantiable.as_construct().name().name.clone());
                     }
                 }
             }
@@ -3513,6 +3862,7 @@ fn run_check_multi(
 )> {
     run_check_multi_opts(
         ms, /*skip_lower_threads=*/ false, /*auto_thread_asserts=*/ false,
+        /*lint_naming=*/ false,
     )
 }
 
@@ -3520,6 +3870,7 @@ fn run_check_multi_opts(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    lint_naming: bool,
 ) -> miette::Result<(
     arch::ast::SourceFile,
     resolve::SymbolTable,
@@ -3529,6 +3880,7 @@ fn run_check_multi_opts(
         ms,
         skip_lower_threads,
         auto_thread_asserts,
+        lint_naming,
         None,
         None,
     )
@@ -3538,6 +3890,7 @@ fn run_check_multi_opts_with_thread_map(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    lint_naming: bool,
     thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
 ) -> miette::Result<(
     arch::ast::SourceFile,
@@ -3548,6 +3901,7 @@ fn run_check_multi_opts_with_thread_map(
         ms,
         skip_lower_threads,
         auto_thread_asserts,
+        lint_naming,
         thread_map,
         None,
     )
@@ -3557,6 +3911,7 @@ fn run_check_multi_opts_with_param_overrides(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    lint_naming: bool,
     param_overrides: &std::collections::HashMap<String, u64>,
 ) -> miette::Result<(
     arch::ast::SourceFile,
@@ -3567,6 +3922,7 @@ fn run_check_multi_opts_with_param_overrides(
         ms,
         skip_lower_threads,
         auto_thread_asserts,
+        lint_naming,
         None,
         Some(param_overrides),
     )
@@ -3576,6 +3932,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    lint_naming: bool,
     thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
     param_overrides: Option<&std::collections::HashMap<String, u64>>,
 ) -> miette::Result<(
@@ -3653,9 +4010,33 @@ fn run_check_multi_opts_with_thread_map_and_params(
     // reductions from thread lowering etc. don't trigger spurious warnings)
     let prec_errors = arch::typecheck::check_precedence(&parsed_ast);
     if !prec_errors.is_empty() {
-        let err = prec_errors.into_iter().next().unwrap();
-        return Err(ms.report_error(err));
+        return Err(ms.report_errors(prec_errors));
     }
+
+    // Naming-convention lint (issue #648), opt-in via `--lint-naming`. Runs
+    // on the same pre-elaboration `parsed_ast` as `check_precedence` above,
+    // for the same reason: compiler-synthesized identifiers (thread
+    // lowering, generate expansion, credit-channel dispatch, ...) don't
+    // exist yet at this stage, so there's nothing to spuriously flag. This
+    // whole block is a no-op unless `lint_naming` is set — absent the flag,
+    // `naming_warnings` stays empty and `arch check`/`arch build` behavior
+    // and emitted output are unaffected. Collected here (rather than
+    // returned as an error) and merged into `warnings` below, since a
+    // naming violation must never fail the build (spec §2.1: naming
+    // conventions are recommended, not compiler-enforced).
+    let naming_warnings = if lint_naming {
+        let mut w = arch::typecheck::check_naming(&parsed_ast);
+        let suppressed = ms.naming_lint_suppressed_files();
+        if !suppressed.is_empty() {
+            w.retain(|warn| {
+                let (filename, _, _) = ms.locate(warn.span.start);
+                !suppressed.contains(filename)
+            });
+        }
+        w
+    } else {
+        Vec::new()
+    };
 
     if let Some(overrides) = param_overrides {
         apply_top_param_overrides(&mut parsed_ast, overrides)?;
@@ -3664,31 +4045,20 @@ fn run_check_multi_opts_with_thread_map_and_params(
     // Resolve module-scope `type Name = ...;` aliases by inlining them at
     // every use site. Runs before elaboration so downstream passes see
     // aliases as if hand-inlined.
-    let parsed_ast = arch::type_alias::resolve_type_aliases(parsed_ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let parsed_ast = arch::type_alias::resolve_type_aliases(parsed_ast)
+        .map_err(|errs| ms.report_errors(errs))?;
 
     // Elaborate (expand generate blocks)
-    let ast = elaborate::elaborate(parsed_ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let ast = elaborate::elaborate(parsed_ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Rewrite TLM target threads (`thread port.method(args) ...`) into
     // regular threads that drive the req/rsp handshake. Must run before
     // the generic lower_threads, which rejects TLM-bound threads.
-    let ast = elaborate::lower_tlm_target_threads(ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let ast = elaborate::lower_tlm_target_threads(ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Expand initiator-side TLM call sites (`x <= m.method(args);`) in
     // thread bodies into the issue + wait-response state pair.
-    let ast = elaborate::lower_tlm_initiator_calls(ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let ast = elaborate::lower_tlm_initiator_calls(ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Dead-skid combinational-feedback lint (issue #245). Runs on the
     // pre-thread-lowering AST so `ModuleBodyItem::Thread` is still present and
@@ -3735,10 +4105,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
             auto_asserts: auto_thread_asserts,
             thread_map,
         };
-        elaborate::lower_threads_with_opts(ast, &opts).map_err(|errs| {
-            let err = errs.into_iter().next().unwrap();
-            ms.report_error(err)
-        })?
+        elaborate::lower_threads_with_opts(ast, &opts).map_err(|errs| ms.report_errors(errs))?
     };
 
     // Overlay the collected dead-skid hazards onto the thread map (issue #245)
@@ -3767,31 +4134,22 @@ fn run_check_multi_opts_with_thread_map_and_params(
     }
 
     // Lower `pipe_reg<T, N>` ports with N > 1 into an N-stage cascade.
-    let (ast, pipe_reg_warnings) = elaborate::lower_pipe_reg_ports(ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let (ast, pipe_reg_warnings) =
+        elaborate::lower_pipe_reg_ports(ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Rewrite `port.ch.valid` / `.data` / `.can_send` to SynthIdent so they
     // reference the codegen-emitted SV wires (credit_channel method dispatch).
-    let ast = elaborate::lower_credit_channel_dispatch(ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let ast =
+        elaborate::lower_credit_channel_dispatch(ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Resolve
-    let symbols = resolve::resolve(&ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let symbols = resolve::resolve(&ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Type check
     let checker = TypeChecker::new(&symbols, &ast);
-    let (mut warnings, overload_map) = checker.check().map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let (mut warnings, overload_map) = checker.check().map_err(|errs| ms.report_errors(errs))?;
     warnings.extend(pipe_reg_warnings);
+    warnings.extend(naming_warnings);
 
     for w in &warnings {
         let (filename, _, local_offset) = ms.locate(w.span.start);

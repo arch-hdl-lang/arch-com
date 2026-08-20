@@ -163,15 +163,306 @@ pub fn f64_to_bf16_bits(x: f64) -> u16 {
     round_f64_to_narrow(x, 8, 7) as u16
 }
 
+/// Round `x` to FP8 E5M2 (1 + 5 + 2, IEEE-style (5,3) instantiation).
+/// Returns `None` when the rounded magnitude overflows the largest finite
+/// (57344) — fp8 literal overflow is a compile error, not a fold to ±inf,
+/// because runtime overflow behavior is `--fp-compat`-dependent and a source
+/// constant must not depend on a build flag.
+pub fn f64_to_e5m2_bits(x: f64) -> Option<u8> {
+    let bits = round_f64_to_narrow(x, 5, 2);
+    // Exponent field all-ones = the generic rounder's overflow-to-infinity
+    // packing (or a NaN input, which source literals cannot produce).
+    if (bits >> 2) & 0x1F == 0x1F {
+        return None;
+    }
+    Some(bits as u8)
+}
+
+/// Round `x` to FP8 E4M3 with **OCP OFP8 semantics**: no infinities, the top
+/// exponent value (15) encodes the normals 256..448 for mantissa 0..6 and NaN
+/// at mantissa 7, max finite 448. Returns `None` on overflow (rounded
+/// magnitude ≥ 480; the 464 tie goes to 448 — even kept significand).
+///
+/// The generic `round_f64_to_narrow(x, 4, 3)` cannot be used above 248: its
+/// IEEE template treats every `exp_field == 15` result as overflow and packs
+/// `S.1111.000`, which in OCP is the *finite value 256* — a silently wrong
+/// constant for e.g. 448.0. The top binade is therefore handled directly.
+pub fn f64_to_e4m3_bits(x: f64) -> Option<u8> {
+    if !x.is_finite() {
+        return None; // totality; literals cannot parse to NaN/inf
+    }
+    let a = x.abs();
+    let sign: u8 = if x.is_sign_negative() { 0x80 } else { 0 };
+    if a >= 256.0 {
+        // Top OCP binade: grid step 32 (= 2^8 / 8), encodings exp=15,
+        // mant = m-8 for m in 8..=14 (256..448). f64 division by 32 is
+        // exact, so round-half-even on the exact quotient is exact RNE.
+        let q = a / 32.0;
+        let f = q.floor();
+        let frac = q - f; // exact
+        let m = if frac > 0.5 {
+            f as u64 + 1
+        } else if frac < 0.5 {
+            f as u64
+        } else if (f as u64) % 2 == 0 {
+            f as u64
+        } else {
+            f as u64 + 1
+        };
+        if m >= 15 {
+            return None; // rounded magnitude ≥ 480 (the S.1111.111 NaN slot)
+        }
+        return Some(sign | 0x78 | (m as u8 - 8));
+    }
+    // Below 256 the OCP and IEEE-(4,4) grids coincide, and the generic
+    // rounder's overflow packing `S.1111.000` is exactly the encoding of 256
+    // — the only value a sub-256 input can round up into. So the generic
+    // result is correct verbatim here.
+    Some(round_f64_to_narrow(x, 4, 3) as u8)
+}
+
 /// Round `x` to FP32 / IEEE-754 binary32 (1 + 8 + 23 bits). Agrees bit-for-
 /// bit with `(x as f32).to_bits()`.
 pub fn f64_to_fp32_bits(x: f64) -> u32 {
     round_f64_to_narrow(x, 8, 23) as u32
 }
 
+/// Exact decode of an FP8 E5M2 bit pattern to `f64` (IEEE-style (5,3):
+/// exp all-ones = inf/NaN).
+pub fn e5m2_bits_to_f64(h: u8) -> f64 {
+    let sign = if h & 0x80 != 0 { -1.0 } else { 1.0 };
+    let e = (h >> 2) & 0x1F;
+    let f = (h & 0x3) as f64;
+    if e == 0x1F {
+        return if f != 0.0 {
+            f64::NAN
+        } else {
+            sign * f64::INFINITY
+        };
+    }
+    if e == 0 {
+        return sign * f * f64::powi(2.0, -16);
+    }
+    sign * (4.0 + f) * f64::powi(2.0, e as i32 - 17)
+}
+
+/// Exact decode of an FP8 E4M3 bit pattern to `f64` (OCP OFP8: no
+/// infinities; only S.1111.111 is NaN; exp=15, mant<7 are the normals
+/// 256..448).
+pub fn e4m3_bits_to_f64(h: u8) -> f64 {
+    let sign = if h & 0x80 != 0 { -1.0 } else { 1.0 };
+    if h & 0x7F == 0x7F {
+        return f64::NAN;
+    }
+    let e = (h >> 3) & 0xF;
+    let f = (h & 0x7) as f64;
+    if e == 0 {
+        return sign * f * f64::powi(2.0, -9);
+    }
+    sign * (8.0 + f) * f64::powi(2.0, e as i32 - 10)
+}
+
+/// The eight E2M1 magnitudes, indexed by the 3-bit magnitude encoding.
+///
+/// OCP MX FP4 (1 sign + 2 exp + 1 mantissa, bias 1) has **no Inf and no NaN**
+/// — the top binade is entirely finite — and exactly one subnormal (0.5).
+const E2M1_MAGNITUDES: [f64; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+
+/// Exact value of an E2M1 encoding (low 4 bits significant).
+pub fn e2m1_bits_to_f64(b: u8) -> f64 {
+    let mag = E2M1_MAGNITUDES[(b & 0x7) as usize];
+    if b & 0x8 != 0 {
+        -mag
+    } else {
+        mag
+    }
+}
+
+/// Round `x` to E2M1, or `None` if it overflows the format.
+///
+/// Written as an exhaustive nearest-with-ties-to-even search over the eight
+/// magnitudes rather than via [`round_f64_to_narrow`], deliberately. The
+/// generic routine is an IEEE template: it treats an all-ones exponent as
+/// overflow-to-infinity, but E2M1's all-ones binade holds the finite values
+/// 4.0 and 6.0. Applied here it packs `S.11.0` for an overflowing input,
+/// which decodes to **4.0** — a silently wrong constant, the same trap
+/// documented for `f64_to_e4m3_bits` at 448. At eight magnitudes the direct
+/// search is both simpler and exhaustively checkable.
+///
+/// Overflow boundary follows the E4M3 precedent (max 448, next-would-be 512,
+/// so `>= 480` overflows): E2M1's max is 6.0 and the next would-be value is
+/// 8.0, so `|x| >= 7.0` overflows and anything below rounds to 6.0.
+/// Overflowing float literals are a compile error, matching fp8.
+pub fn f64_to_e2m1_bits(x: f64) -> Option<u8> {
+    // E2M1 cannot represent NaN or infinity at all.
+    if x.is_nan() || x.is_infinite() {
+        return None;
+    }
+    let sign: u8 = if x.is_sign_negative() { 0x8 } else { 0x0 };
+    let a = x.abs();
+    if a >= 7.0 {
+        return None;
+    }
+    // Nearest magnitude; ties go to the even ENCODING (low bit clear),
+    // which is IEEE round-ties-to-even on the mantissa bit.
+    let mut best = 0usize;
+    let mut best_err = f64::INFINITY;
+    for (i, &m) in E2M1_MAGNITUDES.iter().enumerate() {
+        let err = (a - m).abs();
+        if err < best_err || (err == best_err && i % 2 == 0) {
+            best = i;
+            best_err = err;
+        }
+    }
+    Some(sign | best as u8)
+}
+
+/// Magnitudes of an all-finite OCP narrow format, indexed by its magnitude
+/// encoding. `exp_bits`/`mant_bits` describe the field split; bias is the
+/// IEEE `2^(eb-1)-1`.
+fn all_finite_magnitudes(exp_bits: u32, mant_bits: u32) -> Vec<f64> {
+    let bias = (1i32 << (exp_bits - 1)) - 1;
+    let mant_n = 1u32 << mant_bits;
+    let mut out = Vec::with_capacity(((1u32 << exp_bits) * mant_n) as usize);
+    for e in 0..(1u32 << exp_bits) {
+        for m in 0..mant_n {
+            let v = if e == 0 {
+                // subnormal: 2^(1-bias) * (m / 2^mant_bits)
+                2f64.powi(1 - bias) * (m as f64 / mant_n as f64)
+            } else {
+                2f64.powi(e as i32 - bias) * (1.0 + m as f64 / mant_n as f64)
+            };
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// Round `x` to an all-finite OCP narrow format (no Inf, no NaN), or `None`
+/// on overflow.
+///
+/// Shared by FP6 E2M3/E3M2 and, in spirit, FP4 E2M1. `round_f64_to_narrow`
+/// cannot serve these: its IEEE template treats an all-ones exponent as
+/// overflow-to-infinity, but in these formats that binade is entirely
+/// FINITE, so it would pack a silently wrong constant (the trap documented
+/// for `f64_to_e4m3_bits` at 448 and `f64_to_e2m1_bits` at 8.0).
+///
+/// The overflow boundary is the round-to-nearest midpoint between the max
+/// finite and the next would-be value, consistent with E4M3 (max 448, next
+/// 512, so `>= 480` overflows).
+fn f64_to_all_finite_bits(x: f64, exp_bits: u32, mant_bits: u32) -> Option<u8> {
+    if x.is_nan() || x.is_infinite() {
+        return None;
+    }
+    let mags = all_finite_magnitudes(exp_bits, mant_bits);
+    let max_finite = *mags.last().expect("non-empty");
+    // The next would-be magnitude is one ulp of the top binade above max.
+    let top_ulp = max_finite - mags[mags.len() - 2];
+    let overflow_at = max_finite + top_ulp / 2.0;
+    let sign_bit: u8 = 1 << (exp_bits + mant_bits);
+    let sign = if x.is_sign_negative() { sign_bit } else { 0 };
+    let a = x.abs();
+    if a >= overflow_at {
+        return None;
+    }
+    let mut best = 0usize;
+    let mut best_err = f64::INFINITY;
+    for (i, &m) in mags.iter().enumerate() {
+        let err = (a - m).abs();
+        if err < best_err || (err == best_err && i % 2 == 0) {
+            best = i;
+            best_err = err;
+        }
+    }
+    Some(sign | best as u8)
+}
+
+fn all_finite_bits_to_f64(b: u8, exp_bits: u32, mant_bits: u32) -> f64 {
+    let sign_bit: u8 = 1 << (exp_bits + mant_bits);
+    let mags = all_finite_magnitudes(exp_bits, mant_bits);
+    let mag = mags[(b & (sign_bit - 1)) as usize];
+    if b & sign_bit != 0 {
+        -mag
+    } else {
+        mag
+    }
+}
+
+/// Round `x` to OCP FP6 E2M3 (max finite 7.5); `None` on overflow.
+pub fn f64_to_e2m3_bits(x: f64) -> Option<u8> {
+    f64_to_all_finite_bits(x, 2, 3)
+}
+/// Exact value of an E2M3 encoding (low 6 bits significant).
+pub fn e2m3_bits_to_f64(b: u8) -> f64 {
+    all_finite_bits_to_f64(b, 2, 3)
+}
+/// Round `x` to OCP FP6 E3M2 (max finite 28.0); `None` on overflow.
+pub fn f64_to_e3m2_bits(x: f64) -> Option<u8> {
+    f64_to_all_finite_bits(x, 3, 2)
+}
+/// Exact value of an E3M2 encoding (low 6 bits significant).
+pub fn e3m2_bits_to_f64(b: u8) -> f64 {
+    all_finite_bits_to_f64(b, 3, 2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn e5m2_known_values() {
+        assert_eq!(f64_to_e5m2_bits(0.0), Some(0x00));
+        assert_eq!(f64_to_e5m2_bits(-0.0), Some(0x80));
+        assert_eq!(f64_to_e5m2_bits(1.0), Some(0x3C));
+        assert_eq!(f64_to_e5m2_bits(1.5), Some(0x3E));
+        assert_eq!(f64_to_e5m2_bits(57344.0), Some(0x7B)); // max finite
+        assert_eq!(f64_to_e5m2_bits(-57344.0), Some(0xFB));
+        // min subnormal 2^-16
+        assert_eq!(f64_to_e5m2_bits(f64::powi(2.0, -16)), Some(0x01));
+        // half the min subnormal ties to even -> zero
+        assert_eq!(f64_to_e5m2_bits(f64::powi(2.0, -17)), Some(0x00));
+    }
+
+    #[test]
+    fn e5m2_overflow_is_none() {
+        // 61440 is the tie between 57344 and the (would-be) 65536: kept
+        // significand 7 (odd) vs carry to even -> rounds up -> overflow.
+        assert_eq!(f64_to_e5m2_bits(61440.0), None);
+        assert_eq!(f64_to_e5m2_bits(61439.9), Some(0x7B));
+        assert_eq!(f64_to_e5m2_bits(1.0e9), None);
+        assert_eq!(f64_to_e5m2_bits(-61440.0), None);
+    }
+
+    #[test]
+    fn e4m3_known_values() {
+        assert_eq!(f64_to_e4m3_bits(0.0), Some(0x00));
+        assert_eq!(f64_to_e4m3_bits(1.0), Some(0x38));
+        assert_eq!(f64_to_e4m3_bits(1.5), Some(0x3C));
+        assert_eq!(f64_to_e4m3_bits(240.0), Some(0x77));
+        assert_eq!(f64_to_e4m3_bits(256.0), Some(0x78));
+        assert_eq!(f64_to_e4m3_bits(448.0), Some(0x7E)); // max finite
+        assert_eq!(f64_to_e4m3_bits(-448.0), Some(0xFE));
+        // min subnormal 2^-9; half of it ties to even -> zero
+        assert_eq!(f64_to_e4m3_bits(f64::powi(2.0, -9)), Some(0x01));
+        assert_eq!(f64_to_e4m3_bits(f64::powi(2.0, -10)), Some(0x00));
+    }
+
+    #[test]
+    fn e4m3_ocp_top_binade_boundaries() {
+        // 248 ties between 240 (kept 15, odd) and 256 (even) -> 256.
+        assert_eq!(f64_to_e4m3_bits(248.0), Some(0x78));
+        assert_eq!(f64_to_e4m3_bits(247.9), Some(0x77));
+        // 449..464 round to 448 (464 ties: kept 14 even vs 15 odd -> 448).
+        assert_eq!(f64_to_e4m3_bits(449.0), Some(0x7E));
+        assert_eq!(f64_to_e4m3_bits(464.0), Some(0x7E));
+        // Above the tie: rounds toward the NaN slot 480 -> overflow.
+        assert_eq!(f64_to_e4m3_bits(464.1), None);
+        assert_eq!(f64_to_e4m3_bits(480.0), None);
+        assert_eq!(f64_to_e4m3_bits(500.0), None);
+        assert_eq!(f64_to_e4m3_bits(-465.0), None);
+        // The silent-wrong-constant trap: 448 must NOT encode as 256.
+        assert_ne!(f64_to_e4m3_bits(448.0), Some(0x78));
+    }
 
     #[test]
     fn fp32_matches_native_cast_known_values() {
@@ -374,5 +665,120 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 100_000, "sample too small: {checked}");
+    }
+}
+
+#[cfg(test)]
+mod e2m1_tests {
+    use super::*;
+
+    /// Every encoding round-trips, and the value set is exactly the OCP one.
+    #[test]
+    fn e2m1_round_trips_all_sixteen_encodings() {
+        let want = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+        for enc in 0u8..8 {
+            assert_eq!(e2m1_bits_to_f64(enc), want[enc as usize]);
+            assert_eq!(e2m1_bits_to_f64(enc | 0x8), -want[enc as usize]);
+            // Exact values must encode back to themselves.
+            assert_eq!(f64_to_e2m1_bits(want[enc as usize]), Some(enc));
+        }
+        // -0.0 keeps its sign.
+        assert_eq!(f64_to_e2m1_bits(-0.0), Some(0x8));
+    }
+
+    /// The trap this encoder exists to avoid: the generic IEEE template
+    /// packs `S.11.0` (= 4.0) for an overflowing value. Overflow must be
+    /// `None` — a compile error — never a silently wrong finite constant.
+    #[test]
+    fn e2m1_overflow_is_none_not_a_wrong_finite() {
+        assert_eq!(f64_to_e2m1_bits(7.0), None, "at the RNE midpoint");
+        assert_eq!(f64_to_e2m1_bits(8.0), None);
+        assert_eq!(f64_to_e2m1_bits(1e30), None);
+        assert_eq!(f64_to_e2m1_bits(-7.0), None);
+        assert_eq!(f64_to_e2m1_bits(f64::INFINITY), None);
+        assert_eq!(f64_to_e2m1_bits(f64::NAN), None, "E2M1 has no NaN");
+        // Just below the boundary still rounds to max finite, not overflow.
+        assert_eq!(f64_to_e2m1_bits(6.9), Some(0x7));
+        assert_ne!(
+            f64_to_e2m1_bits(8.0),
+            Some(0x6),
+            "must not silently produce 4.0 the way the generic template would"
+        );
+    }
+
+    /// Round-to-nearest, ties-to-even on the mantissa bit.
+    #[test]
+    fn e2m1_rounds_to_nearest_ties_to_even() {
+        assert_eq!(f64_to_e2m1_bits(0.2), Some(0x0)); // -> 0.0
+        assert_eq!(f64_to_e2m1_bits(0.3), Some(0x1)); // -> 0.5
+        assert_eq!(f64_to_e2m1_bits(1.2), Some(0x2)); // -> 1.0
+        assert_eq!(f64_to_e2m1_bits(1.4), Some(0x3)); // -> 1.5
+                                                      // 5.0 is EQUIDISTANT between 4.0 and 6.0 -> ties-to-even -> 4.0.
+        assert_eq!(f64_to_e2m1_bits(5.0), Some(0x6));
+        // Exact ties land on the even encoding.
+        assert_eq!(f64_to_e2m1_bits(0.25), Some(0x0), "tie 0/0.5 -> 0.0");
+        assert_eq!(f64_to_e2m1_bits(2.5), Some(0x4), "tie 2/3 -> 2.0");
+        assert_eq!(f64_to_e2m1_bits(3.5), Some(0x6), "tie 3/4 -> 4.0");
+        // Sign is independent of magnitude selection.
+        assert_eq!(f64_to_e2m1_bits(-2.5), Some(0xC));
+        assert_eq!(f64_to_e2m1_bits(-5.0), Some(0xE));
+    }
+}
+
+#[cfg(test)]
+mod fp6_tests {
+    use super::*;
+
+    /// Both FP6 formats round-trip every encoding, and the value sets match
+    /// the OCP spec (E2M3 max 7.5, E3M2 max 28.0, both all-finite).
+    #[test]
+    fn fp6_round_trips_all_64_encodings() {
+        for (eb, mb, enc_f, dec_f, max) in [
+            (
+                2u32,
+                3u32,
+                f64_to_e2m3_bits as fn(f64) -> Option<u8>,
+                e2m3_bits_to_f64 as fn(u8) -> f64,
+                7.5f64,
+            ),
+            (
+                3,
+                2,
+                f64_to_e3m2_bits as fn(f64) -> Option<u8>,
+                e3m2_bits_to_f64 as fn(u8) -> f64,
+                28.0,
+            ),
+        ] {
+            let sign_bit: u8 = 1 << (eb + mb);
+            for enc in 0u8..sign_bit {
+                let v = dec_f(enc);
+                assert_eq!(enc_f(v), Some(enc), "eb{eb}mb{mb}: enc {enc:#X} value {v}");
+                // Negative counterpart keeps the magnitude, flips the sign.
+                assert_eq!(dec_f(enc | sign_bit), -v, "eb{eb}mb{mb}: -{v}");
+            }
+            // Max finite matches the spec exactly.
+            assert_eq!(dec_f(sign_bit - 1), max, "eb{eb}mb{mb}: max finite");
+            // -0.0 keeps its sign.
+            assert_eq!(enc_f(-0.0), Some(sign_bit));
+        }
+    }
+
+    /// Overflow is `None` (a compile error), never a silently wrong finite
+    /// value — the trap the generic IEEE template falls into for a format
+    /// whose top binade is entirely finite.
+    #[test]
+    fn fp6_overflow_is_none() {
+        // E2M3: max 7.5, top ulp 0.5, so the RNE midpoint is 7.75.
+        assert_eq!(f64_to_e2m3_bits(7.5), Some(0x1F));
+        assert_eq!(f64_to_e2m3_bits(7.7), Some(0x1F));
+        assert_eq!(f64_to_e2m3_bits(7.75), None, "at the RNE midpoint");
+        assert_eq!(f64_to_e2m3_bits(8.0), None);
+        assert_eq!(f64_to_e2m3_bits(f64::INFINITY), None);
+        assert_eq!(f64_to_e2m3_bits(f64::NAN), None, "FP6 has no NaN");
+        // E3M2: max 28.0, top ulp 4.0, so the midpoint is 30.0.
+        assert_eq!(f64_to_e3m2_bits(28.0), Some(0x1F));
+        assert_eq!(f64_to_e3m2_bits(29.0), Some(0x1F));
+        assert_eq!(f64_to_e3m2_bits(30.0), None, "at the RNE midpoint");
+        assert_eq!(f64_to_e3m2_bits(-30.0), None);
     }
 }

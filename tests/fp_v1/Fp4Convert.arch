@@ -1,0 +1,26 @@
+// FP4E2M1 (OCP MX FP4) storage-only surface: literals and conversions only.
+//
+// E2M1 is 1 sign + 2 exp + 1 mantissa with NO Inf and NO NaN — the entire
+// value set is ±{0, 0.5, 1, 1.5, 2, 3, 4, 6}. No shipping GPU/accelerator
+// ISA exposes scalar arithmetic on it (PTX: e2m1 "must be used in a packed
+// format"), so ARCH models it as a carrier: `+ - *`, compares and `is_nan`
+// are compile errors, and the value must be widened to FP32 to compute.
+module Fp4Convert
+  port a: in FP4E2M1;
+  port s: in FP32;
+
+  port wide:   out FP32;      // widen (exact — a 2-bit significand fits)
+  port narrow: out FP4E2M1;   // narrow (RNE, saturating: no Inf/NaN exists)
+  port viaf32: out FP4E2M1;   // compute in FP32, come back
+  port lit:    out FP4E2M1;   // a context-typed literal
+
+  let av: FP32 = a.to_fp32();
+
+  comb
+    wide   = av;
+    narrow = s.to_fp4e2m1();
+    // The storage-only idiom: widen, compute, narrow once.
+    viaf32 = (av + s).to_fp4e2m1();
+    lit    = 1.5;
+  end comb
+end module Fp4Convert

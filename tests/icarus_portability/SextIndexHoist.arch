@@ -1,0 +1,30 @@
+// arch#827 B1 regression fixture: `.sext<N>()`'s hand-emitted
+// `{{(w-sw){recv[sw-1]}}, recv}` expansion referenced a non-constant-indexed
+// `Index` receiver (a runtime `Vec` element read) bare, twice. `din[sel]`
+// lowers to a dynamic select into a packed multi-dim array; a further
+// select layered on top of that (the sext expansion's own `[sw-1]`) is
+// rejected by Icarus 12.0 — verified against raw hand-written SV,
+// independent of ARCH codegen: `din[sel][7]` and `din[sel][7:4]` both fail
+// elaboration ("reference... not allowed in a constant expression"), and
+// binding `din[sel]` to a temp first fixes both. Verilator has always
+// accepted the bare form, which is why this shipped unnoticed (#827's
+// sweep found 17 designs in this class).
+//
+// `y_const_idx` is the negative case: a *constant*-indexed `Index`
+// receiver folds to a plain element reference and does not need hoisting
+// — `is_atomic_sext_receiver` must not hoist it, or every ordinary
+// `x.sext<N>()` call gains a pointless temp.
+//
+// See tests/integration_test.rs's
+// `test_sext_index_hoist_behavioral_equivalence_verilator_and_iverilog`.
+module SextIndexHoist
+  port sel: in UInt<2>;
+  port din: in Vec<SInt<8>, 4>;
+  port y_runtime_idx: out SInt<12>;
+  port y_const_idx: out SInt<12>;
+
+  comb
+    y_runtime_idx = din[sel].sext<12>();
+    y_const_idx = din[2].sext<12>();
+  end comb
+end module SextIndexHoist

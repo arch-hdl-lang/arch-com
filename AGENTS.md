@@ -27,6 +27,20 @@ share one working tree) — work in your own linked worktree
 (`git worktree add ../arch-wt-<name> -b <branch>`). No branch is exempt;
 automation that must commit in the primary sets `WORKTREE_ENFORCE_SKIP=1`.
 
+In a **new worktree**, if the Lean toolchain is installed, build the
+construct-proof project once — `.lake/` output is untracked, so a fresh
+worktree has none:
+
+```sh
+(cd proofs/lean_thread_lowering && lake build)   # ~4s; needed by cargo test
+```
+
+Without it the two `construct_proof_lean_*` tests in `tests/formal_test.rs`
+do not skip — they guard on `lake` being available, not on the project being
+built — and fail with `unknown module prefix 'ArchConstructProof'`, which
+looks like a broken proof rather than a missing build. Machines without
+`lake` skip them cleanly. Do not "fix" such a failure by editing the proofs.
+
 After opening a PR, run `scripts/monitor_pr_ci.sh [pr-number-or-url]`. If any
 check fails, inspect the linked logs, fix the branch, push the fix, and rerun
 the monitor. Do not leave a PR with known failing GitHub Actions checks unless

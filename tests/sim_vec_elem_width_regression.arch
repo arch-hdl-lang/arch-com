@@ -1,0 +1,44 @@
+// Regression test: `infer_expr_width`'s Index arm computed a Vec
+// element's width as widths[name] / count, but `build_widths` registers
+// Vec-typed regs/ports at the scalar default 32 — NOT the packed total —
+// so `Vec<UInt<32>, 4>[i]` inferred 8 and `Vec<UInt<64>, 8>[i]`
+// inferred 4. Symptoms distilled here:
+//   1. concat of Vec elements got wrong shift positions
+//      (`{v[1], v[0]}` emitted `v[1] << 8` instead of `<< 32`),
+//   2. runtime bit-select on a Vec element got a wrong `_ARCH_BCHK`
+//      bound (aborting on legal bit indices >= the bogus width), and
+//      for counts > 32 the inferred width was 0, silently skipping the
+//      bounds check entirely.
+// Post-fix: the element width resolves from the declared Vec type.
+
+module sim_vec_elem_width_regression
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  port wr_en:    in Bool;
+  port wr_idx:   in UInt<2>;
+  port wr_lo:    in UInt<32>;
+  port wr_idx_w: in UInt<3>;
+  port wr_hi:    in UInt<64>;
+  port bit_sel:  in UInt<6>;
+
+  port rd_pair: out UInt<64>;
+  port rd_cat:  out UInt<128>;
+  port rd_bit:  out UInt<1>;
+
+  reg v: Vec<UInt<32>, 4> reset none;
+  reg w: Vec<UInt<64>, 8> reset none;
+
+  default seq on clk rising;
+
+  seq
+    if wr_en
+      v[wr_idx] <= wr_lo;
+      w[wr_idx_w] <= wr_hi;
+    end if
+  end seq
+
+  let rd_pair = {v[1], v[0]};
+  let rd_cat = {w[1], w[0]};
+  let rd_bit = w[0][bit_sel];
+end module sim_vec_elem_width_regression

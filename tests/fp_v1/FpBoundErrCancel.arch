@@ -1,0 +1,24 @@
+// Error-bound honesty fixture: with inputs spanning [-1,1] the dot product
+// can CANCEL, so the absolute bound proves but the ULP-relative bound is
+// legitimately unprovable (relative error is unbounded near zero) — the
+// engine must report INCONCLUSIVE (exit code 2), not a false proof.
+module Dot3
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port a0: in FP32;
+  port a1: in FP32;
+  port a2: in FP32;
+  port b0: in FP32;
+  port b1: in FP32;
+  port b2: in FP32;
+  port y: out FP32;
+  wire y_w: FP32;
+  comb y_w = fma(a0, b0, fma(a1, b1, a2 * b2)); end comb
+  comb y = y_w; end comb
+
+  assume a_rng: (a0 >= -1.0) and (a0 <= 1.0) and (a1 >= -1.0) and (a1 <= 1.0) and (a2 >= -1.0) and (a2 <= 1.0);
+  assume b_rng: (b0 >= -1.0) and (b0 <= 1.0) and (b1 >= -1.0) and (b1 <= 1.0) and (b2 >= -1.0) and (b2 <= 1.0);
+
+  assert<bound_err> y_abs: abs(y_w - exact(y_w)) <= 0.000001;
+  assert<bound_err> y_ulp: abs(y_w - exact(y_w)) <= 8.0 * ulp(exact(y_w));
+end module Dot3

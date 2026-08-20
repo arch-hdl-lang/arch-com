@@ -7,6 +7,107 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
+    /// arch#808 (pipeline emitters): declared type of a `.reverse()`
+    /// receiver signal inside the current pipeline — the hinted stage's
+    /// regs/lets first (stage-scoped emitter), then ports. Pipelines
+    /// have no `module_scopes` entry (resolve.rs builds those for
+    /// modules and fsms only), so this resolves through the pipeline's
+    /// own AST instead.
+    fn pipeline_ident_type(p: &PipelineDecl, name: &str, stage: Option<usize>) -> Option<TypeExpr> {
+        if let Some(si) = stage {
+            if let Some(ty) = Self::pipeline_stage_signal_type(p.stages.get(si)?, name) {
+                return Some(ty);
+            }
+        }
+        p.ports
+            .iter()
+            .find(|pt| pt.name.name == name)
+            .map(|pt| pt.ty.clone())
+    }
+
+    /// Declared type of a reg / typed let inside one pipeline stage.
+    fn pipeline_stage_signal_type(stage: &StageDecl, name: &str) -> Option<TypeExpr> {
+        stage.body.iter().find_map(|item| match item {
+            ModuleBodyItem::RegDecl(r) if r.name.name == name => Some(r.ty.clone()),
+            ModuleBodyItem::LetBinding(l) if l.name.name == name => l.ty.clone(),
+            _ => None,
+        })
+    }
+
+    /// The `PipelineDecl` currently being emitted, if any. Pipelines have
+    /// no `module_scopes` entry (resolve.rs builds those for modules and
+    /// fsms only), so the pipeline emitters resolve names through the AST.
+    fn current_pipeline(&self) -> Option<&PipelineDecl> {
+        self.source.items.iter().find_map(|item| match item {
+            Item::Pipeline(p) if p.name.name == self.current_construct => Some(p),
+            _ => None,
+        })
+    }
+
+    /// arch#845: declared width of a plain signal reference *inside a
+    /// pipeline*, as a decimal string — the `signal_width` callback
+    /// `hoist_slice_base_in` / `infer_sv_width_str_in` consult before
+    /// falling back to `$bits(...)`.
+    ///
+    /// Resolves the same two shapes `try_emit_pipeline_reverse_chunked`
+    /// does (a bare identifier against the hinted stage then the ports, and
+    /// an explicit `Stage.signal` cross-stage read), through the pipeline's
+    /// own AST. `None` for anything else — the caller then emits
+    /// `$bits(<stage-rewritten text>)`, which is correct in the emitted
+    /// scope, just less tight.
+    fn pipeline_signal_width_str(&self, e: &Expr, stage: Option<usize>) -> Option<String> {
+        let p = self.current_pipeline()?;
+        let ty = match &e.kind {
+            ExprKind::Ident(n) => Self::pipeline_ident_type(p, n, stage)?,
+            ExprKind::FieldAccess(base, field) => {
+                let ExprKind::Ident(stage_name) = &base.kind else {
+                    return None;
+                };
+                let st = p.stages.iter().find(|s| s.name.name == *stage_name)?;
+                Self::pipeline_stage_signal_type(st, &field.name)?
+            }
+            _ => return None,
+        };
+        self.type_expr_width_const(&ty, &p.params)
+            .map(|w| w.to_string())
+    }
+
+    /// arch#808 portable `.reverse()` lowering for the two pipeline
+    /// expression emitters — see `emit_reverse_chunks` (mod.rs) for the
+    /// equivalence argument. `emitted_base` is the receiver as already
+    /// emitted by the calling emitter (stage-name rewriting applied);
+    /// only plain signal references (Ident / stage FieldAccess) are
+    /// attempted, so it is always a part-selectable identifier. `None`
+    /// keeps the streaming-concat form (pre-arch#808 behavior,
+    /// Verilator-only).
+    fn try_emit_pipeline_reverse_chunked(
+        &self,
+        base: &Expr,
+        chunk: &Expr,
+        emitted_base: &str,
+        stage: Option<usize>,
+    ) -> Option<String> {
+        let p = self.current_pipeline()?;
+        let params: &[ParamDecl] = &p.params;
+        let c = self.eval_const_u32(chunk, params)?;
+        let ty = match &base.kind {
+            ExprKind::Ident(n) => Self::pipeline_ident_type(p, n, stage)?,
+            ExprKind::FieldAccess(sb, field) => {
+                let ExprKind::Ident(stage_name) = &sb.kind else {
+                    return None;
+                };
+                let st = p.stages.iter().find(|s| s.name.name == *stage_name)?;
+                Self::pipeline_stage_signal_type(st, &field.name)?
+            }
+            _ => return None,
+        };
+        let w = self.type_expr_width_const(&ty, params)?;
+        if c == 0 || w == 0 || w % c != 0 {
+            return None;
+        }
+        Some(Self::emit_reverse_chunks(emitted_base, w, c))
+    }
+
     fn emit_pipeline_inst(
         &mut self,
         inst: &InstDecl,
@@ -96,6 +197,11 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         self.indent += 1;
+
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations (arch#852) — a stage `seq`/`comb`/`let`
+        // may call one, and SV has no free functions.
+        self.emit_pending_functions();
 
         // Collect port names for name resolution
         let port_names: std::collections::HashSet<String> =
@@ -426,6 +532,10 @@ impl<'a> Codegen<'a> {
         let rst_cond = Self::rst_condition(&rst_name, is_low);
 
         // ── always_ff block ──────────────────────────────────────────────────
+        // arch#845/#846: slice-base hoist temps produced anywhere in this
+        // block are module items. Nothing to do here — the opener goes out
+        // through `line()`, so `HoistScope::Procedural` splices them to
+        // module scope, immediately above it.
         self.line("// ── Stage register updates ──");
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
@@ -585,13 +695,23 @@ impl<'a> Codegen<'a> {
                                     &stage_regs,
                                     &port_names,
                                 );
-                                let target =
-                                    self.emit_pipeline_lhs_str(&a.target, &prefix, &port_names);
+                                let target = if let ExprKind::Ident(name) = &a.target.kind {
+                                    if port_names.contains(name) {
+                                        name.clone()
+                                    } else {
+                                        format!("{}_{}", prefix, name)
+                                    }
+                                } else {
+                                    self.emit_expr_str(&a.target)
+                                };
                                 self.line(&format!("assign {} = {};", target, val));
                             }
                         }
                     } else {
                         // Use always_comb for blocks with if/else or match
+                        // (arch#845/#846: hoist temps produced in here are
+                        // spliced to module scope by `HoistScope::Procedural`,
+                        // same as the stage-update `always_ff` above).
                         self.line("always_comb begin");
                         self.indent += 1;
                         for stmt in &cb.stmts {
@@ -1010,30 +1130,7 @@ impl<'a> Codegen<'a> {
                     format!("{}_{}", current_prefix, name)
                 }
             }
-            ExprKind::Index(base, idx) => {
-                let b = self.emit_pipeline_lhs_str(base, current_prefix, port_names);
-                let i = self.emit_expr_str(idx);
-                format!("{b}[{i}]")
-            }
-            ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_lhs_str(base, current_prefix, port_names);
-                if let Some(width) = Self::try_indexed_part_select(hi, lo) {
-                    let l = self.emit_expr_str(lo);
-                    format!("{b}[{l} +: {width}]")
-                } else {
-                    let h = self.emit_expr_str(hi);
-                    let l = self.emit_expr_str(lo);
-                    format!("{b}[{h}:{l}]")
-                }
-            }
-            ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_lhs_str(base, current_prefix, port_names);
-                let s = self.emit_expr_str(start);
-                let w = self.emit_expr_str(width);
-                let op = if *up { "+:" } else { "-:" };
-                format!("{b}[{s} {op} {w}]")
-            }
-            _ => self.emit_lvalue_str(expr),
+            _ => self.emit_expr_str(expr),
         }
     }
 
@@ -1266,7 +1363,15 @@ impl<'a> Codegen<'a> {
                     stage_regs,
                     port_names,
                 );
-                let target = self.emit_pipeline_lhs_str(&a.target, current_prefix, port_names);
+                let target = if let ExprKind::Ident(name) = &a.target.kind {
+                    if port_names.contains(name) {
+                        name.clone()
+                    } else {
+                        format!("{}_{}", current_prefix, name)
+                    }
+                } else {
+                    self.emit_expr_str(&a.target)
+                };
                 self.line(&format!("{} = {};", target, val));
             }
             Stmt::IfElse(ie) => {
@@ -1486,71 +1591,65 @@ impl<'a> Codegen<'a> {
         self.line("end");
     }
 
-    fn emit_pipeline_stage_index_str(
+    /// arch#845: emit the *base* of a `BitSlice`/`PartSelect` inside a
+    /// pipeline stage, hoisting it to an `arch_idx_base_<n>` temp when the
+    /// base is one of the kinds no SV frontend accepts a select on
+    /// (`Concat`/`Repeat` — arch#807; `FunctionCall`/`MethodCall` —
+    /// arch#810). Before this, the pipeline emitters sliced the base bare,
+    /// so both of those fixes were inert inside a `pipeline` and
+    /// `arch build` emitted e.g. `s0_cap <= 8'(w)[5:2];`, which Verilator
+    /// *and* Icarus reject outright.
+    ///
+    /// The hoist itself is `hoist_slice_base_in` (mod.rs) — shared with the
+    /// module/fsm emitters, including the runtime-`for`-loop-variable bail
+    /// — parameterized here with this emitter's stage-prefix rewriting so
+    /// the temp's RHS and width name signals that exist in the emitted SV.
+    /// `None` (a directly selectable base, or the loop-var bail) falls back
+    /// to the prior bare emission.
+    ///
+    /// *Placement* of the temp needs nothing pipeline-specific: `line()`'s
+    /// `HoistScope` (arch#846) keys on the SV block being emitted, not on
+    /// which emitter queued the temp, so a temp queued from inside the
+    /// stage-update `always_ff` or a stage `comb`'s `always_comb` is
+    /// spliced out to module scope automatically.
+    fn emit_pipeline_slice_base_str(
         &self,
         base: &Expr,
-        idx: &Expr,
-        preserve_signed_element: bool,
         current_prefix: &str,
         current_stage_idx: usize,
         stage_names: &[&str],
         stage_regs: &[Vec<(String, String, String)>],
         port_names: &std::collections::HashSet<String>,
     ) -> String {
-        let b = self.emit_pipeline_stage_selection_base_str(
-            base,
-            current_prefix,
-            current_stage_idx,
-            stage_names,
-            stage_regs,
-            port_names,
-        );
-        let i = self.emit_pipeline_stage_expr_str(
-            idx,
-            current_prefix,
-            current_stage_idx,
-            stage_names,
-            stage_regs,
-            port_names,
-        );
-        let selected = format!("{b}[{i}]");
-        if preserve_signed_element && self.index_result_is_sint(base) {
-            format!("$signed({selected})")
-        } else {
-            selected
-        }
+        let emit = |e: &Expr| {
+            self.emit_pipeline_stage_expr_str(
+                e,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            )
+        };
+        let signal_width = |e: &Expr| self.pipeline_signal_width_str(e, Some(current_stage_idx));
+        self.hoist_slice_base_in(base, &emit, &signal_width)
+            .unwrap_or_else(|| emit(base))
     }
 
-    fn emit_pipeline_stage_selection_base_str(
+    /// arch#845: `emit_pipeline_slice_base_str` for the stage-agnostic
+    /// emitter — same hoist, no current-stage hint (ports and explicit
+    /// `Stage.field` reads only).
+    fn emit_pipeline_top_slice_base_str(
         &self,
-        expr: &Expr,
-        current_prefix: &str,
-        current_stage_idx: usize,
+        base: &Expr,
         stage_names: &[&str],
         stage_regs: &[Vec<(String, String, String)>],
         port_names: &std::collections::HashSet<String>,
     ) -> String {
-        if let ExprKind::Index(base, idx) = &expr.kind {
-            self.emit_pipeline_stage_index_str(
-                base,
-                idx,
-                false,
-                current_prefix,
-                current_stage_idx,
-                stage_names,
-                stage_regs,
-                port_names,
-            )
-        } else {
-            self.emit_pipeline_stage_expr_str(
-                expr,
-                current_prefix,
-                current_stage_idx,
-                stage_names,
-                stage_regs,
-                port_names,
-            )
-        }
+        let emit = |e: &Expr| self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names);
+        let signal_width = |e: &Expr| self.pipeline_signal_width_str(e, None);
+        self.hoist_slice_base_in(base, &emit, &signal_width)
+            .unwrap_or_else(|| emit(base))
     }
 
     /// Emit an expression within a specific stage context (knows which stage it's in,
@@ -1615,6 +1714,30 @@ impl<'a> Codegen<'a> {
                     stage_regs,
                     port_names,
                 );
+                // Float operands dispatch to the emitted helper functions
+                // (mirrors the main emitter's Binary arm; resolution walks
+                // pipeline ports / stage regs / cross-stage refs).
+                if let Some(fmt) = self
+                    .expr_float_fmt(lhs)
+                    .or_else(|| self.expr_float_fmt(rhs))
+                {
+                    let fop = match op {
+                        BinOp::Add => Some("add"),
+                        BinOp::Sub => Some("sub"),
+                        BinOp::Mul => Some("mul"),
+                        BinOp::Eq => Some("eq"),
+                        BinOp::Neq => Some("ne"),
+                        BinOp::Lt => Some("lt"),
+                        BinOp::Gt => Some("gt"),
+                        BinOp::Lte => Some("le"),
+                        BinOp::Gte => Some("ge"),
+                        _ => None,
+                    };
+                    if let Some(fop) = fop {
+                        self.fp_helpers_used.set(true);
+                        return format!("arch_{fmt}_{fop}({l}, {r})");
+                    }
+                }
                 if *op == BinOp::Implies {
                     return format!("({l} |-> {r})");
                 }
@@ -1639,7 +1762,6 @@ impl<'a> Codegen<'a> {
                     BinOp::BitOr => "|",
                     BinOp::BitXor => "^",
                     BinOp::Shl => "<<",
-                    BinOp::Shr if self.expr_is_signed(lhs) => ">>>",
                     BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
@@ -1675,71 +1797,84 @@ impl<'a> Codegen<'a> {
                     UnaryOp::RedXor => format!("(^{o})"),
                 }
             }
-            ExprKind::MethodCall(base, method, args) => {
+            ExprKind::MethodCall(base, method, args) => self.emit_method_call_str(
+                base,
+                method,
+                args,
+                MethodCallHost::Pipeline,
+                &|e: &Expr| {
+                    self.emit_pipeline_stage_expr_str(
+                        e,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                },
+                &|recv: &Expr, chunk: &Expr, emitted: &str| {
+                    self.try_emit_pipeline_reverse_chunked(
+                        recv,
+                        chunk,
+                        emitted,
+                        Some(current_stage_idx),
+                    )
+                },
+            ),
+            // arch#852: without this arm the call fell through to
+            // `emit_expr_str`, which does not know this emitter's stage
+            // prefixes — `Ident8(r)` came out referencing the bare source
+            // name instead of `<stage>_r`, i.e. a signal that does not
+            // exist in the emitted SV. Shows up only once the function
+            // itself is emitted; before that the SV failed on the missing
+            // declaration first. The other sub-expression-bearing kinds
+            // still reaching the `_ =>` fall-through below have the same
+            // bug — tracked by arch#854.
+            ExprKind::FunctionCall(name, args) => {
+                self.emit_function_call_str_in(expr, name, args, &|e: &Expr| {
+                    self.emit_pipeline_stage_expr_str(
+                        e,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                })
+            }
+            ExprKind::Index(base, idx) => {
+                // Icarus portability (arch#650): unwrap a redundant
+                // `signed(...)`/`unsigned(...)`/`as T` wrapper before
+                // indexing — same-width bit reinterpretation, so
+                // `unsigned(e)[i]` reads the identical bit as `e[i]`, and
+                // Icarus rejects the indexed-cast form even though Verilator
+                // accepts it. (The arithmetic-base case mod.rs's main
+                // `Index` emitter hoists to a named temp is left as prior
+                // bare-emission behavior here — a pipeline stage-forwarding
+                // expression's width can't be reliably resolved through this
+                // stage-substitution recursion the way `infer_sv_width_str`
+                // resolves it for ordinary module code.)
+                let unwrapped = Self::unwrap_reinterpret_cast(base);
                 let b = self.emit_pipeline_stage_expr_str(
-                    base,
+                    unwrapped,
                     current_prefix,
                     current_stage_idx,
                     stage_names,
                     stage_regs,
                     port_names,
                 );
-                match method.name.as_str() {
-                    "trunc" | "zext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            let wp = Self::paren_width(&w);
-                            format!("{wp}'({b})")
-                        } else {
-                            b
-                        }
-                    }
-                    "sext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
-                        } else {
-                            b
-                        }
-                    }
-                    "resize" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            let wp = Self::paren_width(&w);
-                            if self.expr_is_signed(base) {
-                                format!("{wp}'($signed({b}))")
-                            } else {
-                                format!("{wp}'($unsigned({b}))")
-                            }
-                        } else {
-                            b
-                        }
-                    }
-                    "reverse" => {
-                        if let Some(chunk) = args.first() {
-                            let c = self.emit_expr_str(chunk);
-                            format!("{{<<{c}{{{b}}}}}")
-                        } else {
-                            b
-                        }
-                    }
-                    "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and"
-                    | "reduce_xor" | "find_first" => self.emit_vec_method(&b, base, method, args),
-                    _ => format!("{b}.{}()", method.name),
-                }
+                let i = self.emit_pipeline_stage_expr_str(
+                    idx,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
+                format!("{b}[{i}]")
             }
-            ExprKind::Index(base, idx) => self.emit_pipeline_stage_index_str(
-                base,
-                idx,
-                true,
-                current_prefix,
-                current_stage_idx,
-                stage_names,
-                stage_regs,
-                port_names,
-            ),
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_stage_selection_base_str(
+                let b = self.emit_pipeline_slice_base_str(
                     base,
                     current_prefix,
                     current_stage_idx,
@@ -1757,7 +1892,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_stage_selection_base_str(
+                let b = self.emit_pipeline_slice_base_str(
                     base,
                     current_prefix,
                     current_stage_idx,
@@ -1882,39 +2017,6 @@ impl<'a> Codegen<'a> {
     /// - `Stage.signal` → `stage_signal`
     /// - Bare signal in stage context → preserved (caller handles prefix)
     /// - Port names → kept as-is
-    fn emit_pipeline_index_str(
-        &self,
-        base: &Expr,
-        idx: &Expr,
-        preserve_signed_element: bool,
-        stage_names: &[&str],
-        stage_regs: &[Vec<(String, String, String)>],
-        port_names: &std::collections::HashSet<String>,
-    ) -> String {
-        let b = self.emit_pipeline_selection_base_str(base, stage_names, stage_regs, port_names);
-        let i = self.emit_pipeline_expr_str(idx, stage_names, stage_regs, port_names);
-        let selected = format!("{b}[{i}]");
-        if preserve_signed_element && self.index_result_is_sint(base) {
-            format!("$signed({selected})")
-        } else {
-            selected
-        }
-    }
-
-    fn emit_pipeline_selection_base_str(
-        &self,
-        expr: &Expr,
-        stage_names: &[&str],
-        stage_regs: &[Vec<(String, String, String)>],
-        port_names: &std::collections::HashSet<String>,
-    ) -> String {
-        if let ExprKind::Index(base, idx) = &expr.kind {
-            self.emit_pipeline_index_str(base, idx, false, stage_names, stage_regs, port_names)
-        } else {
-            self.emit_pipeline_expr_str(expr, stage_names, stage_regs, port_names)
-        }
-    }
-
     fn emit_pipeline_expr_str(
         &self,
         expr: &Expr,
@@ -1947,6 +2049,32 @@ impl<'a> Codegen<'a> {
             ExprKind::Binary(op, lhs, rhs) => {
                 let l = self.emit_pipeline_expr_str(lhs, stage_names, stage_regs, port_names);
                 let r = self.emit_pipeline_expr_str(rhs, stage_names, stage_regs, port_names);
+                // Float operands dispatch to the emitted helper functions —
+                // mirrors the main emitter's Binary arm. Resolution covers
+                // pipeline ports, stage regs, and cross-stage `Stage.reg`
+                // reads (expr_float_fmt falls back to the pipeline AST walk
+                // since pipelines have no module_scopes entry).
+                if let Some(fmt) = self
+                    .expr_float_fmt(lhs)
+                    .or_else(|| self.expr_float_fmt(rhs))
+                {
+                    let fop = match op {
+                        BinOp::Add => Some("add"),
+                        BinOp::Sub => Some("sub"),
+                        BinOp::Mul => Some("mul"),
+                        BinOp::Eq => Some("eq"),
+                        BinOp::Neq => Some("ne"),
+                        BinOp::Lt => Some("lt"),
+                        BinOp::Gt => Some("gt"),
+                        BinOp::Lte => Some("le"),
+                        BinOp::Gte => Some("ge"),
+                        _ => None,
+                    };
+                    if let Some(fop) = fop {
+                        self.fp_helpers_used.set(true);
+                        return format!("arch_{fmt}_{fop}({l}, {r})");
+                    }
+                }
                 if *op == BinOp::Implies {
                     return format!("({l} |-> {r})");
                 }
@@ -1971,7 +2099,6 @@ impl<'a> Codegen<'a> {
                     BinOp::BitOr => "|",
                     BinOp::BitXor => "^",
                     BinOp::Shl => "<<",
-                    BinOp::Shr if self.expr_is_signed(lhs) => ">>>",
                     BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
@@ -2000,57 +2127,36 @@ impl<'a> Codegen<'a> {
                     UnaryOp::RedXor => format!("(^{o})"),
                 }
             }
-            ExprKind::MethodCall(base, method, args) => {
-                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
-                match method.name.as_str() {
-                    "trunc" | "zext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            let wp = Self::paren_width(&w);
-                            format!("{wp}'({b})")
-                        } else {
-                            b
-                        }
-                    }
-                    "sext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
-                        } else {
-                            b
-                        }
-                    }
-                    "resize" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            let wp = Self::paren_width(&w);
-                            if self.expr_is_signed(base) {
-                                format!("{wp}'($signed({b}))")
-                            } else {
-                                format!("{wp}'($unsigned({b}))")
-                            }
-                        } else {
-                            b
-                        }
-                    }
-                    "reverse" => {
-                        if let Some(chunk) = args.first() {
-                            let c = self.emit_expr_str(chunk);
-                            format!("{{<<{c}{{{b}}}}}")
-                        } else {
-                            b
-                        }
-                    }
-                    "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and"
-                    | "reduce_xor" | "find_first" => self.emit_vec_method(&b, base, method, args),
-                    _ => format!("{b}.{}()", method.name),
-                }
+            ExprKind::MethodCall(base, method, args) => self.emit_method_call_str(
+                base,
+                method,
+                args,
+                MethodCallHost::Pipeline,
+                &|e: &Expr| self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names),
+                // This emitter has no current stage — ports (and explicit
+                // `Stage.field` references) only.
+                &|recv: &Expr, chunk: &Expr, emitted: &str| {
+                    self.try_emit_pipeline_reverse_chunked(recv, chunk, emitted, None)
+                },
+            ),
+            // arch#852, stage-agnostic mirror: arguments here can be ports
+            // or explicit `Stage.field` reads, and the latter needs this
+            // emitter's `<stage>_<field>` rewrite.
+            ExprKind::FunctionCall(name, args) => {
+                self.emit_function_call_str_in(expr, name, args, &|e: &Expr| {
+                    self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names)
+                })
             }
             ExprKind::Index(base, idx) => {
-                self.emit_pipeline_index_str(base, idx, true, stage_names, stage_regs, port_names)
+                // Icarus portability (arch#650) — see the matching comment in
+                // `emit_pipeline_stage_expr_str`.
+                let unwrapped = Self::unwrap_reinterpret_cast(base);
+                let b = self.emit_pipeline_expr_str(unwrapped, stage_names, stage_regs, port_names);
+                let i = self.emit_pipeline_expr_str(idx, stage_names, stage_regs, port_names);
+                format!("{b}[{i}]")
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_selection_base_str(
+                let b = self.emit_pipeline_top_slice_base_str(
                     base,
                     stage_names,
                     stage_regs,
@@ -2066,7 +2172,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_selection_base_str(
+                let b = self.emit_pipeline_top_slice_base_str(
                     base,
                     stage_names,
                     stage_regs,

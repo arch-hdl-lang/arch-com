@@ -261,31 +261,31 @@ module e203_biu
 
   // ── Response from selected target ────────────────────────────────────
   let rsp_valid_from_target: Bool =
-      (sel_ppi_r   & ppi_icb_rsp_valid)   |
-      (sel_clint_r & clint_icb_rsp_valid) |
-      (sel_plic_r  & plic_icb_rsp_valid)  |
-      (sel_fio_r   & fio_icb_rsp_valid)   |
-      (sel_mem_r   & mem_icb_rsp_valid);
+      (tgt_ppi_r   & ppi_icb_rsp_valid)   |
+      (tgt_clint_r & clint_icb_rsp_valid) |
+      (tgt_plic_r  & plic_icb_rsp_valid)  |
+      (tgt_fio_r   & fio_icb_rsp_valid)   |
+      (tgt_mem_r   & mem_icb_rsp_valid);
 
   let rsp_err_from_target: Bool =
-      (sel_ppi_r   & ppi_icb_rsp_err)   |
-      (sel_clint_r & clint_icb_rsp_err) |
-      (sel_plic_r  & plic_icb_rsp_err)  |
-      (sel_fio_r   & fio_icb_rsp_err)   |
-      (sel_mem_r   & mem_icb_rsp_err);
+      (tgt_ppi_r   & ppi_icb_rsp_err)   |
+      (tgt_clint_r & clint_icb_rsp_err) |
+      (tgt_plic_r  & plic_icb_rsp_err)  |
+      (tgt_fio_r   & fio_icb_rsp_err)   |
+      (tgt_mem_r   & mem_icb_rsp_err);
 
   let rsp_excl_ok_from_target: Bool =
-      (sel_ppi_r   & ppi_icb_rsp_excl_ok)   |
-      (sel_clint_r & clint_icb_rsp_excl_ok) |
-      (sel_plic_r  & plic_icb_rsp_excl_ok)  |
-      (sel_fio_r   & fio_icb_rsp_excl_ok)   |
-      (sel_mem_r   & mem_icb_rsp_excl_ok);
+      (tgt_ppi_r   & ppi_icb_rsp_excl_ok)   |
+      (tgt_clint_r & clint_icb_rsp_excl_ok) |
+      (tgt_plic_r  & plic_icb_rsp_excl_ok)  |
+      (tgt_fio_r   & fio_icb_rsp_excl_ok)   |
+      (tgt_mem_r   & mem_icb_rsp_excl_ok);
 
   let rsp_rdata_from_target: UInt<32> =
-      sel_ppi_r   ? ppi_icb_rsp_rdata   :
-      sel_clint_r ? clint_icb_rsp_rdata :
-      sel_plic_r  ? plic_icb_rsp_rdata  :
-      sel_fio_r   ? fio_icb_rsp_rdata   :
+      tgt_ppi_r   ? ppi_icb_rsp_rdata   :
+      tgt_clint_r ? clint_icb_rsp_rdata :
+      tgt_plic_r  ? plic_icb_rsp_rdata  :
+      tgt_fio_r   ? fio_icb_rsp_rdata   :
                     mem_icb_rsp_rdata;
 
   // ── Response ready from selected initiator ──────────────────────────

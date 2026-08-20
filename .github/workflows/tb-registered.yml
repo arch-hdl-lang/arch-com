@@ -1,0 +1,36 @@
+name: tb-registered
+
+# Every arch-sim testbench under tests/ must be mapped to a unit in
+# tests/arch_sim_manifest.json. A `*_tb.cpp` the manifest doesn't list is
+# never executed by tools/run_arch_regression.py, so it rots invisibly — the
+# e203 corpus accumulated 45 such testbenches, several of which had not
+# compiled for months against fixtures that were rewired out from under them
+# (arch-hdl-lang/arch-com#799). Logic lives in
+# scripts/check_tb_registered.sh (locally runnable with no arguments); this
+# workflow just wires it up.
+#
+# NB: runs on EVERY PR to main, deliberately with no `paths:` filter, for the
+# same reason as doc-drift — this job is intended to become a REQUIRED status
+# check, and a required check that is path-filtered never reports on PRs that
+# don't touch those paths, leaving them stuck "Expected — waiting for status"
+# and unmergeable. The script is a directory scan plus one JSON parse, so
+# running it unconditionally costs a couple of seconds.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: tb-registered-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tb-registered:
+    name: tb registered
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check every testbench is in the sim manifest
+        run: scripts/check_tb_registered.sh
