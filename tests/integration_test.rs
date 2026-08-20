@@ -4115,6 +4115,75 @@ fn test_simple_pipeline() {
 }
 
 #[test]
+fn test_pipeline_preserves_per_register_init_and_reset_semantics() {
+    let source = include_str!("pipeline_init_reset.arch");
+
+    let sv = compile_to_sv(source);
+
+    // `init` alone controls declaration initialization. A reset value must
+    // never be repurposed as an FPGA power-up initializer.
+    assert!(sv.contains("logic [7:0] capture_reset_only;"));
+    assert!(sv.contains("logic [7:0] capture_no_reset;"));
+    assert!(sv.contains("logic [7:0] capture_init_only = 5;"));
+    assert!(sv.contains("logic [7:0] capture_init_and_reset = 7;"));
+    assert!(sv.contains("logic [7:0] capture_expr_init_and_reset = INIT_VALUE;"));
+    assert!(!sv.contains("capture_reset_only = 3;"));
+    assert!(!sv.contains("capture_no_reset = 0;"));
+    assert!(!sv.contains("capture_init_and_reset = 9;"));
+
+    // Each register keeps its own reset declaration. Reset-free data remains
+    // in the clock-only process, while active-low async reset gets its own
+    // sensitivity list and value.
+    assert!(sv.contains("always_ff @(posedge clk) begin"));
+    assert!(sv.contains("if (rst_sync) begin"));
+    assert!(sv.contains("capture_reset_only <= 3;"));
+    assert!(sv.contains("always_ff @(posedge clk or negedge rst_async_n) begin"));
+    assert!(sv.contains("if ((!rst_async_n)) begin"));
+    assert!(sv.contains("capture_init_and_reset <= 9;"));
+    assert!(sv.contains("capture_expr_init_and_reset <= INIT_VALUE + 1;"));
+    assert!(!sv.contains("capture_no_reset <= 0;"));
+    assert!(!sv.contains("capture_init_only <= 5;"));
+
+    // Native simulation mirrors the same declaration-init/reset split.
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("_capture_reset_only(0)"));
+    assert!(sim.contains("_capture_no_reset(0)"));
+    assert!(sim.contains("_capture_init_only(5)"));
+    assert!(sim.contains("_capture_init_and_reset(7)"));
+    assert!(sim.contains("_capture_expr_init_and_reset(INIT_VALUE)"));
+    assert!(sim.contains("if (rst_sync) { _capture_reset_only = 3; }"));
+    assert!(sim.contains("if ((!rst_async_n)) { _capture_init_and_reset = 9; }"));
+    assert!(sim.contains("if (rst_sync) { _capture_expr_init_and_reset = (INIT_VALUE + 1); }"));
+    assert!(!sim.contains("if (rst_sync) { _capture_no_reset ="));
+    assert!(!sim.contains("if (rst_sync) { _capture_init_only ="));
+}
+
+#[test]
+fn test_pipeline_init_reset_native_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg("tests/pipeline_init_reset.arch")
+        .arg("--tb")
+        .arg("tests/pipeline_init_reset_tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run pipeline init/reset behavior probe");
+    assert!(
+        out.status.success(),
+        "pipeline init/reset sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS pipeline init/reset behavior"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn test_pipeline_comb_only_stage_error() {
     let source = r#"
 domain SysDomain
@@ -36202,9 +36271,12 @@ fn test_pipeline_slice_bases_hoist() {
             let decl = sv
                 .find("] arch_idx_base_0;")
                 .unwrap_or_else(|| panic!("no `arch_idx_base_0` declaration, got:\n{sv}"));
-            let blk = sv
-                .find(block)
-                .unwrap_or_else(|| panic!("no `{block}` in emitted SV, got:\n{sv}"));
+            let use_pos = sv
+                .find(expected_use)
+                .expect("expected slice use was checked above");
+            let blk = sv[..use_pos]
+                .rfind(block)
+                .unwrap_or_else(|| panic!("no `{block}` before the slice use, got:\n{sv}"));
             assert!(
                 decl < blk,
                 "hoisted temp must be declared at module scope, before the \
