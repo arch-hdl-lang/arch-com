@@ -16719,6 +16719,221 @@ fn test_vec_of_const_param_emits_packed_and_indexes() {
 }
 
 #[test]
+fn test_vec_sint_index_reads_preserve_signedness() {
+    let source = r#"
+        bus SignedSamples
+          values: out Vec<SInt<8>, 4>;
+        end bus SignedSamples
+
+        module SignedVecOps
+          param coeffs: Vec<SInt<8>, 2> = {1, 2};
+          port values: in Vec<SInt<8>, 4>;
+          port nested: in Vec<Vec<SInt<8>, 2>, 2>;
+          port samples: target SignedSamples;
+          port idx: in UInt<2>;
+          port outer: in UInt<1>;
+          port inner: in UInt<1>;
+          port coeff: in SInt<8>;
+          port product: out SInt<16>;
+          port bus_product: out SInt<16>;
+          port less: out Bool;
+          port shifted: out SInt<8>;
+          port low_bit: out Bool;
+          port nested_value: out SInt<8>;
+          port param_value: out SInt<8>;
+          port copied: out Vec<SInt<8>, 4>;
+          port any_less: out Bool;
+
+          function pick(v: Vec<SInt<8>, 4>, i: UInt<2>) -> SInt<8>
+            return v[i];
+          end function pick
+
+          comb
+            product = values[idx] * coeff;
+            bus_product = samples.values[idx] * coeff;
+            less = values[idx] < coeff;
+            shifted = values[idx] >> 1;
+            low_bit = values[idx][0];
+            nested_value = nested[outer][inner];
+            param_value = coeffs[0];
+            any_less = values.any(item < coeff);
+            for i in 0..3
+              copied[i] = values[i];
+            end for
+          end comb
+        end module SignedVecOps
+    "#;
+    let sv = compile_to_sv(source);
+
+    assert!(sv.contains("$signed(values[idx]) * coeff"), "{sv}");
+    assert!(
+        sv.contains("$signed(samples_values[idx]) * coeff"),
+        "bus Vec fields must preserve signed element reads:\n{sv}"
+    );
+    assert!(sv.contains("$signed(values[idx]) < coeff"), "{sv}");
+    assert!(sv.contains("$signed(values[idx]) >>> 1"), "{sv}");
+    assert!(sv.contains("values[idx][0]"), "{sv}");
+    assert!(!sv.contains("$signed(values[idx])[0]"), "{sv}");
+    assert!(sv.contains("$signed(nested[outer][inner])"), "{sv}");
+    assert!(sv.contains("$signed(coeffs[(0) * (8) +: (8)])"), "{sv}");
+    assert!(
+        sv.contains("$signed(values[0]) < coeff") && sv.contains("$signed(values[3]) < coeff"),
+        "{sv}"
+    );
+    assert!(
+        sv.contains("function automatic logic signed [7:0] pick")
+            && sv.contains("return $signed(v[i]);"),
+        "{sv}"
+    );
+    assert!(sv.contains("copied[i] = $signed(values[i]);"), "{sv}");
+    assert!(!sv.contains("$signed(copied[i]) ="), "{sv}");
+}
+
+#[test]
+fn test_pipeline_vec_sint_index_reads_use_stage_local_type() {
+    let source = r#"
+        domain D
+          freq_mhz: 100
+        end domain D
+
+        pipeline SignedVecPipe
+          port clk: in Clock<D>;
+          port rst: in Reset<Sync>;
+          port signed_values: in Vec<SInt<8>, 4>;
+          port unsigned_values: in Vec<UInt<8>, 4>;
+          port idx: in UInt<2>;
+          port coeff: in SInt<8>;
+          port signed_product: out SInt<16>;
+          port unsigned_product: out UInt<16>;
+
+          stage Signed stall when signed_values[idx] < coeff
+            let samples: Vec<SInt<8>, 4> = signed_values;
+            reg result: SInt<16> reset rst => 0;
+            reg direct_result: SInt<16> reset rst => 0;
+            seq on clk rising
+              result <= samples[idx] * coeff;
+              direct_result <= signed_values[idx] * coeff;
+            end seq
+            comb
+              signed_product = result;
+            end comb
+          end stage Signed
+
+          stage Unsigned
+            let samples: Vec<UInt<8>, 4> = unsigned_values;
+            reg result: UInt<16> reset rst => 0;
+            seq on clk rising
+              result <= samples[idx] * unsigned_values[0];
+            end seq
+            comb
+              unsigned_product = result;
+            end comb
+          end stage Unsigned
+        end pipeline SignedVecPipe
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("$signed(signed_samples[idx]) * coeff"),
+        "the signed stage-local Vec must be cast despite a same-named unsigned local:\n{sv}"
+    );
+    assert!(sv.contains("$signed(signed_values[idx]) * coeff"), "{sv}");
+    assert!(sv.contains("$signed(signed_values[idx]) < coeff"), "{sv}");
+    assert!(
+        sv.contains("unsigned_samples[idx] * unsigned_values[0]"),
+        "the unsigned same-named stage local must remain unsigned:\n{sv}"
+    );
+    assert!(!sv.contains("$signed(unsigned_samples[idx])"), "{sv}");
+}
+
+#[test]
+fn test_vec_sint_index_verilator_behavior() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping signed Vec index regression: verilator not found");
+        return;
+    }
+
+    let source = r#"
+        module SignedVecRuntime
+          port values: in Vec<SInt<8>, 4>;
+          port idx: in UInt<2>;
+          port coeff: in SInt<8>;
+          port product: out SInt<16>;
+          port less: out Bool;
+          port shifted: out SInt<8>;
+          comb
+            product = values[idx] * coeff;
+            less = values[idx] < coeff;
+            shifted = values[idx] >> 1;
+          end comb
+        end module SignedVecRuntime
+    "#;
+    let generated = compile_to_sv(source);
+    let tb = r#"
+module tb;
+  logic signed [3:0][7:0] values;
+  logic [1:0] idx;
+  logic signed [7:0] coeff;
+  logic signed [15:0] product;
+  logic less;
+  logic signed [7:0] shifted;
+
+  SignedVecRuntime dut (.*);
+
+  initial begin
+    values = '0;
+    values[0] = -8'sd2;
+    idx = 0;
+    coeff = 8'sd3;
+    #1;
+    if (product !== -16'sd6) $fatal(1, "multiply was %0d", product);
+    if (less !== 1'b1) $fatal(1, "comparison treated -2 as unsigned");
+    if (shifted !== -8'sd1) $fatal(1, "shift was %0d", shifted);
+    $finish;
+  end
+endmodule
+"#;
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_path = td.path().join("signed_vec_runtime.sv");
+    let obj_dir = td.path().join("obj_dir");
+    std::fs::write(&sv_path, format!("{generated}\n{tb}"))
+        .expect("write signed Vec Verilator fixture");
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--binary")
+        .arg("--timing")
+        .arg("--top-module")
+        .arg("tb")
+        .arg("-Wno-fatal")
+        .arg("-Wno-DECLFILENAME")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_path)
+        .output()
+        .expect("build signed Vec Verilator fixture");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let run = std::process::Command::new(obj_dir.join("Vtb"))
+        .output()
+        .expect("run signed Vec Verilator fixture");
+    assert!(
+        run.status.success(),
+        "signed Vec Verilator behavior should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[test]
 fn test_uint_as_vec_cast_for_find_first() {
     // `as Vec<T, N>` is a typecheck-only view that lets Vec methods
     // (find_first, etc.) operate on a UInt directly without a manual
