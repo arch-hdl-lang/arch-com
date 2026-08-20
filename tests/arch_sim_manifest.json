@@ -56,6 +56,15 @@
       ]
     },
     {
+      "name": "pipeline_init_reset",
+      "arch_files": [
+        "tests/pipeline_init_reset.arch"
+      ],
+      "tb_files": [
+        "tests/pipeline_init_reset_tb.cpp"
+      ]
+    },
+    {
       "name": "pipeline_wait_stage",
       "arch_files": [
         "tests/pipeline_wait_stage.arch"
