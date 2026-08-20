@@ -403,6 +403,10 @@ pub struct InstanceInfo {
 pub struct SymbolTable {
     pub globals: HashMap<String, (Symbol, Span)>,
     pub module_scopes: HashMap<String, HashMap<String, (Symbol, Span)>>,
+    /// Bare global name -> packages that publish it. Package members remain
+    /// in `globals` for the existing downstream lookup paths, while the type
+    /// checker uses this ownership map to enforce file-scoped `use` visibility.
+    pub package_members: HashMap<String, std::collections::HashSet<String>>,
 }
 
 impl SymbolTable {
@@ -410,6 +414,7 @@ impl SymbolTable {
         Self {
             globals: HashMap::new(),
             module_scopes: HashMap::new(),
+            package_members: HashMap::new(),
         }
     }
 }
@@ -417,6 +422,46 @@ impl SymbolTable {
 pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError>> {
     let mut table = SymbolTable::new();
     let mut errors = Vec::new();
+
+    // Record package ownership independently of registration below. ARCH
+    // packages publish bare names, but those names are visible only in source
+    // files that declare `use PackageName;`. Keeping the ownership metadata
+    // beside the existing flat table lets type checking enforce that boundary
+    // without changing codegen and simulation's resolved-symbol representation.
+    for item in &source_file.items {
+        match item {
+            Item::Package(pkg) => {
+                let package_name = &pkg.name.name;
+                for name in pkg
+                    .domains
+                    .iter()
+                    .map(|x| &x.name.name)
+                    .chain(pkg.enums.iter().map(|x| &x.name.name))
+                    .chain(pkg.structs.iter().map(|x| &x.name.name))
+                    .chain(pkg.buses.iter().map(|x| &x.name.name))
+                    .chain(pkg.functions.iter().map(|x| &x.name.name))
+                    .chain(pkg.params.iter().map(|x| &x.name.name))
+                    .chain(pkg.aliases.iter().map(|x| &x.name.name))
+                {
+                    table
+                        .package_members
+                        .entry(name.clone())
+                        .or_default()
+                        .insert(package_name.clone());
+                }
+            }
+            Item::ExternPackage(pkg) => {
+                for ty in &pkg.types {
+                    table
+                        .package_members
+                        .entry(ty.name.clone())
+                        .or_default()
+                        .insert(pkg.name.name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
 
     // Built-in domain: SysDomain is always available (can be overridden by user)
     table.globals.insert(

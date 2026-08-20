@@ -4053,8 +4053,14 @@ fn run_check_multi_opts_with_thread_map_and_params(
     // Resolve module-scope `type Name = ...;` aliases by inlining them at
     // every use site. Runs before elaboration so downstream passes see
     // aliases as if hand-inlined.
-    let parsed_ast = arch::type_alias::resolve_type_aliases(parsed_ast)
-        .map_err(|errs| ms.report_errors(errs))?;
+    let source_file_scopes: Vec<std::ops::Range<usize>> = ms
+        .segments
+        .iter()
+        .map(|(start, end, _, _)| *start..*end)
+        .collect();
+    let parsed_ast =
+        arch::type_alias::resolve_type_aliases_with_file_scopes(parsed_ast, &source_file_scopes)
+            .map_err(|errs| ms.report_errors(errs))?;
 
     // Elaborate (expand generate blocks)
     let ast = elaborate::elaborate(parsed_ast).map_err(|errs| ms.report_errors(errs))?;
@@ -4154,7 +4160,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
     let symbols = resolve::resolve(&ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Type check
-    let checker = TypeChecker::new(&symbols, &ast);
+    let checker = TypeChecker::new(&symbols, &ast).with_file_scopes(source_file_scopes);
     let (mut warnings, overload_map) = checker.check().map_err(|errs| ms.report_errors(errs))?;
     warnings.extend(pipe_reg_warnings);
     warnings.extend(naming_warnings);

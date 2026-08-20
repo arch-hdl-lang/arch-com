@@ -7340,6 +7340,152 @@ fn test_duplicate_use_emits_one_package_import_per_module() {
 }
 
 #[test]
+fn test_multifile_package_member_requires_use_in_own_file() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let pkg = td.path().join("Pkg.arch");
+    let consumer = td.path().join("Consumer.arch");
+    let missing_use = td.path().join("MissingUse.arch");
+    let missing_function_use = td.path().join("MissingFunctionUse.arch");
+    let missing_param_use = td.path().join("MissingParamUse.arch");
+    let missing_alias_use = td.path().join("MissingAliasUse.arch");
+    let missing_domain_use = td.path().join("MissingDomainUse.arch");
+    std::fs::write(
+        &pkg,
+        r#"package Pkg
+  param WIDTH: const = 8;
+  type Word = UInt<WIDTH>;
+
+  domain PkgDomain
+    freq_mhz: 100
+  end domain PkgDomain
+
+  struct Payload
+    data: UInt<8>;
+  end struct Payload
+
+  function pass(value: UInt<8>) -> UInt<8>
+    return value;
+  end function pass
+end package Pkg
+
+module SameFileMissingUse
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module SameFileMissingUse
+"#,
+    )
+    .expect("write Pkg.arch");
+    std::fs::write(
+        &consumer,
+        r#"use Pkg;
+
+module Consumer
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module Consumer
+"#,
+    )
+    .expect("write Consumer.arch");
+    std::fs::write(
+        &missing_use,
+        r#"module MissingUse
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module MissingUse
+"#,
+    )
+    .expect("write MissingUse.arch");
+    std::fs::write(
+        &missing_function_use,
+        r#"module MissingFunctionUse
+  port input_data: in UInt<8>;
+  port output_data: out UInt<8>;
+  let output_data = pass(input_data);
+end module MissingFunctionUse
+"#,
+    )
+    .expect("write MissingFunctionUse.arch");
+    std::fs::write(
+        &missing_param_use,
+        r#"module MissingParamUse
+  port input_data: in UInt<WIDTH>;
+  port output_data: out UInt<WIDTH>;
+  let output_data = input_data;
+end module MissingParamUse
+"#,
+    )
+    .expect("write MissingParamUse.arch");
+    std::fs::write(
+        &missing_alias_use,
+        r#"module MissingAliasUse
+  port input_data: in Word;
+  port output_data: out Word;
+  let output_data = input_data;
+end module MissingAliasUse
+"#,
+    )
+    .expect("write MissingAliasUse.arch");
+    std::fs::write(
+        &missing_domain_use,
+        r#"module MissingDomainUse
+  port clk: in Clock<PkgDomain>;
+  port output_data: out UInt<8>;
+  let output_data = 0;
+end module MissingDomainUse
+"#,
+    )
+    .expect("write MissingDomainUse.arch");
+
+    let check = std::process::Command::new(arch_bin)
+        .arg("check")
+        .args([
+            &pkg,
+            &consumer,
+            &missing_use,
+            &missing_function_use,
+            &missing_param_use,
+            &missing_alias_use,
+            &missing_domain_use,
+        ])
+        .current_dir(td.path())
+        .output()
+        .expect("run multi-file check");
+    assert!(
+        !check.status.success(),
+        "a package member must not be visible through another file's `use`"
+    );
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        stderr.contains("undefined") && stderr.contains("Payload"),
+        "expected missing package import to reject `Payload`:\n{stderr}"
+    );
+    assert!(
+        stderr.matches("Payload").count() >= 2,
+        "expected both same-file and cross-file consumers without `use` to reject `Payload`:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("unknown function `pass`"),
+        "expected missing package import to reject `pass`:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("undefined") && stderr.contains("WIDTH"),
+        "expected missing package import to reject `WIDTH`:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("undefined") && stderr.contains("Word"),
+        "expected missing package import to reject `Word`:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("undefined") && stderr.contains("PkgDomain"),
+        "expected missing package import to reject `PkgDomain`:\n{stderr}"
+    );
+}
+
+#[test]
 fn test_multifile_package_imports_stay_with_owning_source_file() {
     let arch_bin = env!("CARGO_BIN_EXE_arch");
     let td = tempfile::tempdir().expect("tempdir");
