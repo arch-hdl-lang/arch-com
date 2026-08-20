@@ -1,0 +1,25 @@
+// Regression fixture: slicing into the WIDENED high bits of an arithmetic
+// base. The ARCH type system widens `a + b` to `UInt<9>` and `a * b` to
+// `UInt<16>` (typecheck.rs `binop_result_ty`), so `(a + b)[8]` and
+// `(a * b)[15:8]` are legal — `arch check` and `arch sim` both compute them
+// correctly. Codegen hoists the arithmetic base to a temp (#813 P1/#875);
+// before the width fix the temp was sized with `$bits(a + b)`, i.e. SV's
+// self-determined width (8 bits, no carry), so the carry/product-high bits
+// were silently dropped: iverilog read X, Verilator flagged an out-of-range
+// select. This fixture drives a slice/index that actually reaches those
+// bits; the existing arch#650 IdxArithHoist fixture never does.
+// See tests/integration_test.rs
+// `test_widening_arith_slice_hoist_behavioral_equivalence_verilator_and_iverilog`.
+module WidenArithSliceHoist
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port add_carry: out Bool;      // bit 8 of (a + b) — the carry
+  port add_ps:    out UInt<4>;   // (a + b)[5 +: 4], reaches bit 8
+  port mul_hi:    out UInt<8>;   // (a * b)[15:8] — the product high byte
+  port mul_top:   out Bool;      // bit 15 of (a * b)
+
+  let add_carry = (a + b)[8];
+  let add_ps    = (a + b)[5 +: 4];
+  let mul_hi    = (a * b)[15:8];
+  let mul_top   = (a * b)[15];
+end module WidenArithSliceHoist

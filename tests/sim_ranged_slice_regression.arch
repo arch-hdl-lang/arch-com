@@ -1,0 +1,53 @@
+// Regression test for arch#847: seq assignment to a ranged part-select
+// with runtime (loop-variable) slice bounds.
+//
+// Pre-fix: the sim C++ emitter const-folded slice bounds through
+// `eval_width_in`, whose 32-default turned every runtime bound into a
+// literal 32. Three symptoms on `mem[addr][(i*8+7):(i*8)] <= din[...]`
+// inside `for i in 0..3` with `if wem[i:i]`:
+//   1. the LHS was emitted as a shift-and-mask READ expression (an
+//      rvalue — "expression is not assignable" from gcc/clang),
+//   2. the lane mask was 1 bit instead of the 8-bit slice width,
+//   3. the `wem[i:i]` condition shifted by 32 instead of `i`.
+// Distilled from tests/e203/e203_itcm_ram.arch (found during PR #843's
+// long verify).
+//
+// Post-fix: the LHS lowers to read-modify-write on the next-cycle
+// shadow with a structural 8-bit mask and a symbolic `i*8` shift; the
+// RHS/condition slices shift by their runtime bound.
+
+module sim_ranged_slice_regression
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  port cs:   in Bool;
+  port we:   in Bool;
+  port addr: in UInt<3>;
+  port wem:  in UInt<4>;
+  port din:  in UInt<32>;
+  port dout: out UInt<32>;
+
+  reg mem: Vec<UInt<32>, 8> reset none;
+  reg addr_r: UInt<3> reset none;
+
+  default seq on clk rising;
+
+  seq
+    // Read: latch address when cs=1 and we=0
+    if cs & (~we)
+      addr_r <= addr;
+    end if
+
+    // Write: byte-masked when cs=1 and we=1
+    if cs & we
+      for i in 0..3
+        if wem[i:i]
+          mem[addr][(i * 8 + 7):(i * 8)] <= din[(i * 8 + 7):(i * 8)];
+        end if
+      end for
+    end if
+  end seq
+
+  // Output is combinational from registered address
+  let dout = mem[addr_r];
+end module sim_ranged_slice_regression

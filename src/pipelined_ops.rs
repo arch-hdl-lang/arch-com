@@ -492,6 +492,7 @@ fn scan_stmts(stmts: &[crate::ast::Stmt], out: &mut Vec<FoundPipelinedCall>) {
 fn scan_expr(expr: &crate::ast::Expr, out: &mut Vec<FoundPipelinedCall>) {
     use crate::ast::ExprKind::*;
     match &expr.kind {
+        ScaledQuantize(v, _, _, _) => scan_expr(v, out),
         PipelinedCall(name, args, stages) => {
             out.push(FoundPipelinedCall {
                 operator: name.clone(),
@@ -1048,6 +1049,7 @@ fn lower_expr(expr: &mut crate::ast::Expr) -> Result<(), FoundPipelinedCall> {
     // larger expression (not just the direct RHS of a cascade stage) is
     // also lowered — matches `scan_expr`'s traversal shape.
     match &mut expr.kind {
+        ScaledQuantize(v, _, _, _) => lower_expr(v)?,
         Binary(_, a, b) => {
             lower_expr(a)?;
             lower_expr(b)?;

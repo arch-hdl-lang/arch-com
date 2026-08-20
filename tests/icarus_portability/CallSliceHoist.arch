@@ -1,0 +1,33 @@
+// arch#810 regression fixture: `FunctionCall`/`MethodCall` bases for both
+// BitSlice (`[hi:lo]`) and PartSelect (`[start +: w]`) forms, all hoisted
+// to named module-scope temps. `.reverse<1>()` is included because PR
+// #834 lowers it to an ordinary chunked concatenation, so its result used
+// as a slice base reintroduced the bare `{...}[hi:lo]` shape arch#807
+// fixed. See tests/integration_test.rs's
+// `test_call_slice_hoist_behavioral_equivalence_verilator_and_iverilog`.
+function Ident8(v: UInt<8>) -> UInt<8>
+  return v;
+end function Ident8
+
+module CallSliceHoist
+  port a: in UInt<8>;
+  port b: in UInt<4>;
+  port w: in UInt<16>;
+  port y_func_bitslice: out UInt<4>;
+  port y_func_partselect: out UInt<4>;
+  port y_trunc_bitslice: out UInt<4>;
+  port y_trunc_partselect: out UInt<4>;
+  port y_zext_bitslice: out UInt<4>;
+  port y_zext_partselect: out UInt<4>;
+  port y_reverse_bitslice: out UInt<4>;
+  port y_reverse_partselect: out UInt<4>;
+
+  let y_func_bitslice = Ident8(a)[5:2];
+  let y_func_partselect = Ident8(a)[2 +: 4];
+  let y_trunc_bitslice = w.trunc<8>()[5:2];
+  let y_trunc_partselect = w.trunc<8>()[2 +: 4];
+  let y_zext_bitslice = b.zext<8>()[5:2];
+  let y_zext_partselect = b.zext<8>()[2 +: 4];
+  let y_reverse_bitslice = a.reverse<1>()[5:2];
+  let y_reverse_partselect = a.reverse<1>()[2 +: 4];
+end module CallSliceHoist

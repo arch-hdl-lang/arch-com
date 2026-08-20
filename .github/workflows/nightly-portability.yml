@@ -1,0 +1,171 @@
+name: nightly-portability
+
+# Multi-frontend SV portability sweep (arch#827 P3).
+#
+# ARCH's claim to emit portable SystemVerilog was asserted, never measured:
+# the only SV frontend any CI job ran was Verilator, and no CI job ran even
+# that on `arch build` output. This job measures it: `scripts/sv_portability_
+# sweep.sh` (arch#827 P1) builds every `.arch` fixture under tests/+examples/
+# with `arch build --no-auto-asserts`, parse/elaborate-checks the emitted SV
+# with Icarus Verilog and Verilator, and diffs the result against the
+# checked-in tests/portability_baseline.tsv (arch#827 P2). A design flipping
+# OK -> FAIL is a portability regression; FAIL -> OK needs a human to review
+# and re-bless the baseline (see the script's --bless docs in its header) so
+# a fix can't silently rot back into an unrecorded pass.
+#
+# Runtime note (arch#813 P3): the sweep now runs a deterministic `.archi`
+# prepass before measuring, which roughly 5x's it — the corpus previously
+# scored differently at `-j 8` and `-j 4` because `arch build` resolves a
+# dependency from a sibling `.archi` an earlier build emitted, so verdicts
+# depended on scheduling. The timeout is 60 min to absorb that; a PR-gate
+# variant was built and measured at ~10-15 min on a shared runner, and
+# deliberately not adopted — see arch#813 — so this nightly tier remains
+# the only place the portability claim is measured.
+#
+# `test.yml` (the PR-gate) deliberately installs no external SV frontends —
+# that keeps the required check fast and free of tool-version drift, and
+# that policy is sound. This nightly tier is the place that measures the
+# portability claim instead, next to `nightly-equivalence.yml`, which
+# already pins/builds the same Verilator toolchain this job reuses.
+
+on:
+  schedule:
+    # 09:30 UTC nightly — 30 min after nightly-equivalence's 09:00, to avoid
+    # both heavy sweeps queuing for the same shared-runner pool at once.
+    - cron: '30 9 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly-portability-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portability-sweep:
+    name: multi-frontend SV portability sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: nightly-portability-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            nightly-portability-cargo-${{ runner.os }}-
+
+      - name: Install Icarus Verilog (apt)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iverilog
+          iverilog -V | head -2
+
+      - name: Install Verilator (apt)
+        id: apt_verilator
+        run: |
+          sudo apt-get install -y -qq verilator
+          echo "version=$(verilator --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Check Verilator version
+        id: verilator_check
+        run: |
+          # Same 5.034 floor as nightly-equivalence.yml, for the same reason:
+          # ARCH's generated reset loops use non-blocking assignment to
+          # arrays inside for-loops, which older 5.x builds reject
+          # (%Error-BLKLOOPINIT). ubuntu-latest apt has shipped below that
+          # floor before; fall back to a source build when it does.
+          ver="${{ steps.apt_verilator.outputs.version }}"
+          major="${ver%%.*}"
+          minor="${ver#*.}"; minor="${minor%%[^0-9]*}"
+          major=$((10#${major:-0})); minor=$((10#${minor:-0}))
+          echo "apt-provided Verilator: $ver"
+          if [ "$major" -gt 5 ] || { [ "$major" -eq 5 ] && [ "$minor" -ge 34 ]; }; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache built Verilator (fallback)
+        if: steps.verilator_check.outputs.ok != 'true'
+        id: cache_verilator_build
+        uses: actions/cache@v4
+        with:
+          path: /opt/verilator-built
+          key: verilator-build-v5.034-${{ runner.os }}
+
+      - name: Build Verilator from source (fallback)
+        if: steps.verilator_check.outputs.ok != 'true' && steps.cache_verilator_build.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y -qq git make autoconf g++ flex bison ccache \
+            help2man libgoogle-perftools-dev numactl perl-doc libfl2 libfl-dev \
+            zlib1g zlib1g-dev
+          git clone --depth 1 --branch v5.034 https://github.com/verilator/verilator /tmp/verilator-src
+          cd /tmp/verilator-src
+          autoconf
+          ./configure --prefix=/opt/verilator-built
+          make -j"$(nproc)"
+          sudo make install PREFIX=/opt/verilator-built
+
+      - name: Use fallback Verilator on PATH (fallback)
+        if: steps.verilator_check.outputs.ok != 'true'
+        run: echo "/opt/verilator-built/bin" >> "$GITHUB_PATH"
+
+      - name: Tool versions (final)
+        run: |
+          iverilog -V | head -2
+          verilator --version
+
+      - name: Build arch (release)
+        run: cargo build --release
+
+      - name: Run multi-frontend portability sweep
+        id: sweep
+        run: |
+          mkdir -p /tmp/arch-portability-sweep
+          if scripts/sv_portability_sweep.sh -j 4 \
+               --out-dir /tmp/arch-portability-sweep \
+               target/release/arch tests examples; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=drift" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "# SV portability sweep (arch#827)"
+            echo ""
+            if [ "${{ steps.sweep.outputs.status }}" = "clean" ]; then
+              echo "No drift vs \`tests/portability_baseline.tsv\`."
+            else
+              echo "**Drift detected** vs \`tests/portability_baseline.tsv\`."
+              echo "See the \"Run multi-frontend portability sweep\" step log above for"
+              echo "the REGRESSION / IMPROVEMENT / CHANGED / SUMMARY lines."
+              echo ""
+              echo "- REGRESSION or CHANGED rows must be fixed on the branch that"
+              echo "  introduced them."
+              echo "- IMPROVEMENT rows (a fix landed and a design is now portable) need a"
+              echo "  human to review the diff, then re-bless locally:"
+              echo "  \`scripts/sv_portability_sweep.sh --bless target/release/arch tests examples\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload scratch logs on failure
+        if: failure() || steps.sweep.outputs.status != 'clean'
+        uses: actions/upload-artifact@v4
+        with:
+          name: portability-sweep-logs
+          path: /tmp/arch-portability-sweep/
+          retention-days: 7
+
+      - name: Fail if drift detected
+        if: steps.sweep.outputs.status != 'clean'
+        run: exit 1

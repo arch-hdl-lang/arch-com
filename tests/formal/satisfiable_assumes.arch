@@ -1,0 +1,11 @@
+// Companion: a SATISFIABLE assume must not false-trigger the vacuity
+// guard — the property proves normally (a <= 100 given a <= 50).
+module SatisfiableAssumes
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out Bool;
+  comb o = a <= 100; end comb
+  assume lo: a <= 50;
+  assert bounded: a <= 100;
+end module SatisfiableAssumes

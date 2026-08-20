@@ -1,0 +1,36 @@
+// Context-typed FP8 literal coverage (mirrors Bf16LitCtx): a bare float
+// literal in a known-FP8 slot — reg `init`, reg `reset`, typed `let`, and a
+// comparison against an FP8 signal — is rounded to the fp8 format directly
+// at compile time (single RNE step), no `.to_fp8e4m3()` cast needed.
+// A literal that overflows the format (e.g. 500.0 in E4M3) is a compile
+// error, tested separately in fp_test.rs.
+module Fp8LitCtx
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port a: in FP8E4M3;
+  port o_init: out FP8E4M3;
+  port o_rst: out FP8E5M2;
+  port o_let: out FP8E4M3;
+  port o_let5: out FP8E5M2;
+  port o_cmp: out Bool;
+  // `init` slot: rounds to 0x3C (E4M3 of 1.5) at compile time.
+  reg r: FP8E4M3 init 1.5;
+  // `reset` slot: E5M2 of 0.75 = 0x3A.
+  reg rw: FP8E5M2 reset rst => 0.75;
+  seq on clk rising
+    r <= r;
+    rw <= rw;
+  end seq
+  // typed `let` slot: 3.375 is an RNE tie between 3.25 and 3.5 in E4M3 ->
+  // even mantissa wins -> 3.5 = 0x46.
+  let k: FP8E4M3 = 3.375;
+  // E5M2: 0.1 rounds to the nearest representable 0.09375 = 0x2E.
+  let k5: FP8E5M2 = 0.1;
+  // Comparison against a known-FP8 operand: `0.5` becomes E4M3 0x30, so
+  // the compare dispatches to arch_e4m3_gt.
+  comb o_cmp = a > 0.5; end comb
+  comb o_init = r; end comb
+  comb o_rst = rw; end comb
+  comb o_let = k; end comb
+  comb o_let5 = k5; end comb
+end module Fp8LitCtx

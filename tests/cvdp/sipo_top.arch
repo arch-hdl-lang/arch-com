@@ -1,3 +1,14 @@
+// This directory contains two different modules named
+// `serial_in_parallel_out_8bit`: the standalone CVDP problem in
+// serial_in_parallel_out_8bit.arch (ports clock/serial_in/parallel_out) and
+// the parameterized variant this top instantiates, in
+// sipo_top_sipo_sub.arch. Both names are load-bearing for the CVDP harness,
+// which maps problems by SV TOPLEVEL, so neither can be renamed.
+//
+// Name-based `inst` discovery would resolve to the same-named file; the
+// explicit `use` below names the right one and suppresses that lookup.
+use sipo_top_sipo_sub;
+
 module sipo_top
   param DATA_WIDTH: const = 16;
   param SHIFT_DIRECTION: const = 1;
@@ -26,7 +37,7 @@ module sipo_top
     param SHIFT_DIRECTION = SHIFT_DIRECTION;
     clk          <- clk;
     rst          <- reset_n;
-    serial_in    <- serial_in;
+    sin          <- serial_in;
     shift_en     <- shift_en;
     done         -> sipo_done;
     parallel_out -> sipo_pout;

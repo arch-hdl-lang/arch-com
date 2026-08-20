@@ -1,0 +1,117 @@
+// arch#852 regression fixture: a top-level `function` called from inside a
+// `pipeline`.
+//
+// SystemVerilog has no free functions, so `arch build` copies every
+// top-level / `package` function into each emitted module as a local
+// `function automatic`. Only `emit_module` did that, so a `pipeline` (and
+// `fsm`, `fifo`, …) that called one emitted SV referencing a function that
+// was nowhere declared: `arch check` and `arch build` both passed and both
+// frontends then rejected the output ("Can't find definition of
+// task/function"). Combined with arch#845's slice-base hoist, the
+// undeclared function also reached `logic [$bits(Ident8(a))-1:0]`, which
+// segfaults Icarus 12.0 instead of diagnosing.
+//
+// Covers all three positions a pipeline emits an expression into, each with
+// a direct call and with the call as a `BitSlice` base (the hoisted-temp
+// path — the FunctionCall base kind that PipeSliceHoist.arch could not
+// reach for exactly this reason):
+//   - stage `seq` block      -> the stage-update `always_ff`   (Capture)
+//   - stage `let` binding    -> a module-scope `assign`        (Fold)
+//   - branching stage `comb` -> an `always_comb`               (Mux)
+//
+// `Unused16` is never called: the fix emits the whole function set into
+// every construct (matching `emit_module`), so both frontends must also
+// accept a dead `function automatic`.
+//
+// Every output is driven from a stage register (a `pipeline` output may not
+// be a combinational path from an input), so all outputs share a 1-cycle
+// latency. See tests/integration_test.rs's
+// `test_pipe_fn_call_behavioral_equivalence_verilator_and_iverilog`.
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+function Ident8(v: UInt<8>) -> UInt<8>
+  return v;
+end function Ident8
+
+function Add3(v: UInt<8>) -> UInt<8>
+  return v +% 8'd3;
+end function Add3
+
+function Unused16(v: UInt<16>) -> UInt<16>
+  return v;
+end function Unused16
+
+pipeline PipeFnCall
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port sel: in Bool;
+
+  // Called inside the stage-update `always_ff`.
+  port y_ident_seq: out UInt<8>;
+  port y_add_seq: out UInt<8>;
+  port y_slice_seq: out UInt<4>;
+
+  // Called in a module-scope `assign` (stage `let`).
+  port y_add_let: out UInt<8>;
+  port y_slice_let: out UInt<4>;
+
+  // Called inside an `always_comb` (branching stage `comb`).
+  port y_mux_comb: out UInt<4>;
+
+  stage Capture
+    reg c_ident: UInt<8> reset rst => 0;
+    reg c_add: UInt<8> reset rst => 0;
+    reg c_slice: UInt<4> reset rst => 0;
+
+    seq on clk rising
+      c_ident <= Ident8(a);
+      c_add <= Add3(a);
+      c_slice <= Ident8(a)[5:2];
+    end seq
+
+    comb
+      y_ident_seq = c_ident;
+      y_add_seq = c_add;
+      y_slice_seq = c_slice;
+    end comb
+  end stage Capture
+
+  stage Fold
+    let f_add: UInt<8> = Add3(a);
+    let f_slice: UInt<4> = Ident8(a)[6:3];
+
+    reg fold_add: UInt<8> reset rst => 0;
+    reg fold_slice: UInt<4> reset rst => 0;
+
+    seq on clk rising
+      fold_add <= f_add;
+      fold_slice <= f_slice;
+    end seq
+
+    comb
+      y_add_let = fold_add;
+      y_slice_let = fold_slice;
+    end comb
+  end stage Fold
+
+  stage Mux
+    reg sel_r: Bool reset rst => false;
+    reg m_a: UInt<8> reset rst => 0;
+
+    seq on clk rising
+      sel_r <= sel;
+      m_a <= a;
+    end seq
+
+    comb
+      if sel_r
+        y_mux_comb = Ident8(m_a)[7:4];
+      else
+        y_mux_comb = Add3(m_a)[3:0];
+      end if
+    end comb
+  end stage Mux
+end pipeline PipeFnCall

@@ -79,10 +79,35 @@ class SimManifestEntry:
     arch_files: tuple[Path, ...]
     tb_files: tuple[Path, ...]
     args: tuple[str, ...] = ()
+    # Extra environment for this entry's `arch sim` step only, merged over the
+    # runner's own environment. Used to hold back the C++ optimizer on very
+    # large hierarchies: `arch sim` defaults to ARCH_OPT="-O2 -flto", and on a
+    # design the size of e203_soc_top (35 generated modules) link-time
+    # optimization costs ~5 minutes of compile for a functional testbench that
+    # runs in milliseconds. Setting ARCH_OPT=-O0 there takes the step from
+    # ~314s to ~6s.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _as_text(data: "str | bytes | None") -> str:
+    """Normalize captured output to str.
+
+    subprocess.TimeoutExpired carries the partial output as *bytes* even when
+    the call was made with text=True (CPython does not decode it on the timeout
+    path), so the timeout branch below must not assume str. Passing bytes to
+    Path.write_text raises TypeError, which the per-unit guard in main() then
+    reports as an opaque "error at runner" with no indication that the step
+    actually timed out.
+    """
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data
 
 
 def run_cmd(
@@ -91,8 +116,13 @@ def run_cmd(
     timeout: float | None,
     log_dir: Path,
     step_name: str,
+    env: dict[str, str] | None = None,
 ) -> StepResult:
     start = time.monotonic()
+    run_env = None
+    if env:
+        run_env = dict(os.environ)
+        run_env.update(env)
     try:
         proc = subprocess.run(
             command,
@@ -101,14 +131,15 @@ def run_cmd(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
+            env=run_env,
         )
         status = "pass" if proc.returncode == 0 else "fail"
-        stdout = proc.stdout
-        stderr = proc.stderr
+        stdout = _as_text(proc.stdout)
+        stderr = _as_text(proc.stderr)
     except subprocess.TimeoutExpired as exc:
         status = "timeout"
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
+        stdout = _as_text(exc.stdout)
+        stderr = _as_text(exc.stderr)
     seconds = time.monotonic() - start
 
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -216,10 +247,54 @@ def discover_units(
     return units, skipped
 
 
+def manifest_units(
+    sim_manifest: dict[str, "SimManifestEntry"],
+    discovered: list[Unit],
+    copied_tests: Path,
+    original_tests: Path,
+    patterns: list[str],
+) -> list[Unit]:
+    """Manifest entries whose name matches no discovered unit become their own
+    units. Discovery names depend on directory grouping (a grouped directory is
+    one unit named after the directory; per-file fallback names units after each
+    file), so a registered TB must not silently stop running when a directory's
+    group check starts or stops passing."""
+    existing = {unit.name for unit in discovered}
+    extra: list[Unit] = []
+    for name, entry in sorted(sim_manifest.items()):
+        if name in existing or not entry.arch_files:
+            continue
+        rels = []
+        for path in entry.arch_files:
+            try:
+                rels.append(path.relative_to(copied_tests))
+            except ValueError:
+                rels = []
+                break
+        if not rels:
+            continue  # entry points outside the scanned tests tree
+        if patterns and not any(matches_any(rel, patterns) for rel in rels):
+            continue
+        files = tuple(sorted(entry.arch_files))
+        orig = tuple(original_tests / rel for rel in sorted(rels))
+        extra.append(Unit(name, files, orig))
+    return extra
+
+
 def write_sim_smoke_tb(sim_dir: Path) -> Path | None:
+    # VStructs.h (struct/enum typedefs) and VFunctions.h (free `inline`
+    # functions hoisted out of `function` items) are header-only — neither
+    # declares a class, so instantiating `VStructs`/`VFunctions` below is a
+    # C++ compile error. VFunctions.h was missing from this set, so every
+    # unit whose design declares a top-level/package/module-internal
+    # `function` failed `sim_compile` with `unknown type name 'VFunctions'`
+    # regardless of whether its sim model was any good — 7 units in the
+    # tests/ tree, none of them in the enforced baseline, so the noise was
+    # invisible. Found while adding tests/arbiter_custom_policy/.
     headers = sorted(
         p for p in sim_dir.glob("V*.h")
-        if p.name not in {"VStructs.h"} and not p.name.startswith("verilated")
+        if p.name not in {"VStructs.h", "VFunctions.h"}
+        and not p.name.startswith("verilated")
     )
     if not headers:
         return None
@@ -282,24 +357,101 @@ def compile_sim_smoke(sim_dir: Path, log_dir: Path, timeout: float | None) -> St
     return run_cmd(cmd, sim_dir, timeout, log_dir, "sim_compile")
 
 
+MODULE_DECL_RE = re.compile(r"(?m)^\s*module\s+(\w+)")
+
+# A SystemVerilog instantiation: `Type [#(...)] inst_name [[range]] (`. The
+# type and instance name may sit on separate lines, so only the type is
+# anchored to a line start.
+INSTANTIATION_RE = re.compile(
+    r"(?m)^[ \t]*([A-Za-z_]\w*)[ \t]*"
+    r"(?:#[ \t\r\n]*\((?:[^()]|\([^()]*\))*\)[ \t\r\n]*)?"
+    r"[ \t\r\n]+[A-Za-z_]\w*[ \t\r\n]*"
+    r"(?:\[[^\]]*\][ \t\r\n]*)?"
+    r"\("
+)
+
+# Declaration/statement heads that `INSTANTIATION_RE` can otherwise mistake for
+# a module type. Over-matching only costs a phantom entry in the "needed" set
+# (no sibling declares it, so nothing is pulled in), but keeping the set clean
+# makes the resolved dependency list easier to read in logs.
+SV_NON_MODULE_HEADS = frozenset(
+    """
+    module macromodule primitive interface program package class function task
+    always always_ff always_comb always_latch initial final assign alias
+    generate endgenerate begin end case casex casez endcase if else for while
+    do foreach repeat forever return break continue disable wait fork join
+    input output inout ref const var static automatic localparam parameter
+    typedef struct union enum logic bit reg wire integer int shortint longint
+    byte real shortreal time realtime string chandle event genvar signed
+    unsigned import export extern virtual pure local protected default
+    property sequence assert assume cover expect restrict bind
+    """.split()
+)
+
+
 def sv_has_module(path: Path) -> bool:
     text = path.read_text(errors="ignore")
-    return re.search(r"(?m)^\s*module\s+\w+", text) is not None
+    return MODULE_DECL_RE.search(text) is not None
 
 
-def sibling_sv_deps(unit: Unit) -> list[Path]:
-    """Existing same-directory SV files needed to lint standalone ARCH tops.
+@functools.lru_cache(maxsize=None)
+def sv_module_facts(path: Path) -> tuple[frozenset[str], frozenset[str]]:
+    """(modules declared, module types instantiated) for one SV file."""
+    text = path.read_text(errors="ignore")
+    declared = frozenset(MODULE_DECL_RE.findall(text))
+    instantiated = frozenset(
+        name
+        for name in INSTANTIATION_RE.findall(text)
+        if name not in SV_NON_MODULE_HEADS and name not in declared
+    )
+    return declared, instantiated
+
+
+def sibling_sv_deps(unit: Unit, sv_out: Path) -> list[Path]:
+    """Same-directory SV files this unit's generated SV actually depends on.
 
     Some legacy tests keep submodules as checked-in `.sv` while only the top is
-    represented as `.arch`. Exclude stems generated by this unit to avoid module
-    redefinition when the unit itself contains the matching ARCH source.
+    represented as `.arch`, so linting the generated SV needs those siblings on
+    the command line.
+
+    Only genuine dependencies are pulled in: starting from the module types the
+    generated SV instantiates but does not declare, siblings are added until the
+    reference closure is satisfied. Globbing the whole directory instead is
+    wrong wherever a test tree also checks in the *generated* `.sv` next to each
+    `.arch` — `arch build` inlines transitive submodules, so those siblings
+    redeclare each other's modules and Verilator fails the lint with MODDUP
+    before it ever looks at the unit under test. A sibling that would redeclare
+    an already-defined module is skipped for the same reason.
     """
+    defined, needed = sv_module_facts(sv_out)
+    defined = set(defined)
+    needed = set(needed)
+
     generated_stems = {path.stem for path in unit.files}
-    deps: set[Path] = set()
-    for arch_file in unit.files:
-        for sv in arch_file.parent.glob("*.sv"):
-            if sv.stem not in generated_stems:
-                deps.add(sv)
+    candidates = sorted(
+        {
+            sv
+            for arch_file in unit.files
+            for sv in arch_file.parent.glob("*.sv")
+            if sv.stem not in generated_stems
+        }
+    )
+
+    deps: list[Path] = []
+    progressed = True
+    while needed and progressed:
+        progressed = False
+        for sv in candidates:
+            if sv in deps:
+                continue
+            declared, instantiated = sv_module_facts(sv)
+            if not declared & needed or declared & defined:
+                continue
+            deps.append(sv)
+            defined |= declared
+            needed = (needed | set(instantiated)) - defined
+            progressed = True
+
     return sorted(deps)
 
 
@@ -339,7 +491,8 @@ def load_sim_manifest(path: Path | None, root: Path, scratch_root: Path) -> dict
         arch_files = tuple(resolve_scratch_path(root, scratch_root, str(p)) for p in item.get("arch_files", []))
         tb_files = tuple(resolve_scratch_path(root, scratch_root, str(p)) for p in item.get("tb_files", []))
         args = tuple(str(arg) for arg in item.get("args", []))
-        manifest[name] = SimManifestEntry(name, arch_files, tb_files, args)
+        env = tuple((str(k), str(v)) for k, v in sorted(item.get("env", {}).items()))
+        manifest[name] = SimManifestEntry(name, arch_files, tb_files, args, env)
     return manifest
 
 
@@ -407,7 +560,7 @@ def run_unit(
     if not skip_verilator:
         if has_module:
             vl = run_cmd(
-                ["verilator", *verilator_flags, str(sv_out), *[str(p) for p in sibling_sv_deps(unit)]],
+                ["verilator", *verilator_flags, str(sv_out), *[str(p) for p in sibling_sv_deps(unit, sv_out)]],
                 root,
                 timeout,
                 log_dir,
@@ -436,7 +589,8 @@ def run_unit(
                 ]
             else:
                 sim_cmd = [str(arch_bin), "sim", *files, "--outdir", str(sim_dir)]
-            sim = run_cmd(sim_cmd, root, timeout, log_dir, "arch_sim")
+            sim_env = dict(manifest_entry.env) if manifest_entry is not None else None
+            sim = run_cmd(sim_cmd, root, timeout, log_dir, "arch_sim", sim_env)
             steps.append(sim)
             if sim.status != "pass":
                 return UnitResult(unit.name, [str(p) for p in unit.original_files], "fail", time.monotonic() - start, steps)
@@ -520,6 +674,7 @@ def main() -> int:
         logs_root,
         args.no_group_dirs,
     )
+    units.extend(manifest_units(sim_manifest, units, copied_tests, original_tests, args.pattern))
     if args.limit is not None:
         units = units[: args.limit]
     if args.baseline:

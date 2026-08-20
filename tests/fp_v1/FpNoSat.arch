@@ -1,0 +1,26 @@
+// Certified absence of narrowing overflow: under the riscv profile E4M3
+// overflow -> NaN 0x7F, so `!is_nan` == "the narrow never saturates".
+// With the range assumes the property PROVES (|sum| <= 256 < 480);
+// without them it REFUTES with a genuine counterexample (NaN input or an
+// overflowing pair). Also the regression fixture for the failing-cycle
+// fix: pre-fix, float asserts always blamed cycle 0 and rendered that
+// cycle's arbitrary model values as the counterexample.
+module FpNoSat
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port qa: in FP8E4M3;
+  port qb: in FP8E4M3;
+  port y: out FP8E4M3;
+  wire acc: FP32;
+  wire y_w: FP8E4M3;
+  comb acc = qa.to_fp32() + qb.to_fp32(); end comb
+  comb y_w = acc.to_fp8e4m3(); end comb
+  comb y = y_w; end comb
+
+  assume qa_rng: (qa >= -128.0) and (qa <= 128.0);
+  assume qb_rng: (qb >= -128.0) and (qb <= 128.0);
+
+  // riscv profile: E4M3 narrowing overflow produces NaN 0x7F, so
+  // "never NaN" == "the narrow never saturates" — certified.
+  assert no_sat: !is_nan(y_w);
+end module FpNoSat

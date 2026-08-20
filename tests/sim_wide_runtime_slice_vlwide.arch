@@ -1,0 +1,10 @@
+// arch#868 regression: same as the u128 case but for a >128-bit
+// (VlWide) base. Pre-fix the sim emitter routed this through
+// `_arch_vw_bits`, which caps its width at 64 and returns `uint64_t`,
+// truncating a width-80 slice. Post-fix it uses `_arch_vw_bits128`.
+module WideVlRuntimeSlice
+  port v: in UInt<160>;
+  port i: in UInt<8>;
+  port o: out UInt<80>;
+  comb o = v[(i + 79) : i]; end comb
+end module WideVlRuntimeSlice

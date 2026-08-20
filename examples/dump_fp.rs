@@ -5,9 +5,15 @@
 //   dump_fp smt        -> SMT-LIB2 define-funs
 //   dump_fp lean       -> Lean 4 BitVec defs (model for the structured-proof backend)
 //   dump_fp proof OP   -> full proof (define-funs + miter) for OP; z3 -> unsat
+//
+// A trailing `cuda` argument switches the profile (default riscv).
 
 fn main() {
-    let p = arch::FpCompat::Riscv;
+    let p = if std::env::args().last().as_deref() == Some("cuda") {
+        arch::FpCompat::Cuda
+    } else {
+        arch::FpCompat::Riscv
+    };
     let mode = std::env::args().nth(1).unwrap_or_default();
     match mode.as_str() {
         "smt" => print!(

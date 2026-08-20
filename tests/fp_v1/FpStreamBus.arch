@@ -1,0 +1,5 @@
+// Bus with an FP32 signal.
+bus FpStreamBus
+  valid: out Bool;
+  data: out FP32;
+end bus FpStreamBus

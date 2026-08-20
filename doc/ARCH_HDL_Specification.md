@@ -129,6 +129,10 @@ For genuinely library-style reuse that doesn't fit a built-in pattern — custom
   **Reset ports**                           typed Reset\<Sync\|Async, High\|Low\>   rst: in Reset\<Sync\> (polarity defaults High; e.g. Reset\<Sync, Low\> for active-low)
   -------------------------------------------------------------------------------------------------------
 
+The casing conventions above are recommended, not compiler-enforced — but one naming rule *is* a hard compile error, not a style suggestion: **an ARCH identifier must not collide with an IEEE 1800-2017 SystemVerilog reserved word** (`always`, `case`, `class`, `logic`, `priority`, `table`, `wire`, and the rest of LRM Annex B's ~240-word keyword list). Arch performs no identifier renaming pass — a declared name (module, port, `reg`/`wire`/`let`, `param`, instance, struct/enum, function, `arbiter`/`regfile`/`ram` port-group array signal, ...) is emitted verbatim as the SV identifier of the same spelling — so a name that collides is not a style nit, it is SV that no frontend (Verilator, Icarus, or otherwise) can parse. `arch check` rejects the collision at the same declaration site and severity as ARCH's own reserved-keyword check (e.g. `'handshake' is a reserved ARCH keyword and cannot be used as an identifier`): `reg table: Vec<UInt<8>, 4> reset none;` fails with `'table' is a reserved SystemVerilog keyword (IEEE 1800-2017) and cannot be used as an identifier here`, since `table`/`endtable` are the SV user-defined-primitive keywords. Rename the identifier (a trailing underscore, an `s_`/`my_` prefix, or a more descriptive name all work).
+
+Verified against Verilator 5.048 and Icarus Verilog 12.0 (parse/elaborate-only): both reject an SV-keyword-named identifier unconditionally, so this rule needs no per-tool carve-out (arch#827 P4.2).
+
 **2.2 Literals**
 
 +-----------------------------------------------------------------------------------+
@@ -309,6 +313,22 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **BF16**             16 bits              bfloat16 (8-bit exponent, 7-bit mantissa). Same op surface as FP32. See §3.8.
 
+  **FP8E4M3**          8 bits               OCP OFP8 E4M3 (4-bit exponent, 3-bit mantissa; no infinities, sole NaN `0x7F`, max finite 448). Same op surface as FP32. See §3.8.
+
+  **FP8E5M2**          8 bits               OCP OFP8 E5M2 (5-bit exponent, 2-bit mantissa; IEEE-style ±inf and NaN class, max finite 57344). Same op surface as FP32. See §3.8.
+
+  **FP4E2M1**          4 bits               OCP MX FP4 E2M1 (2-bit exponent, 1-bit mantissa; **no inf, no NaN**, max finite 6.0). **Storage-only**: conversions and literals only — no arithmetic, compares or `is_nan`. See §3.9.
+
+  **FP6E2M3**          6 bits               OCP MX FP6 E2M3 (2-bit exponent, 3-bit mantissa; **no inf, no NaN**, max finite 7.5). **Storage-only**. See §3.9.
+
+  **FP6E3M2**          6 bits               OCP MX FP6 E3M2 (3-bit exponent, 2-bit mantissa; **no inf, no NaN**, max finite 28.0). **Storage-only**. See §3.9.
+
+  **E8M0**             8 bits               OCP MX block **scale** type — an unsigned biased exponent (bias 127) denoting 2^(e-127). **Not a float**: no sign, no mantissa, no infinity, and **no zero** (`0x00` is the minimum scale 2^-127). `0xFF` is NaN. See §3.10.
+
+  **ScaledVec\<E,N,S\>**  \|S\| + N × \|E\|    Block-scaled vector — N narrow elements sharing one scale, packed as `{scale, P[N-1..0]}` (MXFP4 = 136 bits). **No arithmetic, no ordered compares, no indexing** — OCP MX defines only the block dot product; `==`/`!=` are an *encoding* compare. Convert with `scaled_quantize<Fmt>` / `scaled_dequantize`; `scaled_dot(a,b)` is the block dot product. See §3.11.
+
+  **UE4M3**            8 bits               NVFP4 block **scale** type — 7-bit unsigned float, MSB padded zero, sole NaN `0x7F`. **Not a float**, and **not `FP8E4M3`** (that one is signed with a sign-agnostic NaN). Unlike `E8M0` it HAS a zero and is NOT a power of two. See §3.10a.
+
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
   **Reset\<Sync, High\|Low\>**    1 bit                Synchronous reset --- deasserted on the clock edge. Polarity defaults High.
@@ -319,9 +339,9 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **Tristate\<T\>**    \|T\| bits            Bidirectional pad type. Decomposes to \_out, \_oe, \_in internally. See §5.5.
 
-  **Vec\<T,N\>**       N × \|T\|            Fixed-size array of any hardware type T. SV emission is **packed** multi-dim by default (`logic [N-1:0][W-1:0] x`); a port can opt into SV **unpacked** array shape with the `unpacked` modifier — see §3.6 below.
+  **Vec\<T,N\>**       N × \|T\|            Fixed-size array of any hardware type T. SV emission is **packed** multi-dim by default (`logic [N-1:0][W-1:0] x`); a port can opt into SV **unpacked** array shape with the `unpacked` modifier — see §3.6 below. **Element bit layout: within the field's own `[N-1:0]` range, element `N-1` occupies the local MSB and element `0` occupies the local LSB** — standard SV packed-array semantics (IEEE 1800), not custom bit math.
 
-  **struct S**         Σ fields             Named aggregate. Width = sum of field widths (packed). **Bit layout: declaration-first = MSB, last-declared = LSB — matching SV `struct packed` convention.** A testbench that reads a struct-typed signal as an integer finds the first-declared field in the top bits. The C++ simulation model lays out fields in declaration order in memory (natural C++); per-field access through pybind is by name, so the memory layout is not observable to testbenches.
+  **struct S**         Σ fields             Named aggregate. Width = sum of field widths (packed). **Bit layout: declaration-first = MSB, last-declared = LSB — matching SV `struct packed` convention.** A testbench that reads a struct-typed signal as an integer finds the first-declared field in the top bits. For a `Vec<T,N>` field, the two rules compose recursively rather than conflicting: the struct rule orders *fields* (first-declared field's whole bit range sits at the top), and the Vec rule (above) orders *elements within that one field's own sub-range* — so for `struct S { data: Vec<UInt<32>,4>; len: UInt<3>; }`, `data` occupies the top bits as a block, and inside that block `data[3]` is at the block's own MSB down to `data[0]` at its own LSB. Verified bit-exact against two independent SV toolchains (iverilog, Verilator) — see `doc/proposal_vec_payload_interop.md` §2.1 for the worked example this is drawn from, and `tests/integration_test.rs::test_struct_vec_field_sv_bit_layout_plain_and_tlm_pin` for the regression test that pins the exact bit ranges on ARCH's actual emitted SV. **This is also the HARC/ARCH interop ABI**: harc-com `spec.md`'s "HARC/ARCH Interop ABI" subsection (inside "## 2. Relationship to ARCH" — there is no numbered §1.2 in that document; see `doc/proposal_vec_payload_interop.md` §1.1) states this identical convention and derives it explicitly from ARCH's SV emission, so no cross-repo translation step is needed at a Vec-field struct TLM boundary. The C++ simulation model lays out fields in declaration order in memory (natural C++, not bit-packed — the C++ layout and the SV bit layout are two independent representations of the same logical value and do not need to agree structurally); per-field access through pybind is by name — each field is bound individually, and a `Vec<T,N>` field binds as a fixed-size `std::array<T,N>` (exposed to Python as a list via pybind11's `<pybind11/stl.h>` support) rather than a raw C array — so the memory layout is not observable to testbenches.
 
   **enum E**           ⌈log₂n⌉ bits         Discriminated union. Compiler picks minimum encoding width.
 
@@ -442,39 +462,46 @@ let rd: UInt<5> = instr[11:7];        // bit-slice, constant range
 let field: UInt<8> = data[idx +: 8];  // variable part-select, runtime start
 ```
 
-**Both forms require a portable base expression.** Not every Arch expression can legally be the target of `[hi:lo]` or `[start +: w]`/`[start -: w]` — SystemVerilog's bit-select/part-select grammar does not compose with arbitrary parenthesized expressions, and this holds for Verilator, Icarus (iverilog), and Yosys alike. A base is portable when it is one of:
+**Any expression may be the base.** `arch check` places no restriction on what a `[hi:lo]` bit-slice or `[start +: w]`/`[start -: w]` part-select applies to. SystemVerilog itself is far more restrictive — its select grammar composes only with an identifier, an indexed access, or a field access, and not with a parenthesized expression of any kind — so the compiler closes that gap in the backend rather than pushing it onto you:
 
-- an identifier (`a`, a signal or port name)
-- an integer literal
-- an indexed access (`v[i]`, e.g. a `Vec` element)
-- a field access (`s.field`)
-- a concatenation (`{a, b}`)
-- a replication (`{N{a}}`)
-- a function-call or method-call result (`f(x)`, `x.method()`)
+- a base SV can select from directly (`a`, `v[i]`, `s.field`) is emitted as-is;
+- **any other base is bound to a compiler-generated named temporary**, and the slice applies to that temporary.
 
-Anything else — an arithmetic or logical expression (`a + b`), a shift (`a >> 1`), a ternary, **or a bit-slice/part-select result itself** (chained slicing, e.g. `a[7:4][1:0]`) — is **rejected at `arch check`**:
+You do not need to work around this by hand. All of the following compile:
 
 ```
 port a: in UInt<8>;
 port b: in UInt<8>;
 port s: in UInt<3>;
+port c: in Bool;
 
-let y = (a + b)[s +: 4];   // ✗ COMPILE ERROR: cannot part-select this
-                            //   expression directly
-let z = a[7:4][1:0];       // ✗ COMPILE ERROR: cannot bit-slice this
-                            //   expression directly (chained slice)
+let w = (a + b)[s +: 4];    // ✓ arithmetic base
+let x = a[7:4][1:0];        // ✓ chained slice
+let y = (a >> 1)[3:0];      // ✓ shift base
+let z = (c ? a : b)[3:0];   // ✓ ternary base
 ```
 
-The parenthesized form is not a workaround — `(a + b)[s +: 4]` and `(a[7:4])[1:0]` are themselves illegal SystemVerilog (Verilator and iverilog both reject bit-select/part-select applied to a parenthesized non-selectable expression), so silently emitting parens would just move the syntax error from `arch check` to `arch build`'s output. The compiler instead rejects the construct up front and points at the fix: bind the expression to a named `let`/wire first, then slice or part-select the named value.
+`(a + b)[s +: 4]` emits as:
 
+```systemverilog
+logic [($bits(a + b))-1:0] arch_idx_base_0;
+assign arch_idx_base_0 = a + b;
+assign w = arch_idx_base_0[s +: 4];
 ```
-let sum: UInt<9> = a + b;
-let y = sum[s +: 4];        // ✓ portable base — sum is an identifier
-```
 
-For same-width modular arithmetic specifically, prefer the wrapping operators (`+%`, `-%`, `*%`) over a slice of an arithmetic result — `a +% b` already produces a same-width value with no truncation boilerplate needed.
+This is the same automatic hoist the single-bit `Index` form (`expr[i]`) has always used, now applied uniformly to `[hi:lo]` and `[start +: w]`/`[start -: w]`.
 
-> *⚑ The portable-base set applies uniformly to both `[hi:lo]` bit-slice and `[start +: w]`/`[start -: w]` variable part-select — they share the same `is_portable_bit_slice_base` check in the type checker. A replication base (`{N{a}}[hi:lo]`) is portable and emitted bare (no enclosing parens); Verilator/iverilog accept `{N{a}}[hi:lo]` but reject the parenthesized `({N{a}})[hi:lo]`, so codegen never wraps a `Repeat` base.*
+For same-width modular arithmetic specifically, prefer the wrapping operators (`+%`, `-%`, `*%`) over a slice of an arithmetic result — `a +% b` already produces a same-width value with no truncation boilerplate and no temporary.
+
+> *⚑ **Changed in arch#813 P1 — this replaces a normative restriction.** Earlier releases enforced a "portable base" allowlist in the type checker (`is_portable_bit_slice_base`): bases outside it were a compile error telling you to bind the expression to a `let` first. That rule was retired, and the change is monotone — every program that was valid before is still valid, and some previously-rejected ones now compile.*
+>
+> *The allowlist was wrong in both directions, which is why it went. **Too permissive**: `Concat`/`Repeat` (arch#807), `FunctionCall`/`MethodCall` (arch#810) and integer literals (`8'hff[s +: 2]`) were all classified portable and emitted bare, yet Icarus 12.0 rejects every one of them, and Verilator rejects the method-call size-cast and literal forms too. **Too restrictive**: arch#653 removed `BitSlice`/`PartSelect`/`Bool`/`EnumVariant` from it, converting a codegen limitation into a permanent user-visible language restriction — the compiler refused `a[7:4][1:0]` while cheerfully auto-hoisting the identical base for `a[7:4][1]`. Stating the rule the other way round (what SV can select from directly; hoist everything else) makes a newly added expression kind safe by default instead of silently non-portable until someone runs the right simulator.*
+>
+> *A base that reads a runtime `for`-loop iterator is hoisted too, with the temporary declared at the top of the loop body rather than at module scope, where the iterator would not be in scope (arch#861). The hoist applies uniformly to every construct, including inside a `pipeline` stage's `seq`, `let`, and `comb` bodies (arch#845), inside `always_*` blocks and `function` bodies (arch#846), and to `function` calls in any construct (arch#852).*
+>
+> *Verified dual-simulator — Verilator 5.048 and Icarus Verilog 12.0 (`iverilog -g2012` + `vvp`) both compile and agree on simulated values for arithmetic, chained-slice, shift, ternary, literal, concat, replication, function-call, size-cast and `.reverse()` bases, in both the `[hi:lo]` and `[start +: w]` forms.*
+
+**Single-bit index (`expr[i]`, no colon) is a separate form** — it also serves plain `Vec` element access (`v[i]`), and like the slice forms it places no base restriction on `arch check`. `unsigned(x)[i]`, `signed(x)[i]`, `(x as T)[i]`, and `(a - b)[i]` all type-check. The compiler still guarantees portable *emission* for this form, but does so in the SystemVerilog backend rather than by rejecting anything at `arch check`: a `signed`/`unsigned`/`as T` wrapper around the indexed value is a same-width bit reinterpretation, so it is dropped rather than indexed (`unsigned(x)[i]` emits as `x[i]`); any other non-atomic base (arithmetic, logical, ...) is bound to a compiler-generated named temporary and the index applies to that temporary instead — the same "bind to a named `let`" strategy documented above for `BitSlice`/`PartSelect`, applied automatically. You do not need to work around this by hand.
 
 **3.3 Struct and Enum Types**
 
@@ -736,7 +763,95 @@ let gt: Bool = a > b;         // ordered compare → Bool
 let nan: Bool = is_nan(a);
 ```
 
-**No implicit conversion.** Mixing `FP32` and `BF16`, or float and integer, in an operator is a compile error; convert explicitly:
+**3.9 FP4E2M1 / FP6E2M3 / FP6E3M2 --- storage-only block-element formats**
+
+ARCH provides the three sub-8-bit OCP Microscaling (MX) element types. All share one contract, described here in terms of `FP4E2M1`; `FP6E2M3` and `FP6E3M2` differ only in their field split and bounds.
+
+| Type | S/E/M | Bias | Max finite | Min subnormal | SV |
+|---|---|---|---|---|---|
+| `FP4E2M1` | 1/2/1 | 1 | 6.0 | 0.5 | `logic[3:0]` |
+| `FP6E2M3` | 1/2/3 | 1 | 7.5 | 0.125 | `logic[5:0]` |
+| `FP6E3M2` | 1/3/2 | 3 | 28.0 | 0.0625 | `logic[5:0]` |
+
+`FP4E2M1` is the OCP MX FP4 element type: 1 sign + 2 exponent (bias 1) + 1 mantissa bit, emitted as `logic[3:0]`. It has **no infinity and no NaN encoding** — every one of its 16 codes is a finite value, and the complete value set is ±{0, 0.5, 1, 1.5, 2, 3, 4, 6}, with one subnormal (0.5) and max finite 6.0.
+
+Unlike every other float type in ARCH, `FP4E2M1` is **storage-only**: it carries values and converts, but has *no operator surface at all*. `a + b`, ordered compares and `is_nan(a)` are compile errors.
+
+That is not a v1 shortcut — it reflects the format. No shipping GPU or accelerator ISA exposes scalar E2M1 arithmetic: NVIDIA PTX states that `e2m1` values *"must be used in a packed format"* and that alternate data formats *"cannot be used as fundamental types"*, and across the whole ISA `e2m1` appears only as a `cvt` source/destination and as a block-scaled matrix operand. AMD's path has the same shape. E2M1 is a **block element**, not a scalar arithmetic type, and it becomes useful when paired with a shared scale (see the block-format proposal, `doc/proposal_mx_block_formats.md`).
+
+`is_nan` is refused rather than answered `false`, because the format cannot represent the concept — a constant answer would imply the question was meaningful.
+
+The idiom is widen → compute → narrow once:
+
+```arch
+let av: FP32 = a.to_fp32();          // exact: a 2-bit significand always fits
+comb y = (av * s).to_fp4e2m1(); end comb   // or .to_fp6e2m3() / .to_fp6e3m2()
+```
+
+**3.10 E8M0 --- the MX block scale type**
+
+`E8M0` is the shared-scale type of the OCP MX block formats: 8 bits of unsigned biased exponent (bias 127) denoting the value 2^(e-127), emitted as `logic[7:0]`.
+
+It is deliberately **not a float**, and the differences are not cosmetic:
+
+- **No sign and no mantissa** --- it is an exponent, not a significand.
+- **No infinity.**
+- **No zero.** This is the easiest thing to get wrong: `0x00` is **not** zero, it is the *minimum scale* 2^-127. A block of all-zero values is expressed by its elements, not by its scale.
+- **`0xFF` is NaN**, and at block level a NaN scale marks the entire block NaN regardless of the element encodings.
+
+Consequently `E8M0` supports **no arithmetic at all** --- `a + b` on two scales would add exponent *codes*, which denotes nothing. Convert to `FP32` to compute:
+
+```arch
+let scale: FP32 = s.to_fp32();     // the VALUE 2^(e-127), exact for every code
+comb y = scale * x; end comb
+```
+
+**Conversions.** `.to_fp32()` yields the scale value; it is exact for all 255 finite codes (E8M0 and FP32 share the bias, so codes 1..254 map straight onto the FP32 exponent field, and `0x00` = 2^-127 lands on an FP32 subnormal). `.to_e8m0()` extracts a float's binary exponent, **flooring to a power of two** as a scale must, with the MX-reference clamping: underflow (zero or subnormal) to the minimum scale `0x00`, and non-finite input to NaN `0xFF`.
+
+**`is_nan`** *is* available on `E8M0` --- unlike the sub-8-bit element formats, it genuinely has a NaN encoding, and testing for it is how a consumer detects a NaN block.
+
+**3.10a UE4M3 --- the NVFP4 block scale type**
+
+`UE4M3` is the shared-scale type of NVIDIA's NVFP4 block format. Per PTX it is
+*a 7-bit unsigned floating-point format, MSB padded with zero, whose NaN value
+is limited to `0x7f`*: an 8-bit carrier whose bit 7 is always zero, with bits
+`[6:0]` holding a 4-bit exponent (bias 7) and a 3-bit mantissa.
+
+**It is not `FP8E4M3`**, and using that type as a stand-in is a real bug, not
+an approximation: `FP8E4M3` is signed, and its NaN is sign-agnostic
+(`S.1111.111`) rather than the single code `0x7F`. It is, however,
+*numerically* `FP8E4M3` restricted to sign 0 --- every one of its 128 codes
+denotes the same value as the `FP8E4M3` code with the same bits --- which is
+why its conversions reuse the proven E4M3 helpers rather than adding a second
+rounder.
+
+Two differences from `E8M0` matter downstream:
+
+  - **`UE4M3` has a zero** (`0x00`). `E8M0`'s `0x00` is the *minimum scale*
+    2^-127.
+  - **Its value is not a power of two** (it has a mantissa). Dividing by an
+    `E8M0` scale is exact; dividing by a `UE4M3` scale is not.
+
+Like `E8M0` it is a **scale, not a float**: no arithmetic, no ordered
+compares. `.to_fp32()` yields the scale value, `.to_ue4m3()` narrows a float
+to a scale, and `is_nan` tests the single code `0x7F`. Because a scale is
+non-negative, `.to_ue4m3()` takes the **magnitude** of its operand (as
+`.to_e8m0()` does) and always clears the padding bit.
+
+`UE4M3` is also a `ScaledVec` scale --- that is what it exists for --- giving
+NVFP4 as `ScaledVec<FP4E2M1, 16, UE4M3>`. The block operations do not need a
+power-of-two scale: `scaled_quantize` never divides by the scale at all, so
+the single-rounding property survives. See §3.11.1.
+
+
+
+
+**Conversions.** `.to_fp32()` widens exactly. `.to_fp4e2m1()` narrows with round-to-nearest-ties-to-even and **saturates** on overflow. Saturation is profile-independent here, unlike fp8 where `--fp-compat` selects between a NaN/inf result and `satfinite`: E2M1 has neither a NaN nor an infinity to produce, so saturation is the only representable behavior. Cross-format conversions compose through `FP32`, each step exact or singly rounded.
+
+**Literals.** A float literal in an `FP4E2M1` slot is rounded at compile time; one that **overflows is a compile error** (matching fp8), never a silently clamped constant. The bound is `|x| >= 7.0` — the round-to-nearest midpoint between max finite 6.0 and the next would-be value 8.0.
+
+
+**No implicit conversion.** Mixing distinct float formats (`FP32`, `BF16`, `FP8E4M3`, `FP8E5M2`, `FP4E2M1`), or float and integer, in an operator is a compile error; convert explicitly:
 
   - `x.to_fp32()` — `BF16`→`FP32` (exact widen) or `SInt<N>`/`UInt<N>`→`FP32` (RNE).
   - `x.to_bf16()` — `FP32`→`BF16` (round-to-nearest-even).
@@ -751,7 +866,7 @@ let nan: Bool = is_nan(a);
 
   General convention: **compile-time float constants are correctly rounded from source** (a `BF16` literal in any known-float slot — `let`, `init`, reset, port default, comparison operand — is rounded once, directly, at compile time; never routed through `FP32`); **runtime `BF16` operations/conversions listed above are f32-routed**. This split is intentional — literals have no hardware rounding step to emulate, while `bf16_fma` and `int.to_bf16()` mirror how real hardware computes them.
 
-**Literals.** A float literal (`1.5`, `3.0e-2`, `0.0`) is **context-typed**: in a slot with a known float type it takes that type, correctly rounded to the target format's bit pattern at compile time (round-to-nearest-even, a single rounding step directly from the decimal source — never routed through an intermediate format). This covers every known-float-type slot: typed `let` (`let h: BF16 = 1.5;`), `reg`/`port reg` `init` (`reg acc: BF16 init 1.5;`), `reg`/`port reg` reset (`reg acc: BF16 reset rst => 1.5;`), and a comparison or `+ - *` against a known-format operand (`a_bf16 > 0.5`, `a_bf16 + 1.0`). No `.to_bf16()`/`.to_fp32()` cast is needed in any of these positions — write the plain decimal literal. A **standalone or ambiguous** literal (no float-type context to infer from) still defaults to `FP32`, exactly as before.
+**Literals.** A float literal (`1.5`, `3.0e-2`, `0.0`) is **context-typed**: in a slot with a known float type it takes that type, correctly rounded to the target format's bit pattern at compile time (round-to-nearest-even, a single rounding step directly from the decimal source — never routed through an intermediate format). This covers every known-float-type slot: typed `let` (`let h: BF16 = 1.5;`), `reg`/`port reg` `init` (`reg acc: BF16 init 1.5;`), `reg`/`port reg` reset (`reg acc: BF16 reset rst => 1.5;`), a comparison or `+ - *` against a known-format operand — including a conversion result (`a_bf16 > 0.5`, `x.to_bf16() > 1.0`) — and a direct assignment to a known-format target — scalar, `Vec` element, or struct field, in `comb` or `seq`, including ternary arms (`h <= 0.5;`, `v[i] = 1.5;`, `s.f = 0.75;`, `h <= sel ? 2.5 : 0.25;`). No `.to_bf16()`/`.to_fp32()` cast is needed in any of these positions — write the plain decimal literal. A **standalone or ambiguous** literal (no float-type context to infer from) still defaults to `FP32`, exactly as before.
 
 Compile-time rounding is exact and deterministic: parsing the decimal text to `f64` (Rust's parser is correctly rounded) and then rounding that `f64` directly to the target format's bit pattern is a single RNE step, safe for any format with fewer significand bits than `f64`'s 53 (in particular `FP32`, `p`=24, and `BF16`, `p`=8). This is a *compile-time constant fold*, not a runtime conversion — it does not weaken the no-implicit-conversion rule for runtime values (a `BF16` signal added to an `FP32` signal is still rejected; only a *literal* takes its type from context). Runtime conversions (`x.to_bf16()` on a non-constant value, or `int.to_bf16()`) are unaffected and keep their separately-documented, `FP32`-routed semantics (see "Rounding convention" above and issue #629).
 
@@ -759,9 +874,63 @@ An integer literal in a float slot (`reg acc: BF16 init 1;`, `let h: BF16 = 1;`,
 
 The rule is **uniform across all slots**: `let`, `init`, reset, port defaults, and comparison operands all fold the same literal to the same bit pattern via the same single-rounding path. (History: the reset slot briefly rounded through an `FP32` intermediate — a double rounding that differs from the correctly-rounded value for decimals landing within half an `FP32`-ulp of a `BF16` rounding midpoint, e.g. `1.003906250931322574615478515625` = 1 + 2⁻⁸ + 2⁻³⁰ produced `0x3F80` instead of the correctly-rounded `0x3F81`. That path was superseded when context-typed literals landed; the regression suite locks reset ≡ init ≡ let on this witness.)
 
-**v1 scope.** Floats are supported only as scalar signals plus the operators above. Floats inside `Vec`, in `struct` fields, and in module-local `function` signatures are rejected at type-check (never silently miscompiled); these are deferred follow-ups.
+**FP8 formats (FP8E4M3 / FP8E5M2).** The two OCP OFP8 8-bit formats are first-class types with the same operator surface as `FP32`/`BF16` (`+ - *`, `fma`, ordered compares, `is_nan`), each emitting `logic[7:0]`:
 
-**Compatibility profile.** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`) selects the special-value corners. Both profiles share an identical RNE arithmetic core and differ only in the canonical NaN bit pattern (`0x7FC00000`/`0x7FC0` vs `0x7FFFFFFF`/`0x7FFF`) and the NaN→int result (type-max vs `0`).
+  - **`FP8E4M3`** — 1 sign + 4 exponent + 3 mantissa bits, bias 7. Per the OCP OFP8 spec this format has **no infinities**: the sole NaN encoding is `S.1111.111` (`0x7F`/`0xFF`), and exponent 15 with mantissa < 7 encodes the *finite* values 256…448. Max finite 448, min subnormal 2⁻⁹.
+  - **`FP8E5M2`** — 1 sign + 5 exponent + 2 mantissa bits, bias 15, IEEE-style: ±inf at `0x7C`/`0xFC`, NaN class above it, max finite 57344 (`0x7B`), min subnormal 2⁻¹⁶.
+
+  All fp8 arithmetic is **widen → `FP32` op → narrow** (like `BF16`): `+ - *` round once from the exact `FP32` result and are **machine-proved correctly rounded** — exhaustive SMT `unsat` for every fp8 compare, conversion, and binary op under both `--fp-compat` profiles (`tests/fp_v1/smt_proof`, test `fp8_smt_proofs`). `fma(a,b,c)` is fused `FP32`-accumulate (one CR f32 fma, then a narrow — same VR(f32) convention as the `BF16` fma). Its second rounding was characterized exhaustively over all 2²⁴ triples per format×profile (`examples/fp8_fma_char.rs`): **`FP8E4M3` fma is machine-proved correctly rounded** — the SMT miter against a true CR reference (exact fma in a wide-significand sort, one OCP rounding) discharges `unsat` under both profiles, and the exhaustive sweep measured 0 mismatches (the double rounding is innocuous across E4M3's dynamic range); **`FP8E5M2` fma deviates on 18960/2²⁴ inputs (0.113%) under riscv and 15888/2²⁴ (0.095%) under cuda**, always by 1 ULP. Witness: `fma(0x1E, 0x7A, 0x01)` = (1.5·2⁻⁸)·49152 + 2⁻¹⁶ = 288 + 2⁻¹⁶ — correctly rounded is 320 (strictly above the 256/320 midpoint 288), but 2⁻¹⁶ is exactly half an f32 ULP at 288, so the f32 step ties-to-even down to exactly 288, and the narrow then ties-to-even down to 256. Compares are exact (quiet on NaN).
+
+  **Accumulation guidance.** For accumulation loops (dot products, running sums), hold the accumulator in `FP32` and narrow once at the end — that is the hardware-realistic and numerically superior pattern. FP8 tensor hardware (NVIDIA Tensor Core MMA, AMD MFMA) accumulates in a wide register and converts once per tile; narrowing to fp8 every step both loses precision (fp8 quantization noise compounds per iteration) and adds a rounding per step:
+
+```
+reg acc: FP32 reset rst => 0.0;
+seq on clk rising
+  acc <= fma(a.to_fp32(), b.to_fp32(), acc);    // wide accumulate
+end seq
+comb result = acc.to_fp8e5m2(); end comb        // ONE narrow at the end
+```
+
+  The fp8-typed `fma(a,b,c)` is a convenience for single-step updates where the result must live in fp8 anyway.
+
+  **Conversions (total surface, v2).** `x.to_fp32()` (exact widen from any narrower float). `.to_fp8e4m3()` / `.to_fp8e5m2()` accept `FP32`, `BF16`, the *other* fp8 format, and integers. `.to_bf16()` accepts fp8. `.to_uint<N>()` / `.to_sint<N>()` accept fp8 (toward-zero, saturating, NaN→profile — same rules as `FP32`). Every route composes through `FP32` and is **exact or correctly rounded with a one-line argument**: fp8→`BF16` is exact (≤4-bit significands and both fp8 exponent ranges fit inside `BF16`'s); every other route's intermediate is exact in `FP32` (float widens are exact; integers relevant to fp8 magnitudes sit far below 2²⁴), so the final RNE narrow — or the proven `FP32`→int step — is the only rounding. Profile-dependent overflow applies to fp8 targets (e.g. `e5m2(1024).to_fp8e4m3()` → NaN `0x7F` riscv / `0x7E` cuda).
+
+  **Narrowing overflow is profile-dependent** (`--fp-compat`, see below): under `riscv` (default) an `FP32` value whose RNE rounding exceeds the format's max finite maps to `±inf` for `FP8E5M2` and to NaN `0x7F` (sign dropped — the format has no infinities) for `FP8E4M3`; under `cuda` both formats **saturate to ±max-finite** (`±0x7B` / `±0x7E`, PTX `cvt.rn.satfinite` semantics), including for ±inf inputs. The E4M3 overflow boundary follows OCP: a rounded magnitude ≥ 480 overflows, while 464 ties *down* to 448 (even significand) and stays finite. Canonical NaNs: `FP8E4M3` `0x7F` under both profiles; `FP8E5M2` `0x7E` riscv / `0x7F` cuda.
+
+  **Literals** follow the context-typing rule above (`let x: FP8E4M3 = 1.5;` folds to `0x3C` at compile time), with one addition: a literal that overflows the fp8 format (`let x: FP8E4M3 = 500.0;`) is a **compile error**, not a silent saturation — the profile-dependent overflow rules above apply only to runtime narrowing. Use an `FP32` value and convert at runtime if saturation/infinity is intended.
+
+**Composite positions (v2).** Floats of every format may appear inside `Vec<T,N>` (element access `v[i]` carries the element's float type, including through `for` loops and reg-of-Vec resets), as `struct` fields (`s.f` carries the field's float type, for both reads and comb writes), and in module-local `function` parameters, locals, and return types. Operator dispatch, context-typed literals (`v[i] + 0.5`, `s.f > 0.25`), and the no-implicit-conversion rule all behave exactly as for scalar float signals; a `Vec`-of-float reg reset takes a float literal broadcast to every element (an integer literal there is rejected — same foot-gun rule as scalar float regs). Float-typed `param`s work for every format (`param HBIAS: BF16 = 0.5;` — the literal default is context-typed to the declared format and the SV emits the rounded bit pattern), and float signals dispatch correctly inside every construct: `fsm` regs/ports, `pipeline` stage regs (including cross-stage `Stage.reg` reads), `thread` bodies (including `wait until` on float compares), `bus` float signals (`m.data = s.data + s.data` dispatches `arch_f32_add`), and `tlm_method` argument/return types (`tlm_method scale(x: FP32, k: FP32) -> FP32` — the synthesized arg-latch registers reset with a typed float zero). Remaining restrictions: `/`, `%`, bitwise and shift operators stay compile errors on floats.
+
+**Floats in `arch formal`.** Float signals participate in `assert`/`cover` properties: they ride as plain bit-vector carriers, and every float operation (`+ - *`, `fma`, ordered compares, `is_nan`, `.to_fp32()` and the `FP32`→narrow conversions) dispatches to the *same machine-proven QF_BV `define-fun`s* the SystemVerilog and the offline SMT equivalence proofs are rendered from — one source, no drift, and **no solver floating-point theory involved**, so any bit-vector solver works. User properties therefore compose over already-proven operators rather than re-deriving IEEE semantics. Float literals in properties are context-typed as usual (`a > 1.0`). Refuted properties render float signals in counterexamples as their carrier bit patterns. Cost guidance: add/compare cones and *any* fp8/BF16 cone discharge in seconds; a property whose cone contains an `FP32` multiplier or `fma` can be SAT-hard — split the property at the multiplier boundary or constrain its inputs. Float→integer conversions inside plain solver properties compose through the proven helpers (`.to_uint<N>()`/`.to_sint<N>()` on floats work).
+
+**Input constraints: `assume`.** `assume Name: expr;` is a sibling of `assert`/`cover` declaring an input constraint. The QF_BV solver path conjoins every assume as a hypothesis at each timestep of the unroll (all asserts and covers see only constrained inputs); `arch build` emits it as a concurrent `assume property` for downstream tools; and the error-bound engine (below) mines range-shaped assumes — conjunctions of `sig >= lit` / `sig <= lit` — into interval hypotheses. Both classes of vacuous proof are guarded (see §12.3): jointly-unsatisfiable assumes and unreachable implication antecedents are reported as VACUOUS rather than PROVED, so an over-constrained design cannot masquerade as verified.
+
+**Numeric error bounds: `assert<bound_err>`.** A second property class states that a comb float signal is close to its *real-valued specification* — the same dataflow evaluated over ℝ with every rounding removed:
+
+```
+assume a_rng: (a >= 0.5) and (a <= 1.0);
+assume b_rng: (b >= 0.5) and (b <= 1.0);
+wire y: FP32;
+comb y = fma(a, b, a * b); end comb
+
+assert<bound_err> y_abs: abs(y - exact(y)) <= 0.000001;                  // absolute
+assert<bound_err> y_rel: abs(y - exact(y)) <= 0.000001 * abs(exact(y)); // relative
+assert<bound_err> y_ulp: abs(y - exact(y)) <= 8.0 * ulp(exact(y));      // in ULPs
+```
+
+The spec builtins `exact(sig)`, `abs(e)`, `ulp(e)` are legal only inside `assert<bound_err>` (using them elsewhere is a type error), and cross-format comparisons are permitted there — the property is over reals, not carriers. These properties are **specification-only**: `arch build` emits no SVA for them.
+
+Discharge is by an external error engine (`--error-engine`, default and currently only `gappa` — found via `PATH`, `$GAPPA_BIN`, or `~/bin/gappa`). The compiler renders the signal's cone twice into the engine's language — once *faithfully rounded*, modeling the RTL exactly (each `FP32` op is one RNE rounding; narrow-format arithmetic is the VR(f32) double rounding `rnd_fmt(rnd_f32(·))`; conversions round to their target; `.to_fp32()` widens exactly) — and once bare over ℝ as `exact(·)`. The soundness of modeling each RTL operator as ideal rounding is precisely the per-operator correctly-rounded theorems (§3.8, `tests/fp_v1/smt_proof`). A proved bound reports the engine's *derived enclosure* for the error term (the tightest bound it can establish, typically tighter than the asserted one).
+
+Rules and honest limits:
+- **Every input port in the cone must be range-constrained** by assumes (both bounds); error bounds are inherently range-dependent. Missing ranges are a compile error naming the ports.
+- ULP goals are checked via the sound relative form `N·2⁻ᵖ` (for normal values `ulp(x) > 2⁻ᵖ·|x|`), conservative by at most 2×.
+- Cones are feedforward comb arithmetic: `+ - *`, `fma`, float conversions, signals, float literals. Registers, ternaries, and comparisons inside the cone are rejected (bounded unrolling of accumulators is future work).
+- Relative/ULP goals over ranges that permit **cancellation** are legitimately unprovable (relative error is unbounded near zero) — the engine reports INCONCLUSIVE with the best derivable absolute enclosure, never a false proof.
+- **A narrowing conversion in the cone must be provably in range.** The engine models each format as `float<precision, min_exponent>`, which bounds precision and the smallest exponent but has **no largest** one — so left to itself it reasons about an idealized format of unbounded range and never sees overflow. Real narrow formats saturate (`FP4`/`FP6`, and fp8 under `--fp-compat=cuda`) or produce NaN/Inf (fp8 under `riscv`), where the error is nothing like a rounding error. Each narrow therefore carries a side condition `|input| ≤ max_finite`, discharged by the engine alongside the goal; a cone whose assumed ranges reach past that point reports INCONCLUSIVE naming the format and its limit, never a proof. (Before this was enforced, a cone narrowing `[1000, 2000]` to `FP8E4M3` — largest finite 448 — proved a bound of 64 while the hardware returned NaN.)
+- NaN/Inf are outside the real-valued analysis; the bit-level property classes above cover them.
+
+**Compatibility profile.** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`) selects the special-value corners. Both profiles share an identical RNE arithmetic core and differ only in the canonical NaN bit patterns (`0x7FC00000`/`0x7FC0` vs `0x7FFFFFFF`/`0x7FFF`; for fp8 see the FP8 paragraph above), the NaN→int result (type-max vs `0`), and the fp8 narrowing-overflow behavior (non-saturating vs `satfinite` — see the FP8 paragraph above).
 
 **3.8a Pipelined operators (`<pipelined, N>`)**
 
@@ -892,6 +1061,346 @@ A registry row that typechecks but has no codegen binding wired yet (a future
 row landed ahead of its codegen support) still refuses explicitly at `arch
 build` / `arch sim` — "not yet implemented" — rather than silently falling
 back to an un-retimed comb cone; there is no such row today.
+
+**3.11 ScaledVec --- block-scaled vectors (OCP MX / NVFP4)**
+
+```arch
+ScaledVec<Elem, N, Scale>
+```
+
+`N` narrow elements sharing one scale --- the unit of meaning in the OCP
+Microscaling (MX) formats. The scale is a **parameter, not a fixed type**,
+because the two ecosystems genuinely differ --- MX uses `E8M0`, NVFP4 uses a
+`UE4M3` that is *not* our `FP8E4M3` (unsigned, 7 significant bits, NaN
+`0x7F`). Both scales are supported:
+
+```arch
+type MXFP4 = ScaledVec<FP4E2M1, 32, E8M0>;
+type NVFP4 = ScaledVec<FP4E2M1, 16, UE4M3>;
+```
+
+The three arguments are constrained:
+
+  - **`Elem`** must be `FP4E2M1`, `FP6E2M3`, `FP6E3M2`, `FP8E4M3` or
+    `FP8E5M2`. `FP32`/`BF16` and integer types are rejected --- a shared
+    scale has no meaning over wider or integer elements.
+  - **`N`** is a const expression `>= 1`. A block with no elements is just a
+    bare scale.
+  - **`Scale`** must be `E8M0` (OCP MX) or `UE4M3` (NVFP4, §3.10a).
+    `FP8E4M3` is **not** a stand-in for `UE4M3` --- that one is signed and
+    its NaN is sign-agnostic. The two scales differ in more than width:
+    `E8M0` is a pure power of two with no zero, `UE4M3` carries three
+    mantissa bits, *has* a zero at `0x00`, and reserves `0x7F` (not `0xFF`)
+    for NaN. Those differences reach the surface, so they are spelled out
+    per operation below rather than left implicit.
+
+**A block is one packed word, not an array.** Layout is
+`{ scale[w-1:0], P[N-1], …, P[1], P[0] }` --- scale in the high bits,
+element `0` in the low bits, matching the `Vec` convention above. Width is
+`scale_w + N × elem_w`, so `ScaledVec<FP4E2M1, 32, E8M0>` is
+8 + 128 = **136 bits**.
+
+**No arithmetic, no ordering, no indexing.** OCP MX §6 defines exactly one
+operation on blocks --- the dot product `X^A · X^B · Σᵢ(Pᵢ^A × Pᵢ^B)`, exposed
+as `scaled_dot` (§3.11.2) --- and no add, multiply or ordered compare. ARCH
+refuses all of them at the type checker rather than inventing semantics:
+
+```arch
+y = a + b;    // error: no arithmetic on a block-scaled vector
+y = a < b;    // error: an encoding order is not a value order
+e = a[0];     // error: a block is one packed value, not an array
+```
+
+**`==` and `!=` are available, as an ENCODING compare.** They lower to a
+plain SV `==` on the packed word --- a bit compare, exactly as for `Vec` and
+struct. This is what makes formal properties and testbench checks about
+blocks writable at all.
+
+Read the result carefully, because it differs from `Vec<UInt<N>, K>`, where
+bit equality *is* value equality:
+
+  - equal bits **always** mean equal values;
+  - unequal bits do **not** mean unequal values.
+
+The same numbers can be encoded with a different (scale, element) split ---
+scale `2^1` with element `1.0` denotes the same value as scale `2^0` with
+element `2.0` --- and a NaN block (`scale = 0xFF`) ignores its element bits
+on load, so two semantically identical NaN blocks can differ bitwise. `==` is
+therefore sound but **not complete** as a value test; for a value comparison,
+`scaled_dequantize` both operands and compare the `FP32` results.
+
+An element read only has meaning as `X × Pᵢ`, so reading one goes through the
+whole-block conversion: `scaled_dequantize(b)[i]`. Refusing `a[0]` is
+deliberate --- silently returning the raw code `Pᵢ` without its scale would be
+a numeric bug with no diagnostic.
+
+**`split` ports.** A port may opt into a two-signal SV boundary:
+
+```arch
+port b: in MXFP4;         // one packed `logic [135:0] b`
+port c: in split MXFP4;   // `logic [7:0] c_scale` + `logic [127:0] c_elems`
+```
+
+`split` is an **SV-boundary shape only** --- it changes no ARCH-level
+semantics, and the module body refers to the block by its single name either
+way (the compiler emits the concatenation/part-select glue). It exists
+because a real datapath feeds the scale into the exponent path and the
+elements into the mantissa path, so packing and unpacking a 136-bit word per
+block is pure overhead. Only legal on a `ScaledVec` type. `arch sim` has no
+SV boundary and so keeps the packed member.
+
+**Named formats** are ordinary type aliases; declare them once in a package
+(§3.12):
+
+```arch
+package MxFormats
+  type MXFP4 = ScaledVec<FP4E2M1, 32, E8M0>;
+  type MXFP6 = ScaledVec<FP6E3M2, 32, E8M0>;
+  type MXFP8 = ScaledVec<FP8E4M3, 32, E8M0>;
+end package MxFormats
+```
+
+The MX named formats all fix `N = 32` and an `E8M0` scale. Other `N` values
+are legal in the framework --- `ScaledVec<FP4E2M1, 16, E8M0>` is a well-formed
+type --- they simply may not be called MXFP4.
+
+**3.11.1 `scaled_quantize` / `scaled_dequantize`**
+
+The two conversions between a `Vec<FP32, N>` and a block:
+
+```arch
+scaled_quantize<Fmt>(v)                      // Vec<FP32,N> -> Fmt
+scaled_quantize<Fmt, policy, rounding>(v)    // ... with explicit selectors
+scaled_dequantize(b)                         // block -> Vec<FP32,N>
+```
+
+**The output format is spelled, never inferred.** A `Vec<FP32, N>` operand
+says nothing about which element format or scale to quantize into --- MXFP4
+and MXFP8 are equally valid results --- so `Fmt` is a required type argument.
+It may be an alias (`scaled_quantize<MXFP4>(v)`, the normal form) or written
+inline. The operand's length must equal the format's `N`; quantizing 32
+values into a 16-element block is a compile error, not a truncation.
+
+`scaled_dequantize` needs no annotation: `N` and the formats all come from
+the block's own type. It yields `Vec<FP32, N>` with the scale already
+applied, and is the only way to read an element (§3.11).
+
+| Selector | Values | Default |
+|---|---|---|
+| `policy` | `floor_pow2`, `ceil_pow2`, `exact` | **scale-dependent** --- see below |
+| `rounding` | `rne` (`rtz`, `rna` reserved) | `rne` |
+
+`floor_pow2` is the OCP §6.3 rule: the shared scale is the largest power of
+two that normalizes the block maximum into the element format's top binade.
+Because that binade's largest *representable* value is below its top, some
+elements saturate --- routine under this policy, not a corner case.
+`ceil_pow2` rounds the scale up instead when the block maximum is not already
+a power of two, trading the top element codes for fewer saturations. `exact`
+takes `X = RNE(amax / elem_max)`, using the scale's mantissa instead of
+discarding it; it is **refused for `E8M0`**, where every value is already a
+power of two and there is no mantissa to use.
+
+**The default policy depends on the scale**, because one default cannot serve
+both: `floor_pow2` for `E8M0` (OCP §6.3), `exact` for `UE4M3`. Defaulting a
+UE4M3 block to `floor_pow2` would discard all three of its mantissa bits and
+silently produce a power-of-two-scale block where NVFP4 was asked for ---
+numerically a different format from the one every NVFP4 implementation ships.
+Write the policy explicitly if you want the other behaviour; both remain
+available under either scale.
+
+Semantics. The first two differ between the scales, and the difference is not
+cosmetic --- `E8M0` has no zero and reserves `0xFF`, `UE4M3` has a zero and
+reserves `0x7F`:
+
+  - An **all-zero** block gets scale code `0x00` and zero elements. For
+    `E8M0` that code denotes the *minimum scale* `2^-127` (the element plane
+    is what makes the block zero); for `UE4M3` it is a genuine **zero**,
+    which is sound precisely because every element is zero too.
+  - A block containing **any NaN or infinity** gets the NaN scale --- `0xFF`
+    for `E8M0`, `0x7F` for `UE4M3` (`0xFF` would set the padding bit `UE4M3`
+    requires to be zero). Its element bits are then don't-care, and
+    `scaled_dequantize` yields NaN in every lane regardless of them.
+  - Where the block maximum is nonzero but the scale would **underflow**, it
+    clamps to the smallest scale that is not zero: `0x00` for `E8M0`, `0x01`
+    for `UE4M3`. Clamping a `UE4M3` scale to `0x00` would set it to zero and
+    erase a block that has a nonzero maximum.
+  - Dequantizing a finite element under a finite scale **saturates** to
+    ±`FP32` max rather than overflowing to infinity. An element that is
+    itself Inf or NaN (`FP8E5M2` / `FP8E4M3` can be) keeps its own result.
+  - Element narrowing inherits the element format's own overflow rule and the
+    `--fp-compat` profile --- so an out-of-range value saturates for the
+    all-finite formats (`FP4E2M1`, `FP6E2M3`, `FP6E3M2`) and becomes that
+    format's NaN for `FP8E4M3`.
+
+**Each element is rounded exactly once, from the true `vᵢ / X`, under both
+scales** --- but for different reasons, and neither involves a division.
+
+  - Under `E8M0` the reciprocal `1/X` is itself a scale code (`2^-(c-127)` is
+    `2^((254-c)-127)`), so the scaling is one exact FP32 multiply and the
+    element narrow is the only rounding.
+  - Under `UE4M3` there is no such identity --- a mantissa-bearing scale has
+    no exactly representable reciprocal, and substituting `vᵢ × fl(1/X)`
+    changes the result on 4.76% of tie-aligned inputs. So the quantizer never
+    forms the quotient at all: it compares `|vᵢ|` against `X × m` for each
+    decision boundary `m` of the element grid, and picks the code the
+    comparisons land in. **Every such product is exact in FP32** --- the
+    scale carries 4 significand bits and a boundary at most 5, so the product
+    needs at most 9 of FP32's 24 --- which makes the comparison a decision
+    rather than an approximation, and the selected code correctly rounded by
+    construction. The scale itself is chosen the same way, against constant
+    thresholds. Ties resolve to even.
+
+A consequence worth stating: the error bounds of §3.11.3 rest on
+single-rounding, so they apply unchanged to `UE4M3` blocks.
+
+The division-free ladder costs one comparison per element-grid boundary: 8
+for `FP4E2M1` (NVFP4's element format), 32 for the `FP6` pair, and 127/124
+for `FP8E4M3`/`FP8E5M2`. A `UE4M3`-scaled block with 8-bit elements is
+therefore legal and correct but comparatively large; the sub-8-bit element
+formats the MX line is actually built on are cheap.
+
+Both conversions are combinational and must be the whole right-hand side of
+an assignment. To index an element, bind the result first:
+
+```arch
+wire all: Vec<FP32, 32>;
+comb
+  blk = scaled_quantize<MXFP4, ceil_pow2, rne>(v);
+  all = scaled_dequantize(blk);
+  e   = all[3];
+end comb
+```
+
+**3.11.2 `scaled_dot` --- the block dot product**
+
+```arch
+scaled_dot(a, b)      // two blocks of the SAME type -> FP32
+```
+
+The one operation OCP MX §6.2 defines normatively. Both operands must have the
+same `ScaledVec` type; a dot across different element formats or block sizes
+has no spec meaning and is a compile error. The result is `FP32` --- the spec
+leaves accumulator precision implementation-defined and ARCH picks `FP32`.
+
+The value is the spec's factored form:
+
+> `X^A · X^B · Σᵢ (Pᵢ^A × Pᵢ^B)`
+
+**Every element-pair product is exact**, so all rounding in a block dot happens
+in the summation and none in the multiplies. This is not an approximation
+argument: the widest element significand is `FP8E4M3`'s 4 bits, needing at most
+8 of `FP32`'s 24, and the widest exponent span is `FP8E5M2`'s `2⁻³² … 2³¹·⁶`,
+comfortably inside `FP32`'s normals. It is machine-checked exhaustively for all
+five element formats (`fp_smt_proof::MX_DOT`), jointly with `arch_f32_mul`
+returning that exact product.
+
+**Accumulation order is defined, not left open.** `FP32` addition is not
+associative, so an unstated order would be an unstated result. ARCH sums
+**balanced pairwise**: each round adds adjacent values, a lone trailing value
+passes through untouched, repeat until one remains. This is `⌈log₂ N⌉` deep
+rather than `N` --- what a dot-product datapath synthesizes to anyway --- and
+pairwise summation's error grows as `O(log N)` against a serial accumulator's
+`O(N)`. A lone value is *carried*, never padded with a zero: adding `0.0` is
+not a no-op in `FP32` (it turns `-0.0` into `+0.0`).
+
+**The two scales are applied one at a time**, as `(Σ ⊗ X^A) ⊗ X^B`, not as a
+pre-formed `X^A · X^B`. Under `E8M0` each scale is a power of two, so each
+multiply is exact absent overflow --- but the two scales span `2⁻¹²⁷ … 2¹²⁷`,
+so their *product* spans `2⁻²⁵⁴ … 2²⁵⁴` and can overflow to infinity or flush
+to zero even when the final result is perfectly representable. Applying them
+separately has a strictly wider exact domain.
+
+Under `UE4M3` the same order is used, and the reason is stronger rather than
+weaker: a `UE4M3` scale is not a power of two, so each scale multiply
+**rounds**. Applying the scales separately means two roundings of a
+correctly-rounded multiply each; pre-forming `X^A · X^B` would round that
+product too and then round again, and the pre-formed product has the narrower
+exact domain besides. The element-pair products stay exact either way --- that
+argument is about the *elements*, which the scale does not touch.
+
+A NaN scale on either operand makes the result NaN, which falls out of the
+scale multiply rather than needing a rule. An all-zero block dots to `+0`, not
+NaN, under both scales: `E8M0`'s minimum-scale path multiplies a zero sum by
+the finite `2⁻¹²⁷`, and `UE4M3`'s zero scale multiplies a zero sum by zero.
+
+**The per-tensor scale of NVFP4 is deliberately not part of the type.** NVFP4
+pairs its per-block `UE4M3` scale with a second, per-*tensor* `FP32` scale. A
+`ScaledVec` is one block, so carrying that value in the block type would
+replicate a per-tensor quantity once per block. Apply it with an ordinary
+`FP32` multiply on the result, or divide it out of the operand before
+quantizing. There is no accuracy lost by keeping it outside: folding it into
+the quantizer would mean comparing against `S × X × m`, and unlike `X × m`
+that product is not exact for an arbitrary `S`, so the fused form would round
+where the split form does not.
+
+**3.11.3 Quantization error bounds**
+
+Block quantization error is a per-element question once the shared scale `X`
+is fixed, and it is scale-invariant: writing `u = v/X` (exact, since `X` is a
+power of two), the round trip is `X · widen(narrow(u))` and the error in units
+of `X` is `|narrow(u) − u|`. `assert<bound_err>` (§3.8) discharges that
+directly, with the `assume` range on `u` encoding which binade the scale
+policy put the block maximum in:
+
+| policy | block maximum lands in |
+|---|---|
+| `floor_pow2` (OCP §6.3) | `[2^emax, 2^(emax+1))` |
+| `ceil_pow2` (NVIDIA) | `(2^(emax−1), 2^emax]` |
+
+where `emax` is the element format's top binade exponent. Machine-checked
+bounds, in units of the block's shared scale — each is half the grid spacing
+of the binade the policy lands in (`tests/fp_v1/MxQuantBound.arch`):
+
+| element | `emax` | max finite | `ceil_pow2` | `floor_pow2` |
+|---|---|---|---|---|
+| `FP4E2M1` | 2 | 6.0 | 0.5 | 1.0 |
+| `FP6E3M2` | 4 | 28.0 | 1.0 | 2.0 |
+| `FP8E4M3` | 8 | 448.0 | 8.0 | 16.0 |
+
+**Read the two columns carefully: they are the same error.** `ceil_pow2`'s
+bound is half of `floor_pow2`'s in units of *its own* scale, but its scale is
+twice as large, so both policies have the same worst-case rounding error in
+real terms. Choosing `ceil_pow2` does not buy accuracy.
+
+What actually separates them is **saturation**. `floor_pow2` normalizes the
+block maximum into `[2^emax, 2^(emax+1))`, and the format's largest
+representable value — `(2 − 2^−mant) · 2^emax` — sits strictly inside that
+interval, so any element above it clamps. `ceil_pow2` lands one binade lower
+and structurally cannot reach it. That is why saturation is routine under
+`floor_pow2` rather than a corner case, and it is the real trade-off: the top
+element codes go unused under `ceil_pow2` in exchange for never clamping.
+
+The bound is only claimed where no element saturates; extending a
+`floor_pow2` range across the saturation point makes it INCONCLUSIVE rather
+than silently wrong (§3.8, in-range side condition).
+
+**Not yet implemented:** `rtz` / `rna` rounding (they need their own element
+rounders in each backend, with their own overflow rules --- arch#890) and
+`stochastic` rounding (it needs an entropy source, which is a datapath
+question rather than a rounding-mode one).
+
+**3.12 Package-scope type aliases**
+
+`type Name = TypeExpr;` may be declared inside a `package` body as well as a
+module body. A package alias is published **file-wide**, exactly like a
+package's structs and enums --- a package is a grouping, not a namespace ---
+so a shared vocabulary of named types is written once instead of being
+redeclared in every module that mentions one:
+
+```arch
+package MxFormats
+  type MXFP4 = ScaledVec<FP4E2M1, 32, E8M0>;
+end package MxFormats
+
+module Consumer
+  port a: in MXFP4;        // no redeclaration needed
+end module Consumer
+```
+
+A later package alias may build on an earlier one. A module-scope alias that
+reuses a package alias name is an **error**, not a silent shadow --- package
+contents are global, so the collision is a genuine ambiguity, exactly as it
+already is for a package struct.
 
 **4. Modules**
 
@@ -1759,6 +2268,45 @@ end module M
 ```
 
 `pragma cdc_safe;` is the long-standing CDC opt-out and incidentally suppresses the structural cross-clock RDC rule (phase 1) because the two checks overlap. `pragma rdc_safe;` is the dedicated RDC opt-out — it suppresses *every* RDC phase, including 2a–2d which `cdc_safe` does not touch. Either pragma alone is enough to silence phase 1; both can coexist on the same module. Use these only when the design has been externally analysed (Synopsys SpyGlass, Cadence Conformal) and the violations are provably safe in the surrounding integration. Unknown pragma names error at parse time, so a typo on `rdc_safe` is caught before compile.
+
+**5.4a Whole-Design Combinational Feedback Loops**
+
+Beyond the per-module comb-loop check that computes a bounded simulation settle depth, the compiler runs a separate whole-design analysis: it builds one directed combinational-dependency graph spanning the *entire* elaborated design — starting from every top-level module (one never instantiated anywhere) and flattening the full instance hierarchy — and runs Tarjan's strongly-connected-components algorithm over it. Nodes are keyed by `(inst_path, signal)`, so the same signal name at different points in the hierarchy is never conflated. Any SCC with more than one node, or a single node with a self-loop, is a genuine combinational feedback cycle: a signal whose value depends — combinationally, with no register anywhere on the path — on itself.
+
+**This is a compile error.** `arch check`, `arch build`, `arch sim`, and `arch formal` all fail with a nonzero exit and report the cycle (the participating signals, in dependency order, and the modules that own them):
+
+```
+error: whole-design combinational feedback cycle (2 nodes) involving modules [Top]; cycle: w1 -> w2 -> w1
+```
+
+A combinational cycle has no well-defined steady-state value in general (it depends on gate delays, which ARCH's zero-delay semantics do not model) and synthesis tools flag the equivalent SV as `UNOPTFLAT`. There is no correct simulation or synthesis result to fall back to, so — like `Vec`/bit-select bounds violations and const-expression divide-by-zero — this is a hard error, not a lint.
+
+*(Severity history: this diagnostic shipped in 2026 as a warning while the checker's false-positive rate on real designs was being driven down — same-comb-block read-after-write folding, cross-instance port bugs, and range/element/for-loop granularity all produced spurious cycles early on. Once a full-corpus sweep showed zero remaining false positives on real designs, it was promoted to an error.)*
+
+**Escape hatch for intentional cycles: `pragma comb_loops_allowed;`**
+
+Some designs contain a combinational cycle on purpose — most commonly a caller that has already proven (by construction, or by external timing/formal analysis) that the loop settles within the available combinational budget, or a construct deliberately modeled with an idealized zero-delay feedback path. Bless the owning module:
+
+```
+module M
+  pragma comb_loops_allowed;
+  ...
+end module M
+```
+
+Any SCC that passes through an instance owned by a module carrying this pragma is suppressed — it does not fail the build, and does not appear as a per-cycle diagnostic. `arch check` still emits one informational summary line reporting the totals:
+
+```
+arch check: 1 comb SCC(s) found; 1 suppressed by pragma; 0 unblessed (warnings)
+```
+
+Suppression is whole-module, not per-signal-pair — there is no equivalent of `pragma comb_loop a, b;` scoped to a specific signal pair; blessing a module blesses every cycle that touches any of its instances. Use it sparingly and only once the cycle has been independently verified safe (e.g. via `arch formal`, or an external STA/lint pass) — a design that legitimately needs the pragma is rare, and the pragma is a documented escape hatch, not a general-purpose suppression for diagnosing false positives (a false positive should be filed as a compiler bug instead).
+
+**Scope and known limitations:**
+
+- **Interface-only (`.archi`) stub modules are treated as opaque:** every output is assumed to depend on every input except registered (`port reg` / `pipe_reg`) outputs, which are correctly excluded since a register breaks the combinational path. This is a safe over-approximation — it can produce a cycle report when the real (unseen) module body is actually pipelined — but never misses a real cycle.
+- **Non-`module`/non-`fsm` constructs** (`fifo`, `ram`, `arbiter`, etc.) use a per-output dependency map where available (arbiters, for example, correctly model that the grant/`ready` outputs depend combinationally on the request `valid` inputs); constructs without a precise per-output map fall back to the same conservative port-set over-approximation as interface stubs.
+- **No per-signal-pair blessing.** The pragma is module-scoped only, as described above.
 
 **5.5 Tristate and Bidirectional I/O** *(planned)*
 
@@ -5584,7 +6132,7 @@ that lock from the per-lane body and uses the resource policy for the generated
 response arbiter. All indexed target lanes for one method must use the same
 response resource when any lane names one.
 
-Struct return payloads are supported, including structs that contain fixed-size `Vec<T, N>` fields. This is the recommended v1 pattern for responses that need payload plus status metadata, for example `data`, returned `len`, and a response/error code. Fixed-size `Vec<T, N>` return payloads flatten as static hardware on `<name>_rsp_data`; for bounded burst-like transactions with variable runtime length, pass the requested length as an ordinary method arg and return either a maximum-size vector or a bounded response struct.
+Struct return payloads are supported, including structs that contain fixed-size `Vec<T, N>` fields. This is the recommended v1 pattern for responses that need payload plus status metadata, for example `data`, returned `len`, and a response/error code. Fixed-size `Vec<T, N>` return payloads flatten as static hardware on `<name>_rsp_data`; for bounded burst-like transactions with variable runtime length, pass the requested length as an ordinary method arg and return either a maximum-size vector or a bounded response struct. `<name>_rsp_data` follows the same struct+Vec bit layout as any other struct-typed signal — see §3.1's `Vec<T,N>` / `struct S` rows — so a HARC-side driver decoding `<name>_rsp_data` bit-for-bit and an ARCH-side consumer reading the struct's named fields agree by construction.
 
 ```
 struct BoundedVecResp32x4
@@ -7538,6 +8086,28 @@ end thread driver
 
 For `out_of_order tags N`, the bus flattens two extra wires per method: `<method>_req_tag` and `<method>_rsp_tag`. The initiator cohort assigns one tag per worker and routes response data by `rsp_tag`. A target TLM thread latches `req_tag` with the method arguments and echoes it on `rsp_tag`.
 
+**22.2.3a Mixed-Class Fork Groups Are Rejected**
+
+A direct-call `fork ... and ... join` issue group (§22.2.2) must use one concurrency class across every branch: all `blocking`, or all `out_of_order` on methods with the same `tags N`-bearing declaration shape. Placing one `blocking` call and one `out_of_order` call in the same fork group is a compile-time error:
+
+```
+fork issue group mixes blocking and out_of_order calls (`m.read` is blocking,
+`m.read_ooo` is out_of_order tags 2); split into separate fork groups or make
+the classes uniform
+```
+
+Split the branches into two separate `fork ... and ... join` threads instead — one per class — or change the method declarations so every branch in the group calls methods of the same class. RHS-fork groups (`dst <= fork port.method(args); ... join all;`, §22.2.2) already require every forked issue in the group to target one method, so they cannot mix classes either; that restriction predates this one and is unchanged.
+
+This restriction exists because the generated-thread cohort lowering groups direct-call fork branches by `(port, method)` and only recognizes a cohort once two or more branches share one method. A fork group that mixes classes always calls two *different* methods (concurrency mode is fixed per `tlm_method` declaration), so each class's branch count is checked independently — an unbalanced mix (e.g. two `blocking` branches plus one `out_of_order` branch) could satisfy the cohort check for the repeated class while the compiler had no path left to lower the other branch at all. The check above runs before cohort grouping and rejects every mixed-class shape up front, regardless of how many branches each class has.
+
+**22.2.3b `out_of_order tags N` --- Recommended Bound**
+
+`N` in `tlm_method name(args) -> Ret: out_of_order tags N;` is the literal bit width of the two compiler-generated carrier wires, `<method>_req_tag` and `<method>_rsp_tag` --- it is not a count of tags that the compiler widens with `$clog2`. A cohort or fork group with `W` outstanding workers needs `N` such that `2^N >= W`; the compiler checks this at lowering time and rejects an undersized `N` with `` `{port}.{method}` has {W} workers but only {2^N} out-of-order tags; increase `tags` width ``. Because `N` sets the carrier width directly, it is also the width of every downstream tag-drive mux and per-response tag comparator the lowering generates.
+
+**Recommended cap: `N <= 8`** (256 addressable tags). Every current worker cohort, `fork ... and ... join` group, and RHS-fork group in the test suite and examples uses a single-digit number of outstanding requests, so 8 bits of tag space is generous headroom for TLM's intended fast-prototyping role (see the positioning note in §22.1) without carrying unused carrier width through request/response plumbing.
+
+The compiler does not enforce this cap today. `tags 64` and `tags 128` both compile cleanly, each producing an exactly `N`-bit-wide `req_tag`/`rsp_tag` carrier (`logic [63:0]` / `logic [127:0]`) with no truncation, silent promotion, or width mismatch; the internal tag-capacity check (`tag_slots = 2^N`) explicitly guards `N >= 64` against a wrapping left-shift, so there is no overflow defect at large `N` either. Treat `N <= 8` as design guidance to keep generated hardware lean, not as a compiler-checked limit.
+
 **22.2.4 Generated Code Shape**
 
 Grouped/looped initiator call sites are lowered to one generated driver per
@@ -7647,6 +8217,7 @@ Use the implemented forms above for all current RTL-backed TLM work:
 - Use counted `for` loops for repeated serialized direct blocking call sites inside one initiator thread; runtime bounds are supported for the serialized case.
 - Use `lock RESOURCE ... end lock RESOURCE` plus `resource RESOURCE: mutex<round_robin>;` when independent workers share a TLM method and require round-robin request arbitration.
 - Express multiple outstanding requests with worker threads, `generate_for` workers, direct-call `fork ... and ... join`, or RHS-fork groups.
+- Keep every branch of one `fork ... and ... join` group the same concurrency class (§22.2.3a); keep `out_of_order tags N` at `N <= 8` (§22.2.3b).
 
 **25. AI-Assisted Hardware Design Workflow**
 
@@ -8199,6 +8770,10 @@ Arch includes three verification constructs built directly into the language. Th
   **assume name: expr**   Ignored          Input constraint     Restricts the input space for formal analysis
   -------------------------------------------------------------------------------------------------------------
 
+**Vacuity guarding (soundness).** A "proof" that holds only because its premise is never exercised is a trap, not a pass, and `arch formal` detects both classes. (1) *Unsatisfiable assumptions*: if the `assume` clauses are jointly unsatisfiable the constrained state space is empty and every property would prove trivially — `arch formal` runs one satisfiability check on the constrained system and, if it is empty, reports every property as **VACUOUS** (a hard failure, exit 1) rather than PROVED. (2) *Unreachable antecedent*: an implication `a |-> b` / `a |=> b` proves vacuously whenever the antecedent `a` is unreachable (the consequent is never tested — even a false consequent "passes"). After such a property discharges, `arch formal` checks whether the antecedent is satisfiable at any cycle of the unroll; if it never fires, the result is **VACUOUS**, not PROVED. Both checks are conservative: an inconclusive (`unknown`/timeout) reachability result leaves the property PROVED rather than falsely flagging vacuity.
+
+**Counterexample replay (soundness).** The refutation side carries the dual guard: whenever the solver claims a violation (REFUTED) or cover hit, `arch formal` independently re-evaluates the property on the solver's own model — concretely, width- and signedness-exact against the query's bit-vector semantics, with float operations interpreted over the *identical* proven operator definitions the query inlined. A confirmed violation is reported as usual (at the earliest independently-confirmed cycle); if replay cannot decide some cycle, the solver's verdict is retained with a note. Only a *confident contradiction* — every cycle decidable and none violating — escalates: the result is reported as **ENCODING UNSOUND** (exit 3, distinct from a design bug's exit 1), meaning the counterexample is an artifact of a compiler bug in the query generation, not a design error. The emergency kill-switch `ARCH_FORMAL_NO_REPLAY=1` disables the pass.
+
 **12.4 Scope --- Same-Cycle Safety Today, Temporal Sugar on the Roadmap**
 
 In the current compiler, `assert` and `cover` bodies are *combinational expressions* evaluated at every clock edge under the construct's `posedge clk` with `disable iff (rst)`. This covers all same-cycle safety properties, including implication via the symbolic `|->` operator (SVA overlap implication, emitted directly as SV `|->`). The legacy `implies` keyword is a deprecated alias for `|->` (v0.49.0+) — still accepted, but each use prints a stderr deprecation warning. Both forms are restricted to `assert`/`cover` bodies; for plain Boolean implication outside SVA contexts, use `(!a) || b`. For multi-cycle properties, users currently bind the temporal state into explicit shadow registers and assert on them:
@@ -8478,6 +9053,10 @@ The compiler emits warnings (non-fatal, printed before "OK: no errors") for the 
   **Documentation**                 arch doc                                     HTML reference from /// doc comments
 
   **Code graph index**              arch graph index \<paths...\>                 Compiler-native JSONL graph for downstream tooling; query with arch graph query/callers/impact/context and render with arch graph html
+
+  **Output naming**                 arch build \-o auto                          Derive each output .sv stem from its top-level construct's declared name (verbatim, no case conversion) instead of the source filename — one .sv per construct
+
+  **Suppress generated SVA**        arch build \--no-auto-asserts                Omit compiler-generated assert/cover property (bounds, div-by-zero, FSM, FIFO, guard, handshake/credit\_channel/TLM, and \--auto-thread-asserts); user-written assert/cover is unaffected
   ------------------------------------------------------------------------------------------------------------------------------
 
 **28. Complete Example: 3-Stage RISC-V Integer Pipeline**
@@ -9139,6 +9718,8 @@ end module SubModule
 
 The `.archi` file is valid ARCH syntax and can be parsed by the compiler directly. It is named by **module name** (not source filename), so `fifo_async_r2w_sync.arch` (which defines `synchronizer r2w_sync`) generates `r2w_sync.archi`.
 
+**Packages emit no `.archi`.** A `package` declares types, buses and functions — never an instantiable construct — so it never takes part in the construct-name resolution `.archi` exists for, and nothing would read one: `use` resolves only `<name>.arch`, and the `.archi` lookups in §30.2 are keyed on the *construct* name rather than the enclosing package's. A consumer of a package therefore needs its `.arch`, reached with `use <Package>;`. (A bus declared inside a package is still discoverable by its own name per §30.2, since that search keys on the bus.)
+
 **30.2 Dependency Discovery**
 
 When the compiler encounters `inst sub: SubModule` and `SubModule` is not defined in the input files, it automatically searches for:
@@ -9148,6 +9729,8 @@ When the compiler encounters `inst sub: SubModule` and `SubModule` is not define
 3. `SubModule.arch` or `SubModule.archi` in directories listed in `ARCH_LIB_PATH` (colon-separated)
 
 The same discovery applies to **bus port types**. A port declaration `port m: initiator BusName` or `port m: target BusName` whose `BusName` is not defined in the input files triggers the identical search for `BusName.arch` / `BusName.archi` (input directory, then `ARCH_LIB_PATH`, then the stdlib). This means `arch check ModuleWithBusPort.arch` resolves the bus on its own — there is no need to also pass the bus source. An explicit `use BusName;` takes precedence: when the bus is named in a `use`, that declaration drives resolution and the fallback bus scan is skipped, so a stale build-emitted `BusName.archi` in the source directory cannot shadow it. Emitted bus `.archi` files are round-trippable — bus members are written as bare `name: dir Type;`, matching the `bus` body grammar.
+
+**`use` takes precedence for `inst` targets too.** Discovery above is keyed on the filename, so when two files in a directory define the same construct it would otherwise resolve to whichever one is named after it — silently, and possibly not the intended one. Naming the provider with `use <file>;` suppresses the filename lookup for the constructs that file supplies, which is the way to disambiguate when a name is defined more than once.
 
 This enables separate compilation workflows:
 

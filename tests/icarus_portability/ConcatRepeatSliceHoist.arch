@@ -1,0 +1,17 @@
+// arch#807 regression fixture: Concat/Repeat bases for both BitSlice
+// (`[hi:lo]`) and PartSelect (`[start +: w]`) forms, all hoisted to named
+// module-scope temps. See tests/integration_test.rs's
+// `test_concat_repeat_slice_hoist_behavioral_equivalence_verilator_and_iverilog`.
+module ConcatRepeatSliceHoist
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port y_concat_bitslice: out UInt<4>;
+  port y_concat_partselect: out UInt<4>;
+  port y_repeat_bitslice: out UInt<4>;
+  port y_repeat_partselect: out UInt<4>;
+
+  let y_concat_bitslice = {a, c}[5:2];
+  let y_concat_partselect = {a, c}[2 +: 4];
+  let y_repeat_bitslice = {2{a}}[5:2];
+  let y_repeat_partselect = {2{a}}[2 +: 4];
+end module ConcatRepeatSliceHoist

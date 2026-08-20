@@ -1964,6 +1964,11 @@ impl Builder {
                     self.walk_expr(owner, rel, scope, arg, ExprUse::Read);
                 }
             }
+            // Reads flow through the value being quantized; the format and
+            // selectors are compile-time, not signal reads.
+            ExprKind::ScaledQuantize(v, _, _, _) => {
+                self.walk_expr(owner, rel, scope, v, use_kind);
+            }
             ExprKind::PipelinedCall(_name, args, _stages) => {
                 // Registry-resolved builtin operator (e.g. `fma<pipelined, N>`),
                 // not a user construct — no `calls` edge to a construct, just
@@ -2028,9 +2033,22 @@ impl Builder {
             | TypeExpr::Bool
             | TypeExpr::Bit
             | TypeExpr::FP32
-            | TypeExpr::BF16 => {}
+            | TypeExpr::BF16
+            | TypeExpr::FP8E4M3
+            | TypeExpr::FP8E5M2
+            | TypeExpr::FP4E2M1
+            | TypeExpr::FP6E2M3
+            | TypeExpr::FP6E3M2
+            | TypeExpr::E8M0
+            | TypeExpr::UE4M3 => {}
             TypeExpr::Vec(inner, n) => {
                 self.walk_type(owner, scope, inner, span);
+                let rel = self.rel_for_span(n.span);
+                self.walk_expr(owner, &rel, scope, n, ExprUse::Read);
+            }
+            TypeExpr::ScaledVec(elem, n, scale) => {
+                self.walk_type(owner, scope, elem, span);
+                self.walk_type(owner, scope, scale, span);
                 let rel = self.rel_for_span(n.span);
                 self.walk_expr(owner, &rel, scope, n, ExprUse::Read);
             }
