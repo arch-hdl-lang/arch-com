@@ -32,7 +32,7 @@ module SimplePipe #(
       writeback_valid_r <= fetch_valid_r;
     end
   end
-  
+
   // ── Synchronous/reset-free stage data updates ──
   always_ff @(posedge clk) begin
     fetch_captured <= data_in;
@@ -42,7 +42,7 @@ module SimplePipe #(
       writeback_result <= 0;
     end
   end
-  
+
   // ── Combinational outputs ──
   assign data_out = writeback_result;
 

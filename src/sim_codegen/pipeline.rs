@@ -65,6 +65,7 @@ impl<'a> SimCodegen<'a> {
             init_val: String,
             reset_val: Option<String>,
             reset_cond: Option<String>,
+            reset_is_async: bool,
             bits: u32,
             is_let: bool,
         }
@@ -83,10 +84,21 @@ impl<'a> SimCodegen<'a> {
                         let init_val = r
                             .init
                             .as_ref()
-                            .map(Self::pipeline_literal_value)
+                            .map(|expr| {
+                                Self::pipeline_value_expr(expr, &p.common.params, &_enum_map)
+                            })
                             .unwrap_or_else(|| "0".to_string());
-                        let reset_val = Self::pipeline_reset_value(&r.reset);
-                        let reset_cond = Self::pipeline_reset_condition(&r.reset, &p.ports);
+                        let reset_val =
+                            Self::pipeline_reset_value(&r.reset, &p.common.params, &_enum_map);
+                        let reset_info = resolve_reg_reset_info(&r.reset, &p.ports);
+                        let reset_cond = reset_info.as_ref().map(|(signal, _, is_low)| {
+                            if *is_low {
+                                format!("(!{signal})")
+                            } else {
+                                signal.clone()
+                            }
+                        });
+                        let reset_is_async = reset_info.is_some_and(|(_, is_async, _)| is_async);
                         names_set.insert(r.name.name.clone());
                         all_regs.push(StageReg {
                             prefixed,
@@ -94,6 +106,7 @@ impl<'a> SimCodegen<'a> {
                             init_val,
                             reset_val,
                             reset_cond,
+                            reset_is_async,
                             bits,
                             is_let: false,
                         });
@@ -121,6 +134,7 @@ impl<'a> SimCodegen<'a> {
                             init_val: String::new(),
                             reset_val: None,
                             reset_cond: None,
+                            reset_is_async: false,
                             bits,
                             is_let: true,
                         });
@@ -308,7 +322,7 @@ impl<'a> SimCodegen<'a> {
             })
             .collect();
 
-        let (rst_name, _is_async, is_low) = extract_reset_info(&p.ports);
+        let (rst_name, rst_is_async, is_low) = extract_reset_info(&p.ports);
         let rst_cond = if is_low {
             format!("(!{})", rst_name)
         } else {
@@ -456,6 +470,24 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!(
             "  bool _rising = ({clk_name} && !_clk_prev);\n  _clk_prev = {clk_name};\n"
         ));
+        // Async resets take effect on assertion even when there is no clock
+        // edge. They are also emitted inside the rising-edge block below so
+        // reset keeps priority over normal stage updates on a coincident edge.
+        for sr in &all_regs {
+            if !sr.reset_is_async {
+                continue;
+            }
+            let (Some(cond), Some(value)) = (&sr.reset_cond, &sr.reset_val) else {
+                continue;
+            };
+            cpp.push_str(&format!(
+                "  if ({cond}) {{ _{} = {value}; }}\n",
+                sr.prefixed
+            ));
+        }
+        if rst_is_async {
+            cpp.push_str(&format!("  if ({rst_cond}) {{ _do_reset(); }}\n"));
+        }
         cpp.push_str("  if (_rising) {\n");
 
         // Evaluate let bindings first (they are combinational and may be referenced in seq blocks)
@@ -1675,44 +1707,30 @@ impl<'a> SimCodegen<'a> {
         }
     }
 
-    fn pipeline_literal_value(expr: &Expr) -> String {
-        match &expr.kind {
-            ExprKind::Literal(LitKind::Dec(v))
-            | ExprKind::Literal(LitKind::Bin(v))
-            | ExprKind::Literal(LitKind::Sized(_, v))
-            | ExprKind::Literal(LitKind::ParamSized(_, v)) => v.to_string(),
-            ExprKind::Literal(LitKind::Hex(v)) | ExprKind::Literal(LitKind::TypedFloat(_, v)) => {
-                format!("0x{v:X}")
-            }
-            ExprKind::Bool(b) => {
-                if *b {
-                    "1".to_string()
-                } else {
-                    "0".to_string()
-                }
-            }
-            // Match the existing native module behavior for initializers that
-            // are not constructor-list constants.
-            _ => "0".to_string(),
-        }
+    fn pipeline_value_expr(
+        expr: &Expr,
+        params: &[ParamDecl],
+        enum_map: &HashMap<String, Vec<(String, u64)>>,
+    ) -> String {
+        let names = HashSet::new();
+        let widths = HashMap::new();
+        let ctx = Ctx::new(
+            &names, &names, &names, &names, &names, &widths, enum_map, &names,
+        )
+        .with_params(params);
+        cpp_expr(expr, &ctx)
     }
 
-    fn pipeline_reset_value(reset: &RegReset) -> Option<String> {
+    fn pipeline_reset_value(
+        reset: &RegReset,
+        params: &[ParamDecl],
+        enum_map: &HashMap<String, Vec<(String, u64)>>,
+    ) -> Option<String> {
         match reset {
             RegReset::Explicit(_, _, _, val) | RegReset::Inherit(_, val) => {
-                Some(Self::pipeline_literal_value(val))
+                Some(Self::pipeline_value_expr(val, params, enum_map))
             }
             RegReset::None => None,
         }
-    }
-
-    fn pipeline_reset_condition(reset: &RegReset, ports: &[PortDecl]) -> Option<String> {
-        resolve_reg_reset_info(reset, ports).map(|(signal, _is_async, is_low)| {
-            if is_low {
-                format!("(!{signal})")
-            } else {
-                signal
-            }
-        })
     }
 }

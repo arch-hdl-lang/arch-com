@@ -43,7 +43,7 @@ module P (
       s2_valid_r <= s1_valid_r;
     end
   end
-  
+
   // ── Synchronous/reset-free stage data updates ──
   always_ff @(posedge clk) begin
     s1_latched <= src;
@@ -53,7 +53,7 @@ module P (
       s2_captured <= 0;
     end
   end
-  
+
   // ── Combinational outputs ──
   Sub #(.WIDTH(32)) sub (
     .a_in(s1_sub_in),

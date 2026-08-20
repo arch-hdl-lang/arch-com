@@ -46,7 +46,7 @@ module AluPipe #(
       execute_valid_r <= fetch_valid_r;
     end
   end
-  
+
   // ── Synchronous/reset-free stage data updates ──
   always_ff @(posedge clk) begin
     fetch_a_r <= op_a;
@@ -58,7 +58,7 @@ module AluPipe #(
       execute_alu_out <= 0;
     end
   end
-  
+
   // ── Combinational outputs ──
   Alu alu0 (
     .a(fetch_a_r),

@@ -93,7 +93,7 @@ module WorkerPipe (
       endcase
     end
   end
-  
+
   // ── Synchronous/reset-free stage data updates ──
   always_ff @(posedge clk) begin
     if (!capture_stall) begin
@@ -122,7 +122,7 @@ module WorkerPipe (
       process_result <= 1'b0;
     end
   end
-  
+
   // ── Combinational outputs ──
   Worker worker (
     .clk_i(clk),

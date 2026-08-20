@@ -98,7 +98,7 @@ module CpuPipe #(
       end
     end
   end
-  
+
   // ── Synchronous/reset-free stage data updates ──
   always_ff @(posedge clk) begin
     if (!fetch_stall) begin
@@ -142,7 +142,7 @@ module CpuPipe #(
       writeback_pc <= 0;
     end
   end
-  
+
   // ── Combinational outputs ──
   always_comb begin
     if (((execute_we && (execute_rd == decode_rd)) && (execute_rd != 0))) begin

@@ -645,7 +645,7 @@ impl<'a> Codegen<'a> {
 
         self.indent -= 1;
         self.line("end");
-        self.line("");
+        self.out.push('\n');
 
         // ── Synchronous-reset and reset-free stage data ──────────────────────
         if sync_data_targets.iter().any(|s| !s.is_empty()) {
@@ -701,7 +701,7 @@ impl<'a> Codegen<'a> {
             }
             self.indent -= 1;
             self.line("end");
-            self.line("");
+            self.out.push('\n');
         }
 
         // ── Asynchronous-reset stage data ────────────────────────────────────
@@ -768,7 +768,7 @@ impl<'a> Codegen<'a> {
             self.line("end");
             self.indent -= 1;
             self.line("end");
-            self.line("");
+            self.out.push('\n');
         }
 
         // ── Combinational outputs ────────────────────────────────────────────
