@@ -695,15 +695,8 @@ impl<'a> Codegen<'a> {
                                     &stage_regs,
                                     &port_names,
                                 );
-                                let target = if let ExprKind::Ident(name) = &a.target.kind {
-                                    if port_names.contains(name) {
-                                        name.clone()
-                                    } else {
-                                        format!("{}_{}", prefix, name)
-                                    }
-                                } else {
-                                    self.emit_expr_str(&a.target)
-                                };
+                                let target =
+                                    self.emit_pipeline_lhs_str(&a.target, &prefix, &port_names);
                                 self.line(&format!("assign {} = {};", target, val));
                             }
                         }
@@ -1130,7 +1123,33 @@ impl<'a> Codegen<'a> {
                     format!("{}_{}", current_prefix, name)
                 }
             }
-            _ => self.emit_expr_str(expr),
+            ExprKind::Index(base, idx) => format!(
+                "{}[{}]",
+                self.emit_pipeline_lhs_str(base, current_prefix, port_names),
+                self.emit_expr_str(idx)
+            ),
+            ExprKind::BitSlice(base, hi, lo) => {
+                let base = self.emit_pipeline_lhs_str(base, current_prefix, port_names);
+                if let Some(width) = Self::try_indexed_part_select(hi, lo) {
+                    format!("{base}[{} +: {width}]", self.emit_expr_str(lo))
+                } else {
+                    format!(
+                        "{base}[{}:{}]",
+                        self.emit_expr_str(hi),
+                        self.emit_expr_str(lo)
+                    )
+                }
+            }
+            ExprKind::PartSelect(base, start, width, up) => {
+                let op = if *up { "+:" } else { "-:" };
+                format!(
+                    "{}[{} {op} {}]",
+                    self.emit_pipeline_lhs_str(base, current_prefix, port_names),
+                    self.emit_expr_str(start),
+                    self.emit_expr_str(width)
+                )
+            }
+            _ => self.emit_lvalue_str(expr),
         }
     }
 
@@ -1363,15 +1382,7 @@ impl<'a> Codegen<'a> {
                     stage_regs,
                     port_names,
                 );
-                let target = if let ExprKind::Ident(name) = &a.target.kind {
-                    if port_names.contains(name) {
-                        name.clone()
-                    } else {
-                        format!("{}_{}", current_prefix, name)
-                    }
-                } else {
-                    self.emit_expr_str(&a.target)
-                };
+                let target = self.emit_pipeline_lhs_str(&a.target, current_prefix, port_names);
                 self.line(&format!("{} = {};", target, val));
             }
             Stmt::IfElse(ie) => {
@@ -1652,6 +1663,88 @@ impl<'a> Codegen<'a> {
             .unwrap_or_else(|| emit(base))
     }
 
+    fn emit_pipeline_stage_index_str(
+        &self,
+        base: &Expr,
+        idx: &Expr,
+        preserve_signed_element: bool,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) -> String {
+        let unwrapped = Self::unwrap_reinterpret_cast(base);
+        let emitted_base = if let ExprKind::Index(inner_base, inner_idx) = &unwrapped.kind {
+            self.emit_pipeline_stage_index_str(
+                inner_base,
+                inner_idx,
+                false,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            )
+        } else {
+            self.emit_pipeline_stage_expr_str(
+                unwrapped,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            )
+        };
+        let index = self.emit_pipeline_stage_expr_str(
+            idx,
+            current_prefix,
+            current_stage_idx,
+            stage_names,
+            stage_regs,
+            port_names,
+        );
+        let selected = format!("{emitted_base}[{index}]");
+        if preserve_signed_element
+            && self.pipeline_stage_index_result_is_sint(base, current_stage_idx)
+        {
+            format!("$signed({selected})")
+        } else {
+            selected
+        }
+    }
+
+    fn emit_pipeline_index_str(
+        &self,
+        base: &Expr,
+        idx: &Expr,
+        preserve_signed_element: bool,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) -> String {
+        let unwrapped = Self::unwrap_reinterpret_cast(base);
+        let emitted_base = if let ExprKind::Index(inner_base, inner_idx) = &unwrapped.kind {
+            self.emit_pipeline_index_str(
+                inner_base,
+                inner_idx,
+                false,
+                stage_names,
+                stage_regs,
+                port_names,
+            )
+        } else {
+            self.emit_pipeline_expr_str(unwrapped, stage_names, stage_regs, port_names)
+        };
+        let index = self.emit_pipeline_expr_str(idx, stage_names, stage_regs, port_names);
+        let selected = format!("{emitted_base}[{index}]");
+        if preserve_signed_element && self.index_result_is_sint(base) {
+            format!("$signed({selected})")
+        } else {
+            selected
+        }
+    }
+
     /// Emit an expression within a specific stage context (knows which stage it's in,
     /// so bare identifiers that are stage registers get prefixed).
     fn emit_pipeline_stage_expr_str(
@@ -1762,6 +1855,14 @@ impl<'a> Codegen<'a> {
                     BinOp::BitOr => "|",
                     BinOp::BitXor => "^",
                     BinOp::Shl => "<<",
+                    BinOp::Shr
+                        if matches!(
+                            self.pipeline_stage_expr_decl_type(lhs, current_stage_idx),
+                            Some(TypeExpr::SInt(_))
+                        ) =>
+                    {
+                        ">>>"
+                    }
                     BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
@@ -1812,6 +1913,29 @@ impl<'a> Codegen<'a> {
                         port_names,
                     )
                 },
+                &|e: &Expr| {
+                    if let ExprKind::Index(base, idx) = &e.kind {
+                        self.emit_pipeline_stage_index_str(
+                            base,
+                            idx,
+                            false,
+                            current_prefix,
+                            current_stage_idx,
+                            stage_names,
+                            stage_regs,
+                            port_names,
+                        )
+                    } else {
+                        self.emit_pipeline_stage_expr_str(
+                            e,
+                            current_prefix,
+                            current_stage_idx,
+                            stage_names,
+                            stage_regs,
+                            port_names,
+                        )
+                    }
+                },
                 &|recv: &Expr, chunk: &Expr, emitted: &str| {
                     self.try_emit_pipeline_reverse_chunked(
                         recv,
@@ -1842,46 +1966,38 @@ impl<'a> Codegen<'a> {
                     )
                 })
             }
-            ExprKind::Index(base, idx) => {
-                // Icarus portability (arch#650): unwrap a redundant
-                // `signed(...)`/`unsigned(...)`/`as T` wrapper before
-                // indexing — same-width bit reinterpretation, so
-                // `unsigned(e)[i]` reads the identical bit as `e[i]`, and
-                // Icarus rejects the indexed-cast form even though Verilator
-                // accepts it. (The arithmetic-base case mod.rs's main
-                // `Index` emitter hoists to a named temp is left as prior
-                // bare-emission behavior here — a pipeline stage-forwarding
-                // expression's width can't be reliably resolved through this
-                // stage-substitution recursion the way `infer_sv_width_str`
-                // resolves it for ordinary module code.)
-                let unwrapped = Self::unwrap_reinterpret_cast(base);
-                let b = self.emit_pipeline_stage_expr_str(
-                    unwrapped,
-                    current_prefix,
-                    current_stage_idx,
-                    stage_names,
-                    stage_regs,
-                    port_names,
-                );
-                let i = self.emit_pipeline_stage_expr_str(
-                    idx,
-                    current_prefix,
-                    current_stage_idx,
-                    stage_names,
-                    stage_regs,
-                    port_names,
-                );
-                format!("{b}[{i}]")
-            }
+            ExprKind::Index(base, idx) => self.emit_pipeline_stage_index_str(
+                base,
+                idx,
+                true,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            ),
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_slice_base_str(
-                    base,
-                    current_prefix,
-                    current_stage_idx,
-                    stage_names,
-                    stage_regs,
-                    port_names,
-                );
+                let b = if let ExprKind::Index(index_base, index) = &base.kind {
+                    self.emit_pipeline_stage_index_str(
+                        index_base,
+                        index,
+                        false,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                } else {
+                    self.emit_pipeline_slice_base_str(
+                        base,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                };
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
                     let l = self.emit_expr_str(lo);
                     format!("{b}[{l} +: {width}]")
@@ -1892,14 +2008,27 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_slice_base_str(
-                    base,
-                    current_prefix,
-                    current_stage_idx,
-                    stage_names,
-                    stage_regs,
-                    port_names,
-                );
+                let b = if let ExprKind::Index(index_base, index) = &base.kind {
+                    self.emit_pipeline_stage_index_str(
+                        index_base,
+                        index,
+                        false,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                } else {
+                    self.emit_pipeline_slice_base_str(
+                        base,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                };
                 let s = self.emit_expr_str(start);
                 let w = self.emit_expr_str(width);
                 let op = if *up { "+:" } else { "-:" };
@@ -2099,6 +2228,7 @@ impl<'a> Codegen<'a> {
                     BinOp::BitOr => "|",
                     BinOp::BitXor => "^",
                     BinOp::Shl => "<<",
+                    BinOp::Shr if self.expr_is_signed(lhs) => ">>>",
                     BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
@@ -2133,6 +2263,20 @@ impl<'a> Codegen<'a> {
                 args,
                 MethodCallHost::Pipeline,
                 &|e: &Expr| self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names),
+                &|e: &Expr| {
+                    if let ExprKind::Index(base, idx) = &e.kind {
+                        self.emit_pipeline_index_str(
+                            base,
+                            idx,
+                            false,
+                            stage_names,
+                            stage_regs,
+                            port_names,
+                        )
+                    } else {
+                        self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names)
+                    }
+                },
                 // This emitter has no current stage — ports (and explicit
                 // `Stage.field` references) only.
                 &|recv: &Expr, chunk: &Expr, emitted: &str| {
@@ -2148,20 +2292,21 @@ impl<'a> Codegen<'a> {
                 })
             }
             ExprKind::Index(base, idx) => {
-                // Icarus portability (arch#650) — see the matching comment in
-                // `emit_pipeline_stage_expr_str`.
-                let unwrapped = Self::unwrap_reinterpret_cast(base);
-                let b = self.emit_pipeline_expr_str(unwrapped, stage_names, stage_regs, port_names);
-                let i = self.emit_pipeline_expr_str(idx, stage_names, stage_regs, port_names);
-                format!("{b}[{i}]")
+                self.emit_pipeline_index_str(base, idx, true, stage_names, stage_regs, port_names)
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_top_slice_base_str(
-                    base,
-                    stage_names,
-                    stage_regs,
-                    port_names,
-                );
+                let b = if let ExprKind::Index(index_base, index) = &base.kind {
+                    self.emit_pipeline_index_str(
+                        index_base,
+                        index,
+                        false,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                } else {
+                    self.emit_pipeline_top_slice_base_str(base, stage_names, stage_regs, port_names)
+                };
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
                     let l = self.emit_expr_str(lo);
                     format!("{b}[{l} +: {width}]")
@@ -2172,12 +2317,18 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_top_slice_base_str(
-                    base,
-                    stage_names,
-                    stage_regs,
-                    port_names,
-                );
+                let b = if let ExprKind::Index(index_base, index) = &base.kind {
+                    self.emit_pipeline_index_str(
+                        index_base,
+                        index,
+                        false,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                } else {
+                    self.emit_pipeline_top_slice_base_str(base, stage_names, stage_regs, port_names)
+                };
                 let s = self.emit_expr_str(start);
                 let w = self.emit_expr_str(width);
                 let op = if *up { "+:" } else { "-:" };

@@ -49,7 +49,10 @@ impl<'a> Codegen<'a> {
     ///
     /// `emit_sub` produces the SV string for a sub-expression (the receiver,
     /// or the unwrapped receiver for `sext`) using the host's own emitter.
-    /// `try_reverse_chunked` attempts the arch#808 portable chunked-concat
+    /// `emit_selectable` emits a receiver that will be indexed again by the
+    /// lowering (currently `.sext()`), suppressing rvalue-only casts that
+    /// would make the subsequent select non-portable. `try_reverse_chunked`
+    /// attempts the arch#808 portable chunked-concat
     /// lowering of `.reverse<C>()`; it receives `(receiver, chunk,
     /// emitted_receiver)` and returns `None` to keep the streaming-concat
     /// fallback. Width/chunk type arguments are compile-time constants and
@@ -61,6 +64,7 @@ impl<'a> Codegen<'a> {
         args: &[Expr],
         host: MethodCallHost,
         emit_sub: &dyn Fn(&Expr) -> String,
+        emit_selectable: &dyn Fn(&Expr) -> String,
         try_reverse_chunked: &dyn Fn(&Expr, &Expr, &str) -> Option<String>,
     ) -> String {
         let b = emit_sub(base);
@@ -110,7 +114,7 @@ impl<'a> Codegen<'a> {
                     // call inside `$bits`, which Icarus also does not
                     // reliably accept.
                     let recv = Self::unwrap_reinterpret_cast(base);
-                    let rb = emit_sub(recv);
+                    let rb = emit_selectable(recv);
                     let sw = match host {
                         MethodCallHost::Main => Self::paren_width(&self.infer_sv_width_str(recv)),
                         // Stage-substituted receivers can't be resolved by

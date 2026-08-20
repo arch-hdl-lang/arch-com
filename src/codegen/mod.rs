@@ -1267,7 +1267,7 @@ impl<'a> Codegen<'a> {
                     self.emit_function_for(fl);
                 }
                 FunctionBodyItem::Assign(a) => {
-                    let target = self.emit_expr_str(&a.target);
+                    let target = self.emit_lvalue_str(&a.target);
                     let val = self.emit_expr_str(&a.value);
                     self.line(&format!("{target} = {val};"));
                 }
@@ -1754,7 +1754,7 @@ impl<'a> Codegen<'a> {
                 FunctionBodyItem::IfElse(ie) => self.emit_function_if(ie),
                 FunctionBodyItem::For(fl) => self.emit_function_for(fl),
                 FunctionBodyItem::Assign(a) => {
-                    let target = self.emit_expr_str(&a.target);
+                    let target = self.emit_lvalue_str(&a.target);
                     let val = self.emit_expr_str(&a.value);
                     self.line(&format!("{target} = {val};"));
                 }
@@ -2236,7 +2236,7 @@ impl<'a> Codegen<'a> {
                 if ctx == AssignCtx::Blocking {
                     if let ExprKind::ExprMatch(scrutinee, arms) = &a.value.kind {
                         let s = self.emit_expr_str(scrutinee);
-                        let target = self.emit_expr_str(&a.target);
+                        let target = self.emit_lvalue_str(&a.target);
                         self.line(&format!("case ({s})"));
                         self.indent += 1;
                         for arm in arms {
@@ -2262,7 +2262,7 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 let val = self.emit_expr_str(&a.value);
-                let tgt = self.emit_expr_str(&a.target);
+                let tgt = self.emit_lvalue_str(&a.target);
                 self.line(&format!("{} {} {};", tgt, ctx.op(), val));
             }
             Stmt::IfElse(ie) => {
@@ -2535,6 +2535,9 @@ impl<'a> Codegen<'a> {
 
     /// Check if an expression produces a signed (SInt) value.
     fn expr_is_signed(&self, expr: &Expr) -> bool {
+        if matches!(self.expr_decl_type(expr), Some(TypeExpr::SInt(_))) {
+            return true;
+        }
         match &expr.kind {
             ExprKind::Cast(_, ty) => matches!(&**ty, TypeExpr::SInt(_)),
             ExprKind::Ident(name) => self.ident_is_sint(name),
@@ -2651,8 +2654,36 @@ impl<'a> Codegen<'a> {
                 }
                 None
             }
+            Symbol::Param(_) => self.current_param_decl_type(name),
             _ => None,
         }
+    }
+
+    fn current_param_decl_type(&self, name: &str) -> Option<TypeExpr> {
+        let params = self.source.items.iter().find_map(|item| match item {
+            Item::Module(m) if m.name.name == self.current_construct => Some(&m.params),
+            Item::Fsm(f) if f.name.name == self.current_construct => Some(&f.params),
+            Item::Pipeline(p) if p.name.name == self.current_construct => Some(&p.params),
+            _ => None,
+        })?;
+        params.iter().find_map(|p| {
+            if p.name.name != name {
+                return None;
+            }
+            match &p.kind {
+                ParamKind::ConstVec(ty) | ParamKind::Logic(ty) => Some(ty.clone()),
+                _ => None,
+            }
+        })
+    }
+
+    fn module_body_decl_type(body: &[ModuleBodyItem], name: &str) -> Option<TypeExpr> {
+        body.iter().find_map(|item| match item {
+            ModuleBodyItem::RegDecl(r) if r.name.name == name => Some(r.ty.clone()),
+            ModuleBodyItem::WireDecl(w) if w.name.name == name => Some(w.ty.clone()),
+            ModuleBodyItem::LetBinding(l) if l.name.name == name => l.ty.clone(),
+            _ => None,
+        })
     }
 
     /// Pipeline-scope identifier types: pipelines have no `module_scopes`
@@ -2668,22 +2699,24 @@ impl<'a> Codegen<'a> {
                     return Some(port.ty.clone());
                 }
             }
+            if let Some(ty) = self.current_param_decl_type(name) {
+                return Some(ty);
+            }
+            let mut found: Option<TypeExpr> = None;
             for stage in &p.stages {
-                for bi in &stage.body {
-                    match bi {
-                        ModuleBodyItem::RegDecl(r) if r.name.name == name => {
-                            return Some(r.ty.clone());
+                if let Some(ty) = Self::module_body_decl_type(&stage.body, name) {
+                    if let Some(previous) = &found {
+                        if self.emit_type_and_array_suffix(previous)
+                            != self.emit_type_and_array_suffix(&ty)
+                        {
+                            return None;
                         }
-                        ModuleBodyItem::WireDecl(w) if w.name.name == name => {
-                            return Some(w.ty.clone());
-                        }
-                        ModuleBodyItem::LetBinding(l) if l.name.name == name => {
-                            return l.ty.clone();
-                        }
-                        _ => {}
+                    } else {
+                        found = Some(ty);
                     }
                 }
             }
+            return found;
         }
         None
     }
@@ -2716,9 +2749,21 @@ impl<'a> Codegen<'a> {
 
     fn expr_decl_type(&self, e: &Expr) -> Option<TypeExpr> {
         match &e.kind {
-            ExprKind::Ident(name) => self.ident_decl_type(name),
+            ExprKind::Ident(name) | ExprKind::SynthIdent(name, _) => self.ident_decl_type(name),
+            ExprKind::Cast(_, ty) => Some((**ty).clone()),
+            ExprKind::Signed(inner) => match self.expr_decl_type(inner)? {
+                TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(TypeExpr::SInt(w)),
+                _ => None,
+            },
+            ExprKind::Unsigned(inner) => match self.expr_decl_type(inner)? {
+                TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(TypeExpr::UInt(w)),
+                _ => None,
+            },
             ExprKind::Index(base, _) => match self.expr_decl_type(base)? {
                 TypeExpr::Vec(elem, _) => Some(*elem),
+                TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit => {
+                    Some(TypeExpr::Bool)
+                }
                 _ => None,
             },
             ExprKind::FieldAccess(base, field) => {
@@ -2745,16 +2790,181 @@ impl<'a> Codegen<'a> {
                 let TypeExpr::Named(sname) = base_ty else {
                     return None;
                 };
-                if let Some((Symbol::Struct(si), _)) = self.symbols.globals.get(&sname.name) {
-                    for (fname, fty) in &si.fields {
-                        if fname == &field.name {
-                            return Some(fty.clone());
+                match self
+                    .symbols
+                    .globals
+                    .get(&sname.name)
+                    .map(|(symbol, _)| symbol)
+                {
+                    Some(Symbol::Struct(si)) => si
+                        .fields
+                        .iter()
+                        .find(|(fname, _)| fname == &field.name)
+                        .map(|(_, fty)| fty.clone()),
+                    Some(Symbol::Bus(bi)) => bi
+                        .signals
+                        .iter()
+                        .find(|(fname, _, _)| fname == &field.name)
+                        .map(|(_, _, fty)| fty.clone()),
+                    _ => None,
+                }
+            }
+            ExprKind::MethodCall(base, method, args) => match method.name.as_str() {
+                "sext" => args
+                    .first()
+                    .cloned()
+                    .map(|width| TypeExpr::SInt(Box::new(width))),
+                "trunc" | "resize" => {
+                    let width = args.first()?.clone();
+                    match self.expr_decl_type(base)? {
+                        TypeExpr::SInt(_) => Some(TypeExpr::SInt(Box::new(width))),
+                        TypeExpr::UInt(_) | TypeExpr::Bool | TypeExpr::Bit => {
+                            Some(TypeExpr::UInt(Box::new(width)))
+                        }
+                        _ => None,
+                    }
+                }
+                "reverse" => self.expr_decl_type(base),
+                _ => None,
+            },
+            ExprKind::Binary(_, lhs, _) => self.expr_decl_type(lhs),
+            ExprKind::Ternary(_, then_expr, _) => self.expr_decl_type(then_expr),
+            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => {
+                self.expr_decl_type(inner)
+            }
+            ExprKind::FunctionCall(name, _) => {
+                let (Symbol::Function(overloads), _) = self.symbols.globals.get(name)? else {
+                    return None;
+                };
+                let index = self.overload_map.get(&e.span.start).copied().unwrap_or(0);
+                overloads.get(index).map(|f| f.ret_ty.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn index_result_is_sint(&self, base: &Expr) -> bool {
+        matches!(
+            self.expr_decl_type(base),
+            Some(TypeExpr::Vec(inner, _)) if matches!(*inner, TypeExpr::SInt(_))
+        )
+    }
+
+    fn pipeline_stage_expr_decl_type(&self, expr: &Expr, stage_idx: usize) -> Option<TypeExpr> {
+        match &expr.kind {
+            ExprKind::Ident(name) | ExprKind::SynthIdent(name, _) => {
+                for item in &self.source.items {
+                    let Item::Pipeline(p) = item else { continue };
+                    if p.name.name != self.current_construct {
+                        continue;
+                    }
+                    if let Some(stage) = p.stages.get(stage_idx) {
+                        if let Some(ty) = Self::module_body_decl_type(&stage.body, name) {
+                            return Some(ty);
                         }
                     }
+                    return p
+                        .common
+                        .ports
+                        .iter()
+                        .find(|port| port.name.name == *name)
+                        .map(|port| port.ty.clone())
+                        .or_else(|| self.current_param_decl_type(name));
                 }
                 None
             }
+            ExprKind::Index(base, _) => {
+                match self.pipeline_stage_expr_decl_type(base, stage_idx)? {
+                    TypeExpr::Vec(inner, _) => Some(*inner),
+                    TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit => {
+                        Some(TypeExpr::Bool)
+                    }
+                    _ => None,
+                }
+            }
+            ExprKind::Cast(_, ty) => Some((**ty).clone()),
+            ExprKind::Signed(inner) => {
+                match self.pipeline_stage_expr_decl_type(inner, stage_idx)? {
+                    TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(TypeExpr::SInt(w)),
+                    _ => None,
+                }
+            }
+            ExprKind::Unsigned(inner) => {
+                match self.pipeline_stage_expr_decl_type(inner, stage_idx)? {
+                    TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(TypeExpr::UInt(w)),
+                    _ => None,
+                }
+            }
+            ExprKind::MethodCall(base, method, args) => match method.name.as_str() {
+                "sext" => args
+                    .first()
+                    .cloned()
+                    .map(|width| TypeExpr::SInt(Box::new(width))),
+                "trunc" | "resize" => {
+                    let width = args.first()?.clone();
+                    match self.pipeline_stage_expr_decl_type(base, stage_idx)? {
+                        TypeExpr::SInt(_) => Some(TypeExpr::SInt(Box::new(width))),
+                        TypeExpr::UInt(_) | TypeExpr::Bool | TypeExpr::Bit => {
+                            Some(TypeExpr::UInt(Box::new(width)))
+                        }
+                        _ => None,
+                    }
+                }
+                "reverse" => self.pipeline_stage_expr_decl_type(base, stage_idx),
+                _ => None,
+            },
+            ExprKind::Binary(_, lhs, _) => self.pipeline_stage_expr_decl_type(lhs, stage_idx),
+            ExprKind::Ternary(_, then_expr, _) => {
+                self.pipeline_stage_expr_decl_type(then_expr, stage_idx)
+            }
+            ExprKind::FieldAccess(..)
+            | ExprKind::FunctionCall(..)
+            | ExprKind::LatencyAt(..)
+            | ExprKind::SvaNext(..) => self.expr_decl_type(expr),
             _ => None,
+        }
+    }
+
+    fn pipeline_stage_index_result_is_sint(&self, base: &Expr, stage_idx: usize) -> bool {
+        matches!(
+            self.pipeline_stage_expr_decl_type(base, stage_idx),
+            Some(TypeExpr::Vec(inner, _)) if matches!(*inner, TypeExpr::SInt(_))
+        )
+    }
+
+    /// Emit an assignment target without the signed casts used only for
+    /// rvalue Vec element reads.
+    fn emit_lvalue_str(&self, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Index(base, idx) => {
+                format!(
+                    "{}[{}]",
+                    self.emit_lvalue_str(base),
+                    self.emit_expr_str(idx)
+                )
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                let base = self.emit_lvalue_str(base);
+                if let Some(width) = Self::try_indexed_part_select(hi, lo) {
+                    format!("{base}[{} +: {width}]", self.emit_expr_str(lo))
+                } else {
+                    format!(
+                        "{base}[{}:{}]",
+                        self.emit_expr_str(hi),
+                        self.emit_expr_str(lo)
+                    )
+                }
+            }
+            ExprKind::PartSelect(base, start, width, up) => {
+                let op = if *up { "+:" } else { "-:" };
+                format!(
+                    "{}[{} {op} {}]",
+                    self.emit_lvalue_str(base),
+                    self.emit_expr_str(start),
+                    self.emit_expr_str(width)
+                )
+            }
+            _ => self.emit_expr_str(expr),
         }
     }
 
@@ -2787,13 +2997,7 @@ impl<'a> Codegen<'a> {
                 if st.name.name != stage {
                     continue;
                 }
-                for bi in &st.body {
-                    if let ModuleBodyItem::RegDecl(r) = bi {
-                        if r.name.name == reg {
-                            return Some(r.ty.clone());
-                        }
-                    }
-                }
+                return Self::module_body_decl_type(&st.body, reg);
             }
         }
         None
@@ -6328,6 +6532,19 @@ impl<'a> Codegen<'a> {
         };
         let n_usize = n as usize;
         let idx_w = crate::width::index_width(n as u64);
+        let element_ty = match self.expr_decl_type(recv) {
+            Some(TypeExpr::Vec(inner, _)) => Some(*inner),
+            _ => None,
+        };
+        let element_is_sint = matches!(element_ty.as_ref(), Some(TypeExpr::SInt(_)));
+        let element_at = |i: u32| {
+            let selected = format!("{recv_b}[{i}]");
+            if element_is_sint {
+                format!("$signed({selected})")
+            } else {
+                selected
+            }
+        };
 
         // Helper: emit an expression with `item` bound to recv[i] and
         // `index` bound to a sized literal. `ident_subst` is a field of
@@ -6336,14 +6553,20 @@ impl<'a> Codegen<'a> {
         // emission is single-threaded, so this is safe.
         let emit_at = |i: u32| -> String {
             let this = self as *const Codegen as *mut Codegen;
+            let prior_item_ty;
             // SAFETY: single-threaded emission; no aliasing.
             unsafe {
                 (*this)
                     .ident_subst
-                    .insert("item".to_string(), format!("{recv_b}[{i}]"));
+                    .insert("item".to_string(), element_at(i));
                 (*this)
                     .ident_subst
                     .insert("index".to_string(), format!("{idx_w}'d{i}"));
+                prior_item_ty = element_ty.as_ref().and_then(|ty| {
+                    (*this)
+                        .fn_local_types
+                        .insert("item".to_string(), ty.clone())
+                });
             }
             let result = if let Some(pred) = args.first() {
                 self.emit_expr_str(pred)
@@ -6355,6 +6578,11 @@ impl<'a> Codegen<'a> {
             unsafe {
                 (*this).ident_subst.remove("item");
                 (*this).ident_subst.remove("index");
+                if let Some(ty) = prior_item_ty {
+                    (*this).fn_local_types.insert("item".to_string(), ty);
+                } else {
+                    (*this).fn_local_types.remove("item");
+                }
             }
             result
         };
@@ -6395,7 +6623,7 @@ impl<'a> Codegen<'a> {
                     return "1'b0".to_string();
                 }
                 (0..n)
-                    .map(|i| format!("({recv_b}[{i}] == {x})"))
+                    .map(|i| format!("({} == {x})", element_at(i)))
                     .collect::<Vec<_>>()
                     .join(" || ")
             }
@@ -6403,28 +6631,19 @@ impl<'a> Codegen<'a> {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n)
-                    .map(|i| format!("{recv_b}[{i}]"))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
+                (0..n).map(element_at).collect::<Vec<_>>().join(" | ")
             }
             "reduce_and" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n)
-                    .map(|i| format!("{recv_b}[{i}]"))
-                    .collect::<Vec<_>>()
-                    .join(" & ")
+                (0..n).map(element_at).collect::<Vec<_>>().join(" & ")
             }
             "reduce_xor" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n)
-                    .map(|i| format!("{recv_b}[{i}]"))
-                    .collect::<Vec<_>>()
-                    .join(" ^ ")
+                (0..n).map(element_at).collect::<Vec<_>>().join(" ^ ")
             }
             "find_first" => {
                 // Record the index width so a matching typedef is emitted
@@ -7320,6 +7539,54 @@ impl<'a> Codegen<'a> {
         Some(Self::emit_reverse_chunks(&sel, w, c))
     }
 
+    /// Emit an index expression when the selected Vec element is signed.
+    /// `preserve_signed_element` is false while the result is itself the base
+    /// of another select, because `$signed(v[i])[j]` is not portable SV.
+    fn emit_signed_index_expr_str(
+        &self,
+        base: &Expr,
+        idx: &Expr,
+        preserve_signed_element: bool,
+    ) -> String {
+        let wrap = |selected: String| {
+            if preserve_signed_element {
+                format!("$signed({selected})")
+            } else {
+                selected
+            }
+        };
+
+        if let ExprKind::Ident(name) = &base.kind {
+            if let Some(elem_ty) = self.vec_params.get(name) {
+                let width = match elem_ty {
+                    TypeExpr::UInt(w) | TypeExpr::SInt(w) => self.emit_expr_str(w),
+                    _ => "1".to_string(),
+                };
+                let index = self.emit_expr_str(idx);
+                return wrap(format!("{name}[({index}) * ({width}) +: ({width})]"));
+            }
+        }
+
+        let unwrapped = Self::unwrap_reinterpret_cast(base);
+        let emitted_base = if let ExprKind::Index(inner_base, inner_idx) = &unwrapped.kind {
+            if self.index_result_is_sint(inner_base) {
+                self.emit_signed_index_expr_str(inner_base, inner_idx, false)
+            } else {
+                self.emit_expr_str(unwrapped)
+            }
+        } else if Self::is_atomic_index_base(unwrapped) {
+            self.emit_expr_str(unwrapped)
+        } else {
+            let in_loop = self.base_references_live_loop_var(unwrapped);
+            let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
+            let width = Self::paren_width(&self.infer_sv_width_str(unwrapped));
+            let rhs = self.emit_expr_str(unwrapped);
+            self.push_hoist_temp_in_loop(width, tmp.clone(), rhs, in_loop);
+            tmp
+        };
+        wrap(format!("{emitted_base}[{}]", self.emit_expr_str(idx)))
+    }
+
     /// Emit an expression, wrapping in parens only when its precedence is
     /// below `parent_prec` (i.e. the context requires tighter binding).
     fn emit_expr_prec(&self, expr: &Expr, parent_prec: u8) -> String {
@@ -7703,6 +7970,17 @@ impl<'a> Codegen<'a> {
                 args,
                 MethodCallHost::Main,
                 &|e: &Expr| self.emit_expr_str(e),
+                &|e: &Expr| {
+                    if let ExprKind::Index(base, idx) = &e.kind {
+                        if self.index_result_is_sint(base) {
+                            self.emit_signed_index_expr_str(base, idx, false)
+                        } else {
+                            self.emit_expr_str(e)
+                        }
+                    } else {
+                        self.emit_expr_str(e)
+                    }
+                },
                 // The main emitter's chunked lowering re-emits the receiver
                 // itself; the pre-emitted receiver string is unused.
                 &|recv: &Expr, chunk: &Expr, _emitted: &str| {
@@ -7730,6 +8008,16 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Index(base, idx) => {
+                if self.index_result_is_sint(base) {
+                    return self.emit_signed_index_expr_str(base, idx, true);
+                }
+                if let ExprKind::Index(inner_base, inner_idx) = &base.kind {
+                    if self.index_result_is_sint(inner_base) {
+                        let selected =
+                            self.emit_signed_index_expr_str(inner_base, inner_idx, false);
+                        return format!("{selected}[{}]", self.emit_expr_str(idx));
+                    }
+                }
                 if let (Some(v), Some(idx_v)) = (literal_expr_u64(base), literal_expr_u64(idx)) {
                     if idx_v < 64 {
                         return format!("1'd{}", (v >> idx_v) & 1);
@@ -7846,7 +8134,15 @@ impl<'a> Codegen<'a> {
                 // bare, contra the spec's old §3.2.1 claim that iverilog
                 // accepts them; Verilator additionally rejects the
                 // `MethodCall` size-cast shape `8'(x)[hi:lo]`).
-                let b = if let Some(tmp) = self.hoist_slice_base(base) {
+                let b = if let ExprKind::Index(index_base, index) = &base.kind {
+                    if self.index_result_is_sint(index_base) {
+                        self.emit_signed_index_expr_str(index_base, index, false)
+                    } else if let Some(tmp) = self.hoist_slice_base(base) {
+                        tmp
+                    } else {
+                        self.emit_expr_str(base)
+                    }
+                } else if let Some(tmp) = self.hoist_slice_base(base) {
                     tmp
                 } else {
                     let b = self.emit_expr_str(base);
@@ -7894,7 +8190,15 @@ impl<'a> Codegen<'a> {
                 // parenthesized) and `8'(x)[start +: w]` by Verilator too,
                 // despite all being portable `is_portable_bit_slice_base`
                 // bases.
-                let b = if let Some(tmp) = self.hoist_slice_base(base) {
+                let b = if let ExprKind::Index(index_base, index) = &base.kind {
+                    if self.index_result_is_sint(index_base) {
+                        self.emit_signed_index_expr_str(index_base, index, false)
+                    } else if let Some(tmp) = self.hoist_slice_base(base) {
+                        tmp
+                    } else {
+                        self.emit_expr_str(base)
+                    }
+                } else if let Some(tmp) = self.hoist_slice_base(base) {
                     tmp
                 } else {
                     self.emit_expr_str(base)
