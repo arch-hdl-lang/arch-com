@@ -569,6 +569,17 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
             }
         })
         .collect();
+    let module_params: HashMap<String, Vec<ParamDecl>> = ast
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Module(m) = item {
+                Some((m.name.name.clone(), m.params.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Step 2 + 3 — discover all instantiation variants, transitively.
     //
@@ -654,6 +665,7 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
                         variant_name,
                         &module_variants,
                         &module_defaults,
+                        &module_params,
                         &child_module_ports,
                     ) {
                         Ok(elaborated) => new_items.push(Item::Module(elaborated)),

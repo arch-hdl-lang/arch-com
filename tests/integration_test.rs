@@ -32306,6 +32306,119 @@ fn test_derived_param_override_reevaluates_and_creates_nested_variants() {
 }
 
 #[test]
+fn test_sibling_wrappers_rewrite_child_variants_with_derived_params() {
+    // Regression for a multi-file hierarchy where two sibling wrappers
+    // instantiate one child with different base-param overrides. The child has
+    // a derived param, so both variant discovery and inst-name rewriting must
+    // re-evaluate it under ROW_MODE. Before the fix, discovery produced
+    // suffixed variants with MODE_WIDTH=1/2, but the ROW_MODE=1 inst retained
+    // the default MODE_WIDTH=1 while matching, found no variant, and remained
+    // the now-undefined unsuffixed `AanDctLineBase`.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let base = td.path().join("AanDctLineBase.arch");
+    let column = td.path().join("AanDctLineColumn.arch");
+    let row = td.path().join("AanDctLineRow.arch");
+    let sv_out = td.path().join("dct_wrappers.sv");
+
+    std::fs::write(
+        &base,
+        r#"
+module AanDctLineBase
+  param ROW_MODE: const = 0;
+  param MODE_WIDTH: const = ROW_MODE + 1;
+  port data_in: in Bool;
+  port data_out: out Bool;
+  comb
+    data_out = data_in;
+  end comb
+end module AanDctLineBase
+"#,
+    )
+    .expect("write base");
+    std::fs::write(
+        &column,
+        r#"
+module AanDctLineColumn
+  port data_in: in Bool;
+  port data_out: out Bool;
+  inst core: AanDctLineBase
+    param ROW_MODE = 0;
+    data_in <- data_in;
+    data_out -> data_out;
+  end inst core
+end module AanDctLineColumn
+"#,
+    )
+    .expect("write column wrapper");
+    std::fs::write(
+        &row,
+        r#"
+module AanDctLineRow
+  port data_in: in Bool;
+  port data_out: out Bool;
+  inst core: AanDctLineBase
+    param ROW_MODE = 1;
+    data_in <- data_in;
+    data_out -> data_out;
+  end inst core
+end module AanDctLineRow
+"#,
+    )
+    .expect("write row wrapper");
+
+    let check = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&base)
+        .arg(&column)
+        .arg(&row)
+        .output()
+        .expect("invoke arch check");
+    assert!(
+        check.status.success(),
+        "arch check of sibling derived-param variants should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(&base)
+        .arg(&column)
+        .arg(&row)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("invoke arch build");
+    assert!(
+        build.status.success(),
+        "arch build of sibling derived-param variants should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let sv = std::fs::read_to_string(&sv_out).expect("read emitted SV");
+    let column_body = sv
+        .split("module AanDctLineColumn")
+        .nth(1)
+        .and_then(|s| s.split("endmodule").next())
+        .unwrap_or("");
+    let row_body = sv
+        .split("module AanDctLineRow")
+        .nth(1)
+        .and_then(|s| s.split("endmodule").next())
+        .unwrap_or("");
+    assert!(
+        column_body.contains("AanDctLineBase__MODE_WIDTH_1_ROW_MODE_0"),
+        "column wrapper must select the fully evaluated ROW_MODE=0 variant:\n{sv}"
+    );
+    assert!(
+        row_body.contains("AanDctLineBase__MODE_WIDTH_2_ROW_MODE_1"),
+        "row wrapper must select the fully evaluated ROW_MODE=1 variant:\n{sv}"
+    );
+}
+
+#[test]
 fn test_variant_name_with_bit63_param_is_valid_identifier() {
     // A `const` param value with bit 63 set is a negative `i64`. The variant
     // name mangler used to format it directly, splicing a bare `-` into the
