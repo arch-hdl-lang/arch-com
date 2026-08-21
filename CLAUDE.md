@@ -194,7 +194,7 @@ Do NOT add `printf` or `$display` to C++ testbenches for debugging — `--debug`
 
 `arch sim --pybind --test test_foo.py Foo.arch` compiles the ARCH design through pybind11 and runs a cocotb-compatible Python TB against it, with no Verilator/iverilog/VPI in the loop. A `cocotb_shim/cocotb/` package is on `PYTHONPATH` so plain `import cocotb` works. Supported surface: `@cocotb.test()`, `cocotb.start_soon`, `cocotb.start`, `cocotb.utils.get_sim_time`, and triggers `RisingEdge` / `FallingEdge` / `Timer` / `ClockCycles` / `Clock`. Signals expose `.value` that read/write as integers via `ArchSignalValue`.
 
-Key behavioral deltas from real cocotb — scheduler is 1-tick-at-a-time (default 1 ns/tick), writes take effect immediately on the next `eval()` (no NBA region), logic is 2-state (no `X`/`Z`), edge detection is sampled per tick. See **[`doc/arch_sim_cocotb.md`](doc/arch_sim_cocotb.md)** for the complete API, portability rules, and a troubleshooting guide.
+Key behavioral deltas from real cocotb — the scheduler is event-driven at integer-picosecond precision, writes trigger immediate same-timestamp native evaluation (no NBA region), and logic is 2-state (no genuine `X`/`Z`). `ReadOnly` resumes after same-timestamp settling. The shim also supports the installed `cocotbext-axi` AXI4/AXI4-Lite masters. See **[`doc/arch_sim_cocotb.md`](doc/arch_sim_cocotb.md)** for the complete API, portability rules, and troubleshooting guide.
 
 ### Catching X-propagation from undriven inputs (`--inputs-start-uninit`)
 

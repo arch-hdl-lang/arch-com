@@ -20,6 +20,7 @@ impl<'a> SimCodegen<'a> {
         // simply undeclared. `#ifndef`-guarded so re-definitions in
         // per-module headers are harmless.
         let mut emitted_param_defines: HashSet<String> = HashSet::new();
+        let mut function_param_macros: Vec<String> = Vec::new();
         for item in &self.source.items {
             let (params, _ctx_label): (&[ParamDecl], &str) = match item {
                 Item::Package(pkg) => (&pkg.params, "package"),
@@ -33,9 +34,10 @@ impl<'a> SimCodegen<'a> {
                 match &p.kind {
                     ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
                         if let Some(val) = eval_param_const_value(p, params) {
+                            function_param_macros.push(p.name.name.clone());
                             h.push_str(&format!(
-                                "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                                p.name.name, p.name.name
+                                "#ifndef {}\n#define {} {val}ULL\n#define ARCH_SIM_VFUNCTIONS_DEFINED_{}\n#endif\n",
+                                p.name.name, p.name.name, p.name.name
                             ));
                         }
                     }
@@ -339,6 +341,12 @@ impl<'a> SimCodegen<'a> {
                 }
             }
             h.push_str("}\n\n");
+        }
+
+        for name in &function_param_macros {
+            h.push_str(&format!(
+                "#ifdef ARCH_SIM_VFUNCTIONS_DEFINED_{name}\n#undef {name}\n#undef ARCH_SIM_VFUNCTIONS_DEFINED_{name}\n#endif\n"
+            ));
         }
 
         SimModel {

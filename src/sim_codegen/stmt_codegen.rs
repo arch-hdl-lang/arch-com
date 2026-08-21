@@ -122,6 +122,45 @@ pub(super) fn assigned_base_ident(expr: &Expr) -> Option<&str> {
     }
 }
 
+fn assigned_port_signal_name(expr: &Expr, ctx: &Ctx) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::FieldAccess(base, field) => {
+            if let ExprKind::Ident(base_name) = &base.kind {
+                if ctx.bus_ports.contains(base_name.as_str()) {
+                    return Some(format!("{}_{}", base_name, field.name));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn emit_wide_port_assignment(
+    target_name: &str,
+    rhs: &str,
+    ctx: &Ctx,
+    out: &mut String,
+    indent: usize,
+) -> bool {
+    if !ctx.port_names.contains(target_name) || !ctx.wide_names.contains(target_name) {
+        return false;
+    }
+    let bits = ctx.widths.get(target_name).copied().unwrap_or(0);
+    let target = ctx.resolve_name(target_name, false);
+    if bits > 128 {
+        out.push_str(&format!("{}{target} = {rhs};\n", ind(indent)));
+    } else {
+        out.push_str(&format!(
+            "{}_arch_u128_to_vl({rhs}, {target}._data, {});\n",
+            ind(indent),
+            wide_words(bits)
+        ));
+    }
+    true
+}
+
 pub(super) fn emit_vinit_mark_for_target(
     target: &Expr,
     ctx: &Ctx,
@@ -313,37 +352,21 @@ pub(super) fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize,
             }
             let rhs = cpp_expr(&a.value, ctx);
             if is_seq {
-                let lhs = cpp_expr_lhs(&a.target, ctx);
-                out.push_str(&format!("{}{}  = {};\n", ind(indent), lhs, rhs));
+                let handled_wide_bus_port = matches!(a.target.kind, ExprKind::FieldAccess(..))
+                    && assigned_port_signal_name(&a.target, ctx).is_some_and(|name| {
+                        emit_wide_port_assignment(&name, &rhs, ctx, out, indent)
+                    });
+                if !handled_wide_bus_port {
+                    let lhs = cpp_expr_lhs(&a.target, ctx);
+                    out.push_str(&format!("{}{}  = {};\n", ind(indent), lhs, rhs));
+                }
                 emit_vinit_mark_for_target(&a.target, ctx, out, indent);
             } else {
-                // Comb: bare-ident-aware target name + wide-output-port conversion.
-                let target_name = if let ExprKind::Ident(name) = &a.target.kind {
-                    name.clone()
-                } else {
-                    cpp_expr(&a.target, ctx)
-                };
-                let resolved_target = ctx.resolve_name(&target_name, false);
-                if ctx.wide_names.contains(target_name.as_str()) {
-                    let bits = ctx.widths.get(target_name.as_str()).copied().unwrap_or(0);
-                    if bits > 128 {
-                        // >128 bits: both internal and port are VlWide<N> — direct assign.
-                        out.push_str(&format!("{}{} = {};\n", ind(indent), target_name, rhs));
-                    } else {
-                        // 65–128 bits: internal is _arch_u128, port is
-                        // VlWide<ceil(W/32)>. Pass the real word count so a
-                        // VlWide<3> (66–96 bit) port is not written out of
-                        // bounds (which clobbers the adjacent struct member).
-                        out.push_str(&format!(
-                            "{}  _arch_u128_to_vl({}, {}._data, {});\n",
-                            ind(indent),
-                            rhs,
-                            target_name,
-                            wide_words(bits)
-                        ));
-                    }
-                } else {
-                    out.push_str(&format!("{}{}  = {};\n", ind(indent), resolved_target, rhs));
+                let handled_wide_port = assigned_port_signal_name(&a.target, ctx)
+                    .is_some_and(|name| emit_wide_port_assignment(&name, &rhs, ctx, out, indent));
+                if !handled_wide_port {
+                    let lhs = cpp_expr_lhs(&a.target, ctx);
+                    out.push_str(&format!("{}{}  = {};\n", ind(indent), lhs, rhs));
                 }
             }
         }

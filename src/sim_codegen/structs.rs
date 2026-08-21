@@ -10,7 +10,9 @@ impl<'a> SimCodegen<'a> {
     /// Collects from both file-scope and inside `package` declarations.
     pub(super) fn gen_structs_file(&self) -> SimModel {
         let mut h = String::new();
-        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include <array>\n\n");
+        h.push_str(
+            "#pragma once\n#include <cstdint>\n#include <cstring>\n#include <array>\n#include \"verilated.h\"\n\n",
+        );
 
         // Gather all enums and structs, whether declared at file scope or inside packages.
         let mut enums: Vec<&EnumDecl> = Vec::new();

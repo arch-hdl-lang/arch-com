@@ -182,9 +182,140 @@ fn coverage_expr_label(prefix: &str, expr: &Expr) -> String {
     label
 }
 
+fn named_type_leaf(ty: &TypeExpr) -> Option<&Ident> {
+    match ty {
+        TypeExpr::Named(id) => Some(id),
+        TypeExpr::Vec(inner, _) => named_type_leaf(inner),
+        _ => None,
+    }
+}
+
+fn resolved_bus_param_values(
+    info: &crate::resolve::BusInfo,
+    overrides: &[ParamAssign],
+    module_params: &[ParamDecl],
+) -> HashMap<String, Expr> {
+    let override_map: HashMap<&str, &Expr> = overrides
+        .iter()
+        .map(|assign| (assign.name.name.as_str(), &assign.value))
+        .collect();
+    let mut resolved: HashMap<String, Expr> = HashMap::new();
+
+    for param in &info.params {
+        let Some(source) = override_map
+            .get(param.name.name.as_str())
+            .copied()
+            .or(param.default.as_ref())
+        else {
+            continue;
+        };
+        let refs: HashMap<String, &Expr> = resolved
+            .iter()
+            .map(|(name, value)| (name.clone(), value))
+            .collect();
+        let mut value = subst_expr_sim(source, &refs);
+        if let Some(folded) = try_eval_const_expr_with_params(&value, module_params) {
+            value = Expr::new(ExprKind::Literal(LitKind::Dec(folded)), value.span);
+        }
+        resolved.insert(param.name.name.clone(), value);
+    }
+    resolved
+}
+
+fn effective_bus_wire_signals(
+    wire: &WireDecl,
+    symbols: &SymbolTable,
+    module_params: &[ParamDecl],
+) -> Option<Vec<(String, Direction, TypeExpr)>> {
+    let bus_id = named_type_leaf(&wire.ty)?;
+    let (Symbol::Bus(info), _) = symbols.globals.get(&bus_id.name)? else {
+        return None;
+    };
+    let values = resolved_bus_param_values(info, &wire.bus_params, module_params);
+    let refs: HashMap<String, &Expr> = values
+        .iter()
+        .map(|(name, value)| (name.clone(), value))
+        .collect();
+    Some(
+        info.effective_signals(&refs)
+            .into_iter()
+            .map(|(name, direction, ty)| (name, direction, subst_type_expr_sim(&ty, &refs)))
+            .collect(),
+    )
+}
+
+fn bus_wire_array_suffix(ty: &TypeExpr, params: &[ParamDecl]) -> String {
+    match ty {
+        TypeExpr::Vec(inner, count) => format!(
+            "[{}]{}",
+            eval_const_expr_with_params(count, params),
+            bus_wire_array_suffix(inner, params)
+        ),
+        _ => String::new(),
+    }
+}
+
+fn emit_parameterized_bus_wire_decl(
+    out: &mut String,
+    wire: &WireDecl,
+    fields: &[(String, Direction, TypeExpr)],
+    module_params: &[ParamDecl],
+) {
+    let type_name = format!("_arch_bus_{}_t", wire.name.name);
+    out.push_str(&format!("  struct {type_name} {{\n"));
+    let mut field_inits = Vec::new();
+    let mut ctor_body = Vec::new();
+    for (field_name, _, field_ty) in fields {
+        if vec_array_info_with_params(field_ty, module_params).is_some() {
+            out.push_str(&format!(
+                "    {};\n",
+                cpp_field_decl(field_name, field_ty, module_params)
+            ));
+            ctor_body.push(format!(
+                "std::memset({field_name}, 0, sizeof({field_name}));"
+            ));
+        } else {
+            let cpp_ty = cpp_internal_type_with_params(field_ty, module_params);
+            out.push_str(&format!("    {cpp_ty} {field_name};\n"));
+            if matches!(field_ty, TypeExpr::Named(_)) {
+                field_inits.push(format!("{field_name}()"));
+            } else {
+                field_inits.push(format!("{field_name}(0)"));
+            }
+        }
+    }
+    let init = if field_inits.is_empty() {
+        String::new()
+    } else {
+        format!(" : {}", field_inits.join(", "))
+    };
+    out.push_str(&format!(
+        "    {type_name}(){init} {{ {} }}\n",
+        ctor_body.join(" ")
+    ));
+    out.push_str("  };\n");
+    out.push_str(&format!(
+        "  {type_name} _let_{}{};\n",
+        wire.name.name,
+        bus_wire_array_suffix(&wire.ty, module_params)
+    ));
+}
+
 use crate::ast::extract_reset_info;
 
 impl<'a> SimCodegen<'a> {
+    fn source_has_functions(&self) -> bool {
+        self.source.items.iter().any(|item| match item {
+            Item::Function(_) => true,
+            Item::Package(package) => !package.functions.is_empty(),
+            Item::Module(module) => module
+                .body
+                .iter()
+                .any(|body_item| matches!(body_item, ModuleBodyItem::Function(_))),
+            _ => false,
+        })
+    }
+
     /// For a destructuring-let RHS, best-effort infer the struct name
     /// so we can look up individual field types. Returns None if not
     /// determinable at sim-codegen time.
@@ -587,6 +718,22 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
+        for item in &m.body {
+            let ModuleBodyItem::WireDecl(wire) = item else {
+                continue;
+            };
+            let Some(fields) = effective_bus_wire_signals(wire, self.symbols, &m.params) else {
+                continue;
+            };
+            for (field_name, _, field_ty) in fields {
+                let path = format!("{}.{}", wire.name.name, field_name);
+                widths.insert(path.clone(), type_bits_te_with_params(&field_ty, &m.params));
+                if type_is_signed_scalar(&field_ty) {
+                    signed_names.insert(path);
+                }
+            }
+        }
+
         // Populate widths with per-struct-field keys: "ctrl_r.mode" → 4, etc.
         // Required for concat-width inference when struct fields appear inside
         // a concat expression (the default `unwrap_or(8)` silently corrupts
@@ -908,15 +1055,10 @@ impl<'a> SimCodegen<'a> {
             let ModuleBodyItem::WireDecl(w) = item else {
                 continue;
             };
-            let TypeExpr::Named(id) = &w.ty else {
+            let Some(fields) = effective_bus_wire_signals(w, self.symbols, &m.params) else {
                 continue;
             };
-            let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(&id.name)
-            else {
-                continue;
-            };
-            let pm = info.default_param_map();
-            for (sname, _sdir, sty) in info.effective_signals(&pm) {
+            for (sname, _, sty) in fields {
                 if let TypeExpr::Vec(_, count_expr) = &sty {
                     let count = eval_const_expr_with_params(count_expr, &m.params);
                     if count > 0 {
@@ -1456,14 +1598,18 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("#include \"V{}.h\"\n", inst.module_name.name));
         }
         h.push('\n');
-        // Emit param constants as #define (deduplicated via eval_param_const_value helper)
+        // Scope parameter macros to this generated header. The implementation
+        // restores them after including the header, so sibling specializations
+        // with the same parameter names cannot capture one another's values.
+        let mut module_param_macros: Vec<(String, u64)> = Vec::new();
         for p in &m.params {
             match &p.kind {
                 ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
                     if let Some(val) = eval_param_const_value(p, &m.params) {
+                        module_param_macros.push((p.name.name.clone(), val));
                         h.push_str(&format!(
-                            "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                            p.name.name, p.name.name
+                            "#ifndef {}\n#define {} {val}ULL\n#define ARCH_SIM_{class}_DEFINED_{}\n#endif\n",
+                            p.name.name, p.name.name, p.name.name
                         ));
                     }
                 }
@@ -1473,9 +1619,10 @@ impl<'a> SimCodegen<'a> {
                             if let Some(val) =
                                 resolve_enum_variant(&enum_map, enum_name, &variant.name)
                             {
+                                module_param_macros.push((p.name.name.clone(), val));
                                 h.push_str(&format!(
-                                    "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                                    p.name.name, p.name.name
+                                    "#ifndef {}\n#define {} {val}ULL\n#define ARCH_SIM_{class}_DEFINED_{}\n#endif\n",
+                                    p.name.name, p.name.name, p.name.name
                                 ));
                             }
                         }
@@ -1913,6 +2060,7 @@ impl<'a> SimCodegen<'a> {
         }
         for c in &all_clks {
             h.push_str(&format!("  bool _rising_{c};\n"));
+            h.push_str(&format!("  bool _falling_{c};\n"));
         }
         // --coverage Phase 6: per-(inst, output-port) prev-value
         // shadow for construct port toggle counters. Allocated only
@@ -2106,6 +2254,13 @@ impl<'a> SimCodegen<'a> {
                     h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
                 }
                 ModuleBodyItem::WireDecl(w) => {
+                    if !w.bus_params.is_empty() {
+                        if let Some(fields) = effective_bus_wire_signals(w, self.symbols, &m.params)
+                        {
+                            emit_parameterized_bus_wire_decl(&mut h, w, &fields, &m.params);
+                            continue;
+                        }
+                    }
                     // 2D bus wire: `wire edges: Vec<Vec<B, N>, M>;` →
                     //   B _let_edges[M][N];
                     // Emitted *before* the generic vec_array_info path, which
@@ -2285,10 +2440,23 @@ impl<'a> SimCodegen<'a> {
         }
 
         h.push_str("};\n");
+        for (name, _) in &module_param_macros {
+            h.push_str(&format!(
+                "#ifdef ARCH_SIM_{class}_DEFINED_{name}\n#undef {name}\n#undef ARCH_SIM_{class}_DEFINED_{name}\n#endif\n"
+            ));
+        }
 
         // ── Implementation ────────────────────────────────────────────────────
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+        for (name, value) in &module_param_macros {
+            cpp.push_str(&format!(
+                "#ifndef {name}\n#define {name} {value}ULL\n#endif\n"
+            ));
+        }
+        if !module_param_macros.is_empty() {
+            cpp.push('\n');
+        }
         // Patched after the bodies are emitted — see `block_helpers` above.
         cpp.push_str("__ARCH_BLOCK_HELPERS__");
 
@@ -2456,6 +2624,7 @@ impl<'a> SimCodegen<'a> {
         //   - Sub-instances correctly detect their own clock edges when called from parent
         for c in &all_clks {
             cpp.push_str(&format!("  _rising_{c} = ({c} && !_clk_prev_{c});\n"));
+            cpp.push_str(&format!("  _falling_{c} = (!{c} && _clk_prev_{c});\n"));
             cpp.push_str(&format!("  _clk_prev_{c} = {c};\n"));
         }
 
@@ -2719,16 +2888,20 @@ impl<'a> SimCodegen<'a> {
                     false
                 };
 
-                // Guard each seq block on its specific clock's rising edge.
+                // Guard each seq block on its declared clock and edge.
                 // For async reset: use `else if` so the seq body is skipped
                 // when reset was active — the reset arm already cleared the
                 // regs; executing the seq body (e.g. toggle) would overwrite.
-                let rising_gate = if async_reset_emitted {
-                    format!("  else if (_rising_{}) {{\n", rb.clock.name)
-                } else {
-                    format!("  if (_rising_{}) {{\n", rb.clock.name)
+                let edge_kind = match rb.clock_edge {
+                    ClockEdge::Rising => "rising",
+                    ClockEdge::Falling => "falling",
                 };
-                cpp.push_str(&rising_gate);
+                let edge_gate = if async_reset_emitted {
+                    format!("  else if (_{edge_kind}_{}) {{\n", rb.clock.name)
+                } else {
+                    format!("  if (_{edge_kind}_{}) {{\n", rb.clock.name)
+                };
+                cpp.push_str(&edge_gate);
                 let base_indent: usize = 2;
                 // --coverage phase 2: count seq-block entries (rising
                 // edges seen). One counter per top-level seq block;
@@ -3493,12 +3666,13 @@ impl<'a> SimCodegen<'a> {
                         }
                         let sig = cpp_expr(&conn.signal, &ctx_comb);
                         // Wide type (>64 bits): parent _arch_u128 → inst VlWide
-                        let _in_w = if let ExprKind::Ident(n) = &conn.signal.kind {
-                            widths.get(n.as_str()).copied().unwrap_or(0)
-                        } else {
-                            0
-                        };
-                        if _in_w > 64 {
+                        let _in_w = infer_expr_width(&conn.signal, &ctx_comb);
+                        if _in_w > 128 {
+                            cpp.push_str(&format!(
+                                "  _inst_{}.{} = {};\n",
+                                inst.name.name, conn.port_name.name, sig
+                            ));
+                        } else if _in_w > 64 {
                             cpp.push_str(&format!(
                                 "  _arch_u128_to_vl({}, _inst_{}.{}.data(), {});\n",
                                 sig,
@@ -3577,11 +3751,7 @@ impl<'a> SimCodegen<'a> {
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx_comb);
-                        let _out_w = if let ExprKind::Ident(n) = &conn.signal.kind {
-                            widths.get(n.as_str()).copied().unwrap_or(0)
-                        } else {
-                            0
-                        };
+                        let _out_w = infer_expr_width(&conn.signal, &ctx_comb);
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
                             if let Some((count, elem_bits)) =
                                 child_vec_output_shape(inst, &conn.port_name.name)
@@ -3609,7 +3779,12 @@ impl<'a> SimCodegen<'a> {
                                 }
                             }
                         }
-                        if _out_w > 64 {
+                        if _out_w > 128 {
+                            cpp.push_str(&format!(
+                                "  {} = _inst_{}.{};\n",
+                                sig, inst.name.name, conn.port_name.name
+                            ));
+                        } else if _out_w > 64 {
                             cpp.push_str(&format!(
                                 "  {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
                                 sig,

@@ -1,0 +1,56 @@
+bus ParamStream
+  param DATA_W: const = 32;
+  param USER_W: const = 1;
+
+  tdata: out UInt<DATA_W>;
+  tuser: out UInt<USER_W>;
+end bus ParamStream
+
+module WideBusProducer
+  port m: initiator ParamStream<DATA_W=112, USER_W=13>;
+
+  comb
+    m.tdata = {56'h0123456789ABCD, 56'hFEDCBA98765432};
+    m.tuser = 13'h1234;
+  end comb
+end module WideBusProducer
+
+module WideBusConsumer
+  port s: target ParamStream<DATA_W=112, USER_W=13>;
+  port low_data: out UInt<32>;
+  port user_out: out UInt<13>;
+
+  comb
+    low_data = s.tdata[31:0];
+    user_out = s.tuser;
+  end comb
+end module WideBusConsumer
+
+module Probe
+  port addr: in UInt<32>;
+  port len: in UInt<8>;
+  port size: in UInt<3>;
+  port burst: in UInt<2>;
+  port wide_low: out UInt<32>;
+  port wide_user: out UInt<13>;
+  port packed_out: out UInt<45>;
+
+  wire wide: ParamStream<DATA_W=112, USER_W=13>;
+  wire packed_bus: ParamStream<DATA_W=45, USER_W=1>;
+
+  inst producer: WideBusProducer
+    m -> wide;
+  end inst producer
+
+  inst consumer: WideBusConsumer
+    s <- wide;
+    low_data -> wide_low;
+    user_out -> wide_user;
+  end inst consumer
+
+  comb
+    packed_bus.tdata = {burst, size, len, addr};
+    packed_bus.tuser = 0;
+    packed_out = packed_bus.tdata;
+  end comb
+end module Probe

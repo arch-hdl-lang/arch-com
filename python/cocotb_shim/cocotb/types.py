@@ -1,15 +1,5 @@
-"""Cocotb types shim."""
+"""Cocotb two-state value type exports."""
 
-class Logic:
-    """Stub for cocotb.types.Logic."""
-    def __init__(self, value=0):
-        self._value = int(value)
+from arch_cocotb.types import Logic, LogicArray
 
-    def to_unsigned(self):
-        return self._value
-
-    def to_signed(self):
-        return self._value
-
-    def __int__(self):
-        return self._value
+__all__ = ["Logic", "LogicArray"]

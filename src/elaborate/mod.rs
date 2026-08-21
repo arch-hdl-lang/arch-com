@@ -35,7 +35,7 @@ mod params;
 pub use params::try_eval_i64;
 use params::{
     collect_raw_overrides_from_body, compute_all_variants, compute_defaults_with_enums,
-    elaborate_module_variant, try_eval_bool,
+    elaborate_module_variant, recompute_derived_params, try_eval_bool,
 };
 
 // Thread → FSM lowering: `partition_thread_body_*`, fork/join and `for`-loop
@@ -64,6 +64,328 @@ pub use threads::{lower_threads, lower_threads_with_opts, ThreadLowerOpts};
 mod tlm;
 use tlm::lower_tlm_connects;
 pub use tlm::{lower_tlm_initiator_calls, lower_tlm_target_threads};
+
+/// Monomorphize parameterized FIFO instances for the native C++ simulator.
+///
+/// SystemVerilog can specialize a generic FIFO at each instance. Native
+/// simulation emits concrete C++ classes, so each distinct parameter set
+/// needs its own declaration to avoid silently using default widths/depths.
+pub fn specialize_fifo_instances_for_sim(mut ast: SourceFile) -> SourceFile {
+    let packed_types = PackedTypeDefinitions::from_source(&ast);
+    let fifo_defs: HashMap<String, FifoDecl> = ast
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fifo(fifo) => Some((fifo.name.name.clone(), fifo.clone())),
+            _ => None,
+        })
+        .collect();
+    if fifo_defs.is_empty() {
+        return ast;
+    }
+
+    let mut existing_names: HashSet<String> = fifo_defs.keys().cloned().collect();
+    let mut specialization_names: HashMap<(String, String), String> = HashMap::new();
+    let mut specializations = Vec::new();
+
+    for item in &mut ast.items {
+        let Item::Module(module) = item else {
+            continue;
+        };
+        let parent_values = compute_defaults_with_enums(&module.params, &HashMap::new());
+
+        for body_item in &mut module.body {
+            let ModuleBodyItem::Inst(inst) = body_item else {
+                continue;
+            };
+            let Some(base_fifo) = fifo_defs.get(&inst.module_name.name) else {
+                continue;
+            };
+            if inst.param_assigns.is_empty() {
+                continue;
+            }
+
+            let (signature, mut concrete) =
+                concrete_fifo_variant(base_fifo, inst, &parent_values, &packed_types);
+            let key = (base_fifo.name.name.clone(), signature.clone());
+            let concrete_name = if let Some(name) = specialization_names.get(&key) {
+                name.clone()
+            } else {
+                let base_name = format!("{}__{}", base_fifo.name.name, signature);
+                let mut name = base_name.clone();
+                let mut collision = 2u32;
+                while existing_names.contains(&name) {
+                    name = format!("{base_name}_{collision}");
+                    collision += 1;
+                }
+                existing_names.insert(name.clone());
+                concrete.common.name.name = name.clone();
+                specialization_names.insert(key, name.clone());
+                specializations.push(concrete);
+                name
+            };
+
+            inst.module_name.name = concrete_name;
+            inst.param_assigns.clear();
+        }
+    }
+
+    ast.items
+        .extend(specializations.into_iter().map(Item::Fifo));
+    ast
+}
+
+fn concrete_fifo_variant(
+    base: &FifoDecl,
+    inst: &InstDecl,
+    parent_values: &HashMap<String, i64>,
+    packed_types: &PackedTypeDefinitions,
+) -> (String, FifoDecl) {
+    let mut concrete = base.clone();
+    let mut const_values = compute_defaults_with_enums(&base.params, &HashMap::new());
+    let mut raw_overrides = HashMap::new();
+
+    for assign in &inst.param_assigns {
+        if assign.ty.is_some() {
+            continue;
+        }
+        if let Some(value) = try_eval_i64(&assign.value, parent_values) {
+            raw_overrides.insert(assign.name.name.clone(), value);
+            const_values.insert(assign.name.name.clone(), value);
+        }
+    }
+    recompute_derived_params(&base.params, &raw_overrides, &mut const_values);
+
+    let mut signature_parts = Vec::new();
+    for param in &mut concrete.common.params {
+        match &mut param.kind {
+            ParamKind::Const
+            | ParamKind::WidthConst(..)
+            | ParamKind::EnumConst(_)
+            | ParamKind::Logic(_) => {
+                if let Some(value) = const_values.get(&param.name.name).copied() {
+                    param.default = Some(Expr::new(
+                        ExprKind::Literal(LitKind::Dec(value as u64)),
+                        param.span,
+                    ));
+                    signature_parts.push(format!(
+                        "{}_{}",
+                        sanitize_variant_component(&param.name.name),
+                        format!("{value}").replace('-', "n")
+                    ));
+                }
+            }
+            ParamKind::Type(default_type) => {
+                let override_type = inst
+                    .param_assigns
+                    .iter()
+                    .find(|assign| assign.name.name == param.name.name)
+                    .and_then(|assign| assign.ty.as_ref());
+                let preserve_named_storage = override_type.is_some_and(|assigned| {
+                    matches!(default_type, TypeExpr::Named(_))
+                        && matches!(assigned, TypeExpr::UInt(_) | TypeExpr::SInt(_))
+                        && packed_type_width(default_type, &const_values, packed_types)
+                            == packed_type_width(assigned, parent_values, packed_types)
+                });
+                let assigned = if preserve_named_storage {
+                    &*default_type
+                } else {
+                    override_type.unwrap_or(&*default_type)
+                };
+                let parent_concrete = fold_type_widths(assigned, parent_values);
+                let effective_type = fold_type_widths(&parent_concrete, &const_values);
+                *default_type = effective_type.clone();
+                signature_parts.push(format!(
+                    "{}_{}",
+                    sanitize_variant_component(&param.name.name),
+                    type_variant_component(&effective_type)
+                ));
+            }
+            ParamKind::ConstVec(_) => {}
+        }
+    }
+
+    if signature_parts.is_empty() {
+        signature_parts.push("default".to_string());
+    }
+    (signature_parts.join("_"), concrete)
+}
+
+#[derive(Default)]
+struct PackedTypeDefinitions {
+    structs: HashMap<String, Vec<TypeExpr>>,
+    enums: HashMap<String, usize>,
+}
+
+impl PackedTypeDefinitions {
+    fn from_source(source: &SourceFile) -> Self {
+        let mut definitions = Self::default();
+        for item in &source.items {
+            match item {
+                Item::Struct(decl) => {
+                    definitions.structs.insert(
+                        decl.name.name.clone(),
+                        decl.fields.iter().map(|field| field.ty.clone()).collect(),
+                    );
+                }
+                Item::Enum(decl) => {
+                    definitions
+                        .enums
+                        .insert(decl.name.name.clone(), decl.variants.len());
+                }
+                Item::Package(package) => {
+                    for decl in &package.structs {
+                        definitions.structs.insert(
+                            decl.name.name.clone(),
+                            decl.fields.iter().map(|field| field.ty.clone()).collect(),
+                        );
+                    }
+                    for decl in &package.enums {
+                        definitions
+                            .enums
+                            .insert(decl.name.name.clone(), decl.variants.len());
+                    }
+                }
+                _ => {}
+            }
+        }
+        definitions
+    }
+}
+
+fn packed_type_width(
+    ty: &TypeExpr,
+    values: &HashMap<String, i64>,
+    definitions: &PackedTypeDefinitions,
+) -> Option<u32> {
+    fn recurse(
+        ty: &TypeExpr,
+        values: &HashMap<String, i64>,
+        definitions: &PackedTypeDefinitions,
+        visiting: &mut HashSet<String>,
+    ) -> Option<u32> {
+        match ty {
+            TypeExpr::UInt(width) | TypeExpr::SInt(width) => {
+                u32::try_from(try_eval_i64(width, values)?).ok()
+            }
+            TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Some(1),
+            TypeExpr::FP32 => Some(32),
+            TypeExpr::BF16 => Some(16),
+            TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 | TypeExpr::E8M0 | TypeExpr::UE4M3 => Some(8),
+            TypeExpr::FP4E2M1 => Some(4),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
+            TypeExpr::Vec(element, count) => {
+                let element_width = recurse(element, values, definitions, visiting)?;
+                let count = u32::try_from(try_eval_i64(count, values)?).ok()?;
+                element_width.checked_mul(count)
+            }
+            TypeExpr::Named(name) => {
+                if let Some(variant_count) = definitions.enums.get(&name.name) {
+                    return Some(if *variant_count <= 1 {
+                        1
+                    } else {
+                        u32::BITS - ((*variant_count - 1) as u32).leading_zeros()
+                    });
+                }
+                if !visiting.insert(name.name.clone()) {
+                    return None;
+                }
+                let fields = definitions.structs.get(&name.name)?;
+                let mut total = 0u32;
+                for field in fields {
+                    total = total.checked_add(recurse(field, values, definitions, visiting)?)?;
+                }
+                visiting.remove(&name.name);
+                Some(total)
+            }
+            TypeExpr::ScaledVec(element, count, scale) => {
+                let element_width = recurse(element, values, definitions, visiting)?;
+                let count = u32::try_from(try_eval_i64(count, values)?).ok()?;
+                let scale_width = recurse(scale, values, definitions, visiting)?;
+                element_width.checked_mul(count)?.checked_add(scale_width)
+            }
+        }
+    }
+
+    recurse(ty, values, definitions, &mut HashSet::new())
+}
+
+fn fold_type_widths(ty: &TypeExpr, values: &HashMap<String, i64>) -> TypeExpr {
+    let fold_expr = |expr: &Expr| {
+        try_eval_i64(expr, values)
+            .map(|value| Expr::new(ExprKind::Literal(LitKind::Dec(value as u64)), expr.span))
+            .unwrap_or_else(|| expr.clone())
+    };
+    match ty {
+        TypeExpr::UInt(width) => TypeExpr::UInt(Box::new(fold_expr(width))),
+        TypeExpr::SInt(width) => TypeExpr::SInt(Box::new(fold_expr(width))),
+        TypeExpr::Vec(element, count) => TypeExpr::Vec(
+            Box::new(fold_type_widths(element, values)),
+            Box::new(fold_expr(count)),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn type_variant_component(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::UInt(width) => format!("UInt{}", expr_variant_component(width)),
+        TypeExpr::SInt(width) => format!("SInt{}", expr_variant_component(width)),
+        TypeExpr::Bool => "Bool".to_string(),
+        TypeExpr::Bit => "Bit".to_string(),
+        TypeExpr::Clock(domain) => format!("Clock{}", sanitize_variant_component(&domain.name)),
+        TypeExpr::Reset(kind, level) => format!(
+            "Reset{}{}",
+            match kind {
+                ResetKind::Sync => "Sync",
+                ResetKind::Async => "Async",
+            },
+            match level {
+                ResetLevel::High => "High",
+                ResetLevel::Low => "Low",
+            }
+        ),
+        TypeExpr::Vec(element, count) => format!(
+            "Vec{}x{}",
+            type_variant_component(element),
+            expr_variant_component(count)
+        ),
+        TypeExpr::Named(name) => sanitize_variant_component(&name.name),
+        TypeExpr::FP32 => "FP32".to_string(),
+        TypeExpr::BF16 => "BF16".to_string(),
+        TypeExpr::FP8E4M3 => "FP8E4M3".to_string(),
+        TypeExpr::FP8E5M2 => "FP8E5M2".to_string(),
+        TypeExpr::FP4E2M1 => "FP4E2M1".to_string(),
+        TypeExpr::FP6E2M3 => "FP6E2M3".to_string(),
+        TypeExpr::FP6E3M2 => "FP6E3M2".to_string(),
+        TypeExpr::E8M0 => "E8M0".to_string(),
+        TypeExpr::UE4M3 => "UE4M3".to_string(),
+        TypeExpr::ScaledVec(element, count, scale) => format!(
+            "ScaledVec{}x{}x{}",
+            type_variant_component(element),
+            expr_variant_component(count),
+            type_variant_component(scale)
+        ),
+    }
+}
+
+fn expr_variant_component(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Dec(value))
+        | ExprKind::Literal(LitKind::Hex(value))
+        | ExprKind::Literal(LitKind::Bin(value))
+        | ExprKind::Literal(LitKind::Sized(_, value)) => value.to_string(),
+        ExprKind::Ident(name) => sanitize_variant_component(name),
+        _ => "Expr".to_string(),
+    }
+}
+
+fn sanitize_variant_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
 
 // Bus/const-eval utilities shared by two lowering passes below —
 // `elaborate::threads` (thread-FSM lowering) and `elaborate::tlm` (TLM
