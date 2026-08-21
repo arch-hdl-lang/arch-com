@@ -89,12 +89,29 @@ impl<'a> SimCodegen<'a> {
             .iter()
             .filter(|s| s.dir == Direction::Out)
             .collect();
+        // A true-dual RAM may have one shared clock or two independently
+        // driven clocks. The two-clock form is mapped structurally as
+        // port group `g` -> `clk_g`, matching the SV backend. Type checking
+        // rejects partial or mixed naming before simulation codegen.
+        let mut clock_names: Vec<String> = r
+            .ports
+            .iter()
+            .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone())
+            .collect();
+        if clock_names.is_empty() {
+            // Retain the historical fallback for non-true-dual RAMs. The
+            // type checker rejects a true-dual RAM with no clock.
+            clock_names.push("clk".to_string());
+        }
 
         // ── Header ──
         let mut h = String::new();
         h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include <cstdio>\n#include <cstdlib>\n#include \"verilated.h\"\n\n");
         h.push_str(&format!("class {class} {{\npublic:\n"));
-        h.push_str("  uint8_t clk;\n");
+        for clk in &clock_names {
+            h.push_str(&format!("  uint8_t {clk};\n"));
+        }
 
         for fs in &flat_sigs {
             let ty_str: String = if fs.dir == Direction::Out {
@@ -127,14 +144,21 @@ impl<'a> SimCodegen<'a> {
         }
 
         h.push('\n');
-        h.push_str(&format!("  {class}() : clk(0)"));
+        h.push_str(&format!("  {class}() : {}(0)", clock_names[0]));
+        for clk in clock_names.iter().skip(1) {
+            h.push_str(&format!(", {clk}(0)"));
+        }
         for fs in &flat_sigs {
             if is_wide && fs.dir == Direction::Out { /* VlWide memset below */
             } else {
                 h.push_str(&format!(", {}(0)", fs.full_name));
             }
         }
-        h.push_str(", _clk_prev(0) {\n");
+        h.push_str(", _clk_prev(0)");
+        for clk in clock_names.iter().skip(1) {
+            h.push_str(&format!(", _{clk}_prev(0)"));
+        }
+        h.push_str(" {\n");
         // --check-uninit-ram: track per-cell valid bits for non-ROM RAMs
         let uninit_ram_check = self.check_uninit_ram && !matches!(r.kind, RamKind::Rom);
         // Initialize memory
@@ -289,6 +313,9 @@ impl<'a> SimCodegen<'a> {
         }
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
+        for clk in clock_names.iter().skip(1) {
+            h.push_str(&format!("  uint8_t _{clk}_prev;\n"));
+        }
         h.push_str(&format!("  {} _mem[{}];\n", elem_ty, depth));
         if uninit_ram_check {
             h.push_str(&format!("  bool _mem_valid[{}];\n", depth));
@@ -344,9 +371,23 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
 
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
-        cpp.push_str("  bool _rising = (clk && !_clk_prev);\n");
-        cpp.push_str("  _clk_prev = clk;\n");
-        cpp.push_str("  if (!_rising) return;\n");
+        for (i, clk) in clock_names.iter().enumerate() {
+            let rising = if i == 0 {
+                "_rising".to_string()
+            } else {
+                format!("_rising_{i}")
+            };
+            let prev = if i == 0 {
+                "_clk_prev".to_string()
+            } else {
+                format!("_{clk}_prev")
+            };
+            cpp.push_str(&format!("  bool {rising} = ({clk} && !{prev});\n"));
+            cpp.push_str(&format!("  {prev} = {clk};\n"));
+        }
+        if r.kind != RamKind::TrueDual {
+            cpp.push_str("  if (!_rising) return;\n");
+        }
         match r.kind {
             RamKind::Single => {
                 let pg = &r.port_groups[0];
@@ -367,6 +408,18 @@ impl<'a> SimCodegen<'a> {
                     .unwrap_or("rdata");
                 let addr_expr = format!("{pfx}_addr");
 
+                // Model the latency-2 output register before updating the
+                // first read stage. C++ assignments are immediate, while the
+                // emitted SV nonblocking assignments sample the old value.
+                if r.latency == 2 {
+                    if is_wide {
+                        cpp.push_str(&format!(
+                            "  memcpy(&_r2_{out_name}, &_r_{out_name}, sizeof({elem_ty}));\n"
+                        ));
+                    } else {
+                        cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
+                    }
+                }
                 cpp.push_str(&format!("  if ({pfx}_en) {{\n"));
                 if has_wen {
                     cpp.push_str(&format!(
@@ -391,9 +444,6 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&write_mark(&addr_expr));
                 }
                 cpp.push_str("  }\n");
-                if r.latency == 2 {
-                    cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
-                }
             }
             RamKind::SimpleDual => {
                 let wr_pg = r
@@ -430,6 +480,17 @@ impl<'a> SimCodegen<'a> {
                 let wr_addr = format!("{wpfx}_addr");
                 let rd_addr = format!("{rpfx}_addr");
 
+                // Advance the output stage from the previous read-stage value
+                // before this edge performs a new synchronous memory read.
+                if r.latency == 2 {
+                    if is_wide {
+                        cpp.push_str(&format!(
+                            "  memcpy(&_r2_{out_name}, &_r_{out_name}, sizeof({elem_ty}));\n"
+                        ));
+                    } else {
+                        cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
+                    }
+                }
                 // Write path
                 cpp.push_str(&format!("  if ({wpfx}_en) {{\n"));
                 if is_wide {
@@ -455,19 +516,24 @@ impl<'a> SimCodegen<'a> {
                     }
                     0 | _ => {}
                 }
-                if r.latency == 2 {
-                    if is_wide {
-                        cpp.push_str(&format!(
-                            "  memcpy(&_r2_{out_name}, &_r_{out_name}, sizeof({elem_ty}));\n"
-                        ));
-                    } else {
-                        cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
-                    }
-                }
             }
             RamKind::TrueDual => {
                 for pg in &r.port_groups {
                     let pfx = &pg.name.name;
+                    let conventional_clock = format!("clk_{pfx}");
+                    let clock_idx = if clock_names.len() == 1 {
+                        0
+                    } else {
+                        clock_names
+                            .iter()
+                            .position(|clk| *clk == conventional_clock)
+                            .expect("type checker requires clk_<port-group> for two-clock true_dual RAMs")
+                    };
+                    let rising = if clock_idx == 0 {
+                        "_rising".to_string()
+                    } else {
+                        format!("_rising_{clock_idx}")
+                    };
                     let has_wen = pg.signals.iter().any(|s| s.name.name == "wen");
                     let wdata_name = pg
                         .signals
@@ -485,28 +551,40 @@ impl<'a> SimCodegen<'a> {
                         .map(|s| format!("{pfx}_{}", s.name.name));
                     let addr = format!("{pfx}_addr");
 
-                    cpp.push_str(&format!("  if ({pfx}_en) {{\n"));
-                    if has_wen {
-                        cpp.push_str(&format!("    if ({pfx}_wen) {{\n"));
-                        if is_wide {
-                            cpp.push_str(&format!("      memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));\n"));
-                        } else {
-                            cpp.push_str(&format!("      _mem[{pfx}_addr] = {wdata_name};\n"));
+                    cpp.push_str(&format!("  if ({rising}) {{\n"));
+                    if r.latency == 2 {
+                        if let Some(out_name) = &out_name {
+                            if is_wide {
+                                cpp.push_str(&format!(
+                                    "    memcpy(&_r2_{out_name}, &_r_{out_name}, sizeof({elem_ty}));\n"
+                                ));
+                            } else {
+                                cpp.push_str(&format!("    _r2_{out_name} = _r_{out_name};\n"));
+                            }
                         }
-                        cpp.push_str(&write_mark_indented(&addr, "      "));
-                        cpp.push_str("    }");
+                    }
+                    cpp.push_str(&format!("    if ({pfx}_en) {{\n"));
+                    if has_wen {
+                        cpp.push_str(&format!("      if ({pfx}_wen) {{\n"));
+                        if is_wide {
+                            cpp.push_str(&format!("        memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));\n"));
+                        } else {
+                            cpp.push_str(&format!("        _mem[{pfx}_addr] = {wdata_name};\n"));
+                        }
+                        cpp.push_str(&write_mark_indented(&addr, "        "));
+                        cpp.push_str("      }");
                         if matches!(r.latency, 1 | 2) {
                             if let Some(out_name) = &out_name {
                                 cpp.push_str(" else {\n");
-                                cpp.push_str(&read_check(&addr, "      "));
+                                cpp.push_str(&read_check(&addr, "        "));
                                 if is_wide {
-                                    cpp.push_str(&format!("      memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                    cpp.push_str(&format!("        memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
                                 } else {
                                     cpp.push_str(&format!(
-                                        "      _r_{out_name} = _mem[{pfx}_addr];\n"
+                                        "        _r_{out_name} = _mem[{pfx}_addr];\n"
                                     ));
                                 }
-                                cpp.push_str("    }\n");
+                                cpp.push_str("      }\n");
                             } else {
                                 cpp.push('\n');
                             }
@@ -515,30 +593,16 @@ impl<'a> SimCodegen<'a> {
                         }
                     } else if matches!(r.latency, 1 | 2) {
                         if let Some(out_name) = &out_name {
-                            cpp.push_str(&read_check(&addr, "    "));
+                            cpp.push_str(&read_check(&addr, "      "));
                             if is_wide {
-                                cpp.push_str(&format!("    memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                cpp.push_str(&format!("      memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
                             } else {
-                                cpp.push_str(&format!("    _r_{out_name} = _mem[{pfx}_addr];\n"));
+                                cpp.push_str(&format!("      _r_{out_name} = _mem[{pfx}_addr];\n"));
                             }
                         }
                     }
+                    cpp.push_str("    }\n");
                     cpp.push_str("  }\n");
-                }
-                if r.latency == 2 {
-                    for fs in &out_sigs {
-                        if is_wide {
-                            cpp.push_str(&format!(
-                                "  memcpy(&_r2_{}, &_r_{}, sizeof({elem_ty}));\n",
-                                fs.full_name, fs.full_name
-                            ));
-                        } else {
-                            cpp.push_str(&format!(
-                                "  _r2_{} = _r_{};\n",
-                                fs.full_name, fs.full_name
-                            ));
-                        }
-                    }
                 }
             }
             RamKind::Rom => {
@@ -552,15 +616,21 @@ impl<'a> SimCodegen<'a> {
                         .map(|s| s.full_name.as_str())
                         .unwrap_or("data");
                     let has_en = pg.signals.iter().any(|s| s.name.name == "en");
+                    if r.latency == 2 {
+                        if is_wide {
+                            cpp.push_str(&format!(
+                                "  memcpy(&_r2_{out_name}, &_r_{out_name}, sizeof({elem_ty}));\n"
+                            ));
+                        } else {
+                            cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
+                        }
+                    }
                     if has_en {
                         cpp.push_str(&format!(
                             "  if ({rpfx}_en) _r_{out_name} = _mem[{rpfx}_addr];\n"
                         ));
                     } else {
                         cpp.push_str(&format!("  _r_{out_name} = _mem[{rpfx}_addr];\n"));
-                    }
-                    if r.latency == 2 {
-                        cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
                     }
                 }
             }
@@ -619,13 +689,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
         if self.debug {
             // Clock port for cycle counting
-            let clk_port = if r.ports.iter().any(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-                || flat_sigs.iter().any(|s| s.full_name == "clk")
-            {
-                Some("clk")
-            } else {
-                None
-            };
+            let clk_port = clock_names.first().map(String::as_str);
             emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, clk_port);
         }
 

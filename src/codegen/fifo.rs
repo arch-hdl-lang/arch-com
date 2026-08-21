@@ -197,6 +197,11 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_fifo_sync_body(&mut self, f: &FifoDecl, port_names: &[&str], has_overflow_param: bool) {
+        if f.latency == 1 {
+            self.emit_fifo_sync_fwft_body(f, port_names, has_overflow_param);
+            return;
+        }
+
         self.line("localparam int PTR_W = $clog2(DEPTH) + 1;");
         self.line("");
         self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
@@ -265,6 +270,118 @@ impl<'a> Codegen<'a> {
         self.line("rd_ptr <= rd_ptr + 1;");
         self.indent -= 1;
         self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+    }
+
+    /// Registered first-word-fall-through FIFO.
+    ///
+    /// The payload array has one synchronous write port and one synchronous
+    /// read port, which is the portable inference shape for FPGA block RAM.
+    /// The inferred RAM owns a dedicated synchronous output register. A small
+    /// registered bypass path handles push-to-empty and the one-entry
+    /// simultaneous push/pop case so the ready/valid behavior remains the same
+    /// as latency 0 without mixing non-memory assignments into the RAM template.
+    fn emit_fifo_sync_fwft_body(
+        &mut self,
+        f: &FifoDecl,
+        port_names: &[&str],
+        has_overflow_param: bool,
+    ) {
+        self.line("localparam int PTR_W = $clog2(DEPTH) + 1;");
+        self.line("");
+        self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
+        self.line("logic [DATA_WIDTH-1:0] mem_data_r;");
+        self.line("logic [DATA_WIDTH-1:0] bypass_data_r;");
+        self.line("logic [PTR_W-1:0]     wr_ptr;");
+        self.line("logic [PTR_W-1:0]     rd_ptr;");
+        self.line("logic [PTR_W-1:0]     rd_ptr_next;");
+        self.line("logic                 do_push, do_pop, drop_oldest, one_entry, rd_mem_en;");
+        self.line("logic                 bypass_valid, load_bypass;");
+        if !port_names.contains(&"full") {
+            self.line("logic                 full;");
+        }
+        if !port_names.contains(&"empty") {
+            self.line("logic                 empty;");
+        }
+        self.line("");
+        self.line("// Full when MSBs differ and lower bits match");
+        self.line("assign full        = (wr_ptr[PTR_W-1] != rd_ptr[PTR_W-1]) &&");
+        self.line("                     (wr_ptr[PTR_W-2:0] == rd_ptr[PTR_W-2:0]);");
+        self.line("assign empty       = (wr_ptr == rd_ptr);");
+        if has_overflow_param {
+            self.line("// OVERFLOW mode: push_ready always high; overwrite oldest when full");
+            self.line("assign push_ready  = (OVERFLOW != 0) ? 1'b1 : !full;");
+        } else {
+            self.line("assign push_ready  = !full;");
+        }
+        self.line("assign pop_valid   = !empty;");
+        self.line("assign pop_data    = bypass_valid ? bypass_data_r : mem_data_r;");
+        self.line("assign do_push     = push_valid && push_ready;");
+        self.line("assign do_pop      = pop_valid && pop_ready;");
+        self.line("assign rd_ptr_next = rd_ptr + 1'b1;");
+        self.line("assign one_entry   = (wr_ptr == rd_ptr_next);");
+        if has_overflow_param {
+            self.line("assign drop_oldest = (OVERFLOW != 0) && full && do_push && !do_pop;");
+        } else {
+            self.line("assign drop_oldest = 1'b0;");
+        }
+        self.line("assign load_bypass = (empty && do_push) ||");
+        self.line("                     (one_entry && do_pop && do_push) ||");
+        self.line("                     (drop_oldest && (DEPTH == 1));");
+        self.line("assign rd_mem_en   = (do_pop && !one_entry) ||");
+        self.line("                     (drop_oldest && (DEPTH != 1));");
+        self.line("");
+
+        let (rst, is_async, is_low) = Self::extract_reset_info(&f.ports);
+        let clk = f
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk");
+        let ff_sens = Self::ff_sensitivity(clk, &rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(&rst, is_low);
+
+        self.line("// Reset-free memory process: portable simple-dual-port BRAM inference");
+        self.line(&format!("always_ff @(posedge {clk}) begin"));
+        self.indent += 1;
+        self.line("if (do_push)");
+        self.indent += 1;
+        self.line("mem[wr_ptr[PTR_W-2:0]] <= push_data;");
+        self.indent -= 1;
+        self.line("if (rd_mem_en)");
+        self.indent += 1;
+        self.line("mem_data_r <= mem[rd_ptr_next[PTR_W-2:0]];");
+        self.indent -= 1;
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        self.line("// Registered write-data bypass; ignored unless bypass_valid is set");
+        self.line(&format!("always_ff @(posedge {clk}) begin"));
+        self.indent += 1;
+        self.line("if (load_bypass) bypass_data_r <= push_data;");
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        self.line(&format!("always_ff @({ff_sens}) begin"));
+        self.indent += 1;
+        self.line(&format!("if ({rst_cond}) begin"));
+        self.indent += 1;
+        self.line("wr_ptr <= '0;");
+        self.line("rd_ptr <= '0;");
+        self.line("bypass_valid <= 1'b0;");
+        self.indent -= 1;
+        self.line("end else begin");
+        self.indent += 1;
+        self.line("if (load_bypass) bypass_valid <= 1'b1;");
+        self.line("else if (do_pop || drop_oldest) bypass_valid <= 1'b0;");
+        self.line("if (do_push) wr_ptr <= wr_ptr + 1'b1;");
+        self.line("if (do_pop || drop_oldest) rd_ptr <= rd_ptr + 1'b1;");
         self.indent -= 1;
         self.line("end");
         self.indent -= 1;
@@ -419,17 +536,21 @@ impl<'a> Codegen<'a> {
         } else {
             self.line("assign push_ready = !full_r;");
         }
+        self.line("// Reset-free write port: required for RAM inference");
+        self.line(&format!("always_ff @(posedge {wr_clk}) begin"));
+        self.indent += 1;
+        self.line("if (push_valid && push_ready)");
+        self.indent += 1;
+        self.line("mem[wr_ptr_bin[PTR_W-2:0]] <= push_data;");
+        self.indent -= 1;
+        self.indent -= 1;
+        self.line("end");
         self.line(&format!(
             "always_ff @(posedge {wr_clk} or {rst_edge} {rst}) begin"
         ));
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) wr_ptr_bin <= '0;"));
-        self.line("else if (push_valid && push_ready) begin");
-        self.indent += 1;
-        self.line("mem[wr_ptr_bin[PTR_W-2:0]] <= push_data;");
-        self.line("wr_ptr_bin <= wr_ptr_bin + 1;");
-        self.indent -= 1;
-        self.line("end");
+        self.line("else if (push_valid && push_ready) wr_ptr_bin <= wr_ptr_bin + 1'b1;");
         self.indent -= 1;
         self.line("end");
         self.line("");
@@ -437,21 +558,68 @@ impl<'a> Codegen<'a> {
         self.line("logic empty_r;");
         self.line("logic [PTR_W-1:0] wr_ptr_bin_rd;");
         self.line("assign wr_ptr_bin_rd = gray2bin(wr_ptr_gray_sync);");
-        self.line("assign empty_r = (rd_ptr_bin == wr_ptr_bin_rd);");
-        self.line("assign pop_valid = !empty_r;");
-        self.line("assign pop_data  = mem[rd_ptr_bin[PTR_W-2:0]];");
+        if f.latency == 1 {
+            self.line("logic [DATA_WIDTH-1:0] pop_data_r;");
+            self.line("logic [PTR_W-1:0] rd_ptr_next;");
+            self.line("logic raw_empty_r, next_empty_r, head_valid;");
+            self.line("logic rd_mem_en;");
+            self.line("logic [PTR_W-2:0] rd_mem_addr;");
+            self.line("assign rd_ptr_next = rd_ptr_bin + 1'b1;");
+            self.line("assign raw_empty_r = (rd_ptr_bin == wr_ptr_bin_rd);");
+            self.line("assign next_empty_r = (rd_ptr_next == wr_ptr_bin_rd);");
+            self.line("assign empty_r = !head_valid;");
+            self.line("assign pop_valid = head_valid;");
+            self.line("assign pop_data = pop_data_r;");
+            self.line(
+                "assign rd_mem_en = (!head_valid && !raw_empty_r) || (head_valid && pop_ready && !next_empty_r);",
+            );
+            self.line(
+                "assign rd_mem_addr = head_valid ? rd_ptr_next[PTR_W-2:0] : rd_ptr_bin[PTR_W-2:0];",
+            );
+        } else {
+            self.line("assign empty_r = (rd_ptr_bin == wr_ptr_bin_rd);");
+            self.line("assign pop_valid = !empty_r;");
+            self.line("assign pop_data  = mem[rd_ptr_bin[PTR_W-2:0]];");
+        }
         if port_names.contains(&"full") {
             self.line("assign full  = full_r;");
         }
         if port_names.contains(&"empty") {
             self.line("assign empty = empty_r;");
         }
+        if f.latency == 1 {
+            self.line("");
+            self.line("// Reset-free synchronous read port: dual-clock block-RAM inference");
+            self.line(&format!("always_ff @(posedge {rd_clk}) begin"));
+            self.indent += 1;
+            self.line("if (rd_mem_en) pop_data_r <= mem[rd_mem_addr];");
+            self.indent -= 1;
+            self.line("end");
+        }
         self.line(&format!(
             "always_ff @(posedge {rd_clk} or {rst_edge} {rst}) begin"
         ));
         self.indent += 1;
-        self.line(&format!("if ({rst_cond}) rd_ptr_bin <= '0;"));
-        self.line("else if (pop_valid && pop_ready) rd_ptr_bin <= rd_ptr_bin + 1;");
+        if f.latency == 1 {
+            self.line(&format!("if ({rst_cond}) begin"));
+            self.indent += 1;
+            self.line("rd_ptr_bin <= '0;");
+            self.line("head_valid <= 1'b0;");
+            self.indent -= 1;
+            self.line("end else if (!head_valid) begin");
+            self.indent += 1;
+            self.line("if (!raw_empty_r) head_valid <= 1'b1;");
+            self.indent -= 1;
+            self.line("end else if (pop_ready) begin");
+            self.indent += 1;
+            self.line("rd_ptr_bin <= rd_ptr_next;");
+            self.line("head_valid <= !next_empty_r;");
+            self.indent -= 1;
+            self.line("end");
+        } else {
+            self.line(&format!("if ({rst_cond}) rd_ptr_bin <= '0;"));
+            self.line("else if (pop_valid && pop_ready) rd_ptr_bin <= rd_ptr_bin + 1;");
+        }
         self.indent -= 1;
         self.line("end");
     }

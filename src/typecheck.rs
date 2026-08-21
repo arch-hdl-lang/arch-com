@@ -8298,6 +8298,40 @@ impl<'a> TypeChecker<'a> {
                 r.name.span,
             ));
         }
+        // A true-dual RAM supports either one shared clock or one clock per
+        // physical port. With two clocks, port group `g` must map explicitly
+        // to `clk_g`; declaration order is not a hardware contract.
+        if r.kind == crate::ast::RamKind::TrueDual {
+            let clock_names: Vec<&str> = r
+                .ports
+                .iter()
+                .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.as_str())
+                .collect();
+            let clock_count = clock_names.len();
+            if !(1..=2).contains(&clock_count) {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "true_dual ram `{}` must have 1 shared clock or 2 per-port clocks, found {clock_count}",
+                        r.name.name
+                    ),
+                    r.name.span,
+                ));
+            } else if clock_count == 2 {
+                for group in &r.port_groups {
+                    let expected = format!("clk_{}", group.name.name);
+                    if !clock_names.contains(&expected.as_str()) {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "true_dual ram `{}` with 2 clocks requires clock port `{expected}` for port group `{}`; clock declaration order is not used",
+                                r.name.name, group.name.name
+                            ),
+                            group.name.span,
+                        ));
+                    }
+                }
+            }
+        }
         // simple_dual requires exactly 2 port groups
         if r.kind == crate::ast::RamKind::SimpleDual && r.port_groups.len() != 2 {
             self.errors.push(CompileError::general(
@@ -8387,12 +8421,31 @@ impl<'a> TypeChecker<'a> {
             ));
         }
 
+        if f.latency > 1 {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "fifo `{}`: latency {} is out of range — must be 0 (combinational) or 1 (registered FWFT)",
+                    f.name.name, f.latency
+                ),
+                f.name.span,
+            ));
+        }
+
         // LIFO must be single-clock (synchronous)
         if f.kind == FifoKind::Lifo {
             let is_async = crate::resolve::detect_async_fifo(&f.ports);
             if is_async {
                 self.errors.push(CompileError::general(
                     &format!("lifo `{}` must be single-clock (synchronous); dual-clock lifo is not supported", f.name.name),
+                    f.name.span,
+                ));
+            }
+            if f.latency != 0 {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "lifo `{}` supports only latency 0; registered FWFT is currently available for fifo kind only",
+                        f.name.name
+                    ),
                     f.name.span,
                 ));
             }

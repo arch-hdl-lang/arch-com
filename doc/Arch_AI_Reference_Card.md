@@ -723,6 +723,7 @@ fifo Name
   kind lifo;                          // optional, default fifo
   param DEPTH: const = 64;
   param T: type = UInt<32>;       // REQUIRED — sets memory element type
+  latency 1;                          // optional: 0=comb/LUTRAM, 1=registered FWFT/BRAM
 
   port clk: in Clock<D>;             // or wr_clk + rd_clk for async
   port rst: in Reset<Sync>;
@@ -737,8 +738,9 @@ end fifo Name
 
 - A `type` parameter (e.g. `param T: type = UInt<32>`) is **required** — it sets the internal memory element width. Using `in UInt<32>` directly on push_data/pop_data without a type parameter is a compile error.
 - `param OVERFLOW: const = 1;` — optional. When set, `push_ready` is always high and writing to a full FIFO overwrites the oldest entry (circular buffer / drop-oldest mode). Default 0 = block when full.
+- `latency 0` (default) reads the memory combinationally and is intended for shallow, LUTRAM-friendly FIFOs. `latency 1` keeps the same ready/valid FWFT interface but registers `pop_data` around a synchronous memory read, allowing deep sync and async FIFOs to infer FPGA block RAM from generic SV.
 - Dual-clock: replace `clk` with `wr_clk: in Clock<WrD>` + `rd_clk: in Clock<RdD>`; compiler adds gray-code CDC
-- `kind lifo` restricted to single-clock only
+- `kind lifo` is restricted to single-clock and `latency 0`
 
 ---
 
@@ -810,6 +812,10 @@ end ram Name
 port is always enabled: it reads every cycle and writes whenever `wen` (or,
 for `simple_dual`, on every write-port access). Applies uniformly to
 `single`, `simple_dual`, and `true_dual` kinds at every `latency`.
+
+For `true_dual`, one clock is shared by both port groups. With two clocks,
+port group `g` requires clock `clk_g` (for example, `a` -> `clk_a` and `b` ->
+`clk_b`); declaration order is never used as a fallback.
 
 ---
 
