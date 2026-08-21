@@ -527,7 +527,7 @@ fn expr_references_params(expr: &Expr, param_names: &std::collections::HashSet<&
 /// earlier derived param (`B = A + 1; C = B + 1;`). Only params that already
 /// have an evaluable entry in `effective` are touched, mirroring
 /// `compute_defaults_with_enums` (which silently drops params it can't fold).
-fn recompute_derived_params(
+pub(super) fn recompute_derived_params(
     params: &[ParamDecl],
     raw: &HashMap<String, i64>,
     effective: &mut HashMap<String, i64>,

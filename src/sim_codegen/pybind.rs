@@ -309,7 +309,7 @@ impl<'a> SimCodegen<'a> {
         // `port_0`, `port_1`, ..., `port_{N-1}` populate `bus_port_names`
         // so the bracket-dot expression path (`chans[i].sig`) resolves.
         let mut bus_port_names: HashSet<String> = HashSet::new();
-        let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
+        let mut bus_flat: Vec<(String, Direction, TypeExpr)> = Vec::new();
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
                 match bi.count.as_ref() {
@@ -323,7 +323,40 @@ impl<'a> SimCodegen<'a> {
                         }
                     }
                 }
-                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols, &m.params));
+                bus_flat.extend(flatten_bus_port_with_dir(
+                    &p.name.name,
+                    bi,
+                    self.symbols,
+                    &m.params,
+                ));
+            }
+        }
+
+        let mut markable_inputs = HashSet::new();
+        if self.inputs_start_uninit {
+            for port in &m.ports {
+                if port.bus_info.is_none() {
+                    if port.direction == Direction::In
+                        && !matches!(
+                            port.ty,
+                            TypeExpr::Clock(_) | TypeExpr::Reset(_, _) | TypeExpr::Vec(_, _)
+                        )
+                    {
+                        markable_inputs.insert(port.name.name.clone());
+                    }
+                } else if let Some(info) =
+                    port.bus_info.as_ref().filter(|info| info.count.is_none())
+                {
+                    for (name, direction, ty) in
+                        flatten_bus_port_with_dir(&port.name.name, info, self.symbols, &m.params)
+                    {
+                        if direction == Direction::In
+                            && !matches!(ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _))
+                        {
+                            markable_inputs.insert(name);
+                        }
+                    }
+                }
             }
         }
 
@@ -372,6 +405,9 @@ impl<'a> SimCodegen<'a> {
                     "        .def_readwrite(\"{field}\", &{class}::{field})"
                 ));
             }
+            if markable_inputs.contains(field) {
+                bindings.push(self.emit_input_marker(&class, field));
+            }
             port_info.push((field.clone(), width, is_signed, is_input, false, false));
         }
 
@@ -396,7 +432,7 @@ impl<'a> SimCodegen<'a> {
         // `type_bits_te` would mis-classify a >64b signal as scalar and
         // emit a corrupted `def_readwrite` instead of the wide binding,
         // and the downstream `port_info` width would be wrong too.
-        for (flat_name, flat_ty) in &bus_flat {
+        for (flat_name, direction, flat_ty) in &bus_flat {
             let width = type_bits_te_with_params(flat_ty, &m.params);
             let is_signed = matches!(flat_ty, TypeExpr::SInt(_));
             if wide_names.contains(flat_name) {
@@ -406,7 +442,17 @@ impl<'a> SimCodegen<'a> {
                     "        .def_readwrite(\"{flat_name}\", &{class}::{flat_name})"
                 ));
             }
-            port_info.push((flat_name.clone(), width, is_signed, true, false, false));
+            if markable_inputs.contains(flat_name) {
+                bindings.push(self.emit_input_marker(&class, flat_name));
+            }
+            port_info.push((
+                flat_name.clone(),
+                width,
+                is_signed,
+                *direction == Direction::In,
+                false,
+                false,
+            ));
         }
 
         // Internal registers (exposed as readonly for testbench inspection)
@@ -586,6 +632,31 @@ auto {helper_name}(const T& self) {{
 namespace py = pybind11;
 
 namespace arch_pybind_detail {{
+template <int WORDS>
+py::int_ wide_to_int(const VlWide<WORDS>& source, unsigned width) {{
+    py::object value = py::int_(0);
+    for (int i = WORDS - 1; i >= 0; --i) {{
+        value = value.attr("__lshift__")(32);
+        value = value.attr("__or__")(py::int_(source.data()[i]));
+    }}
+    py::object mask = py::int_(1).attr("__lshift__")(width);
+    mask = mask.attr("__sub__")(1);
+    return py::reinterpret_borrow<py::int_>(value.attr("__and__")(mask));
+}}
+
+template <int WORDS>
+void int_to_wide(VlWide<WORDS>& target, py::object source, unsigned width) {{
+    py::object value = py::module_::import("builtins").attr("int")(source);
+    py::object mask = py::int_(1).attr("__lshift__")(width);
+    mask = mask.attr("__sub__")(1);
+    value = value.attr("__and__")(mask);
+    for (int i = 0; i < WORDS; ++i) {{
+        py::object word = value.attr("__and__")(py::int_(0xffffffffULL));
+        target.data()[i] = word.cast<uint32_t>();
+        value = value.attr("__rshift__")(32);
+    }}
+}}
+
 template <typename T>
 void eval_comb(T& self) {{
     if constexpr (requires(T& t) {{ t.eval_comb(); }}) {{
@@ -686,18 +757,20 @@ PYBIND11_MODULE({pybind_module}, m) {{
 
     /// Emit a lambda-based pybind11 binding for a VlWide field.
     fn emit_wide_binding(&self, class: &str, field: &str, width: u32) -> String {
-        let words = (width + 31) / 32;
         format!(
             r#"        .def_property("{field}",
-            []({class}& self) -> uint64_t {{
-                uint64_t v = 0;
-                for (int i = std::min({words}u, 2u) - 1; i >= 0; i--)
-                    v = (v << 32) | self.{field}.data()[i];
-                return v;
+            []({class}& self) {{
+                return arch_pybind_detail::wide_to_int(self.{field}, {width});
             }},
-            []({class}& self, uint64_t v) {{
-                self.{field} = VlWide<{words}>(v);
+            []({class}& self, py::object value) {{
+                arch_pybind_detail::int_to_wide(self.{field}, value, {width});
             }})"#,
+        )
+    }
+
+    fn emit_input_marker(&self, class: &str, field: &str) -> String {
+        format!(
+            "        .def(\"_mark_input_{field}\", []({class}& self) {{ self._{field}_vinit = true; }})"
         )
     }
 

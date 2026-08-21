@@ -5479,6 +5479,40 @@ end pipeline ConcatWidthPipe
 }
 
 #[test]
+fn test_pipeline_sim_concat_uses_widened_add_width() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline AddConcatWidthPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port packed_out: out UInt<10>;
+  stage S
+    reg packed_r: UInt<10> reset rst => 0;
+    seq on clk rising
+      packed_r <= {1'b1, a + b};
+    end seq
+    comb
+      packed_out = packed_r;
+    end comb
+  end stage S
+end pipeline AddConcatWidthPipe
+"#;
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("((uint64_t)(1) << 9)"),
+        "plain addition widens UInt<8> + UInt<8> to nine bits inside a concat:\n{sim}"
+    );
+    assert!(
+        !sim.contains("((uint64_t)(1) << 8)"),
+        "pipeline concat must not treat plain addition like wrapping addition:\n{sim}"
+    );
+}
+
+#[test]
 fn test_pipeline_comb_match_emits_case() {
     let source = r#"
 domain D

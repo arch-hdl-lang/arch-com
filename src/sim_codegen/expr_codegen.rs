@@ -600,7 +600,22 @@ pub(super) fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         }
         ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => infer_expr_width(inner, ctx),
         ExprKind::Literal(LitKind::Sized(w, _)) => *w,
-        ExprKind::Literal(_) => 32,
+        ExprKind::Literal(LitKind::ParamSized(name, _)) => ctx
+            .params
+            .iter()
+            .find(|param| param.name.name == *name)
+            .and_then(|param| param.default.as_ref())
+            .map(|default| eval_const_expr_with_params(default, ctx.params) as u32)
+            .unwrap_or(8),
+        ExprKind::Literal(LitKind::Dec(value) | LitKind::Hex(value) | LitKind::Bin(value)) => {
+            if *value == 0 {
+                1
+            } else {
+                64 - value.leading_zeros()
+            }
+        }
+        ExprKind::Literal(LitKind::TypedFloat(format, _)) => format.width(),
+        ExprKind::Literal(LitKind::Float(_)) => 32,
         ExprKind::Bool(_) => 1,
         ExprKind::MethodCall(base, method, _) if method.name == "reverse" => {
             infer_expr_width(base, ctx)
@@ -1256,6 +1271,15 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 let op_name = if *op == BinOp::Div { "/" } else { "%" };
                 return format!("(_ARCH_DCHK(({r}), \"{loc} {op_name}\"), ({l} {op_str} {r}))");
             }
+            if matches!(op, BinOp::AddWrap | BinOp::SubWrap) {
+                let value = format!("({l} {op_str} {r})");
+                let bits = infer_expr_width(expr, ctx);
+                return if infer_expr_signed(expr, ctx) {
+                    cast_to_signed_bits(&value, bits)
+                } else {
+                    cast_to_bits(&value, bits)
+                };
+            }
             format!("({l} {op_str} {r})")
         }
 
@@ -1277,7 +1301,11 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 // Bus port: itcm.cmd_valid → itcm_cmd_valid
                 if ctx.bus_ports.contains(base_name.as_str()) {
                     let flat = format!("{}_{}", base_name, field.name);
-                    return ctx.resolve_name(&flat, is_lhs);
+                    return if is_lhs {
+                        ctx.resolve_name(&flat, true)
+                    } else {
+                        ctx.read_signal(&flat)
+                    };
                 }
                 if ctx.inst_names.contains(base_name.as_str()) {
                     return format!("_inst_{}.{}", base_name, field.name);

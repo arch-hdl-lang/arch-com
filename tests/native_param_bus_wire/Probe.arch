@@ -36,7 +36,7 @@ module Probe
   port packed_out: out UInt<45>;
 
   wire wide: ParamStream<DATA_W=112, USER_W=13>;
-  wire packed: ParamStream<DATA_W=45, USER_W=1>;
+  wire packed_bus: ParamStream<DATA_W=45, USER_W=1>;
 
   inst producer: WideBusProducer
     m -> wide;
@@ -49,8 +49,8 @@ module Probe
   end inst consumer
 
   comb
-    packed.tdata = {burst, size, len, addr};
-    packed.tuser = 0;
-    packed_out = packed.tdata;
+    packed_bus.tdata = {burst, size, len, addr};
+    packed_bus.tuser = 0;
+    packed_out = packed_bus.tdata;
   end comb
 end module Probe
