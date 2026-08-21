@@ -3368,6 +3368,12 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 
 **11.5 True Dual-Port RAM**
 
+A true-dual RAM may declare one clock, shared by both physical ports, or two
+per-port clocks. In the two-clock form, each port group `g` maps to a clock
+named `clk_g`; for the conventional `a` and `b` groups these are `clk_a` and
+`clk_b`. Clock declaration order is never used for mapping. A missing,
+partial, or mixed two-clock naming scheme is a compile error.
+
 +---------------------------------------------------------------------------------+
 | *ram_true_dual.arch*                                                            |
 |                                                                                 |

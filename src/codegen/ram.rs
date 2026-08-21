@@ -179,25 +179,38 @@ impl<'a> Codegen<'a> {
         self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
 
         // RAMs normally have one shared clock. A true-dual RAM may instead
-        // declare two clocks. Prefer the documented `clk_<port-group>` naming
-        // convention (clk_a → port a), then fall back to declaration order.
-        // Preserve the one-clock form by using the first clock for both ports.
+        // declare one clock per physical port. In the two-clock form the
+        // mapping is structural: port group `g` uses `clk_g`. The type checker
+        // rejects missing or mixed names, so declaration order never changes
+        // the generated hardware.
         let clk_names: Vec<String> = r
             .ports
             .iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .collect();
+        let shared_clk = clk_names
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "clk".to_string());
         let clock_for_group = |group_idx: usize| {
-            let conventional_name = r
-                .port_groups
-                .get(group_idx)
-                .map(|pg| format!("clk_{}", pg.name.name));
-            conventional_name
-                .and_then(|name| clk_names.iter().find(|clk| **clk == name).cloned())
-                .or_else(|| clk_names.get(group_idx).cloned())
-                .or_else(|| clk_names.first().cloned())
-                .unwrap_or_else(|| "clk".to_string())
+            if clk_names.len() == 2 {
+                let expected = r
+                    .port_groups
+                    .get(group_idx)
+                    .map(|pg| format!("clk_{}", pg.name.name))
+                    .unwrap_or_else(|| shared_clk.clone());
+                clk_names
+                    .iter()
+                    .find(|clk| **clk == expected)
+                    .cloned()
+                    // Invalid declarations are rejected before codegen. Keep
+                    // this fallback deterministic and name-based so codegen
+                    // never guesses from declaration order.
+                    .unwrap_or(expected)
+            } else {
+                shared_clk.clone()
+            }
         };
         let clk_a = clock_for_group(0);
         let clk_b = clock_for_group(1);

@@ -8299,16 +8299,16 @@ impl<'a> TypeChecker<'a> {
             ));
         }
         // A true-dual RAM supports either one shared clock or one clock per
-        // physical port. Codegen first matches the documented
-        // `clk_<port-group>` convention, then falls back to declaration order.
-        // Reject other counts here instead of silently emitting references to
-        // a fallback/nonexistent clock.
+        // physical port. With two clocks, port group `g` must map explicitly
+        // to `clk_g`; declaration order is not a hardware contract.
         if r.kind == crate::ast::RamKind::TrueDual {
-            let clock_count = r
+            let clock_names: Vec<&str> = r
                 .ports
                 .iter()
                 .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-                .count();
+                .map(|p| p.name.name.as_str())
+                .collect();
+            let clock_count = clock_names.len();
             if !(1..=2).contains(&clock_count) {
                 self.errors.push(CompileError::general(
                     &format!(
@@ -8317,6 +8317,19 @@ impl<'a> TypeChecker<'a> {
                     ),
                     r.name.span,
                 ));
+            } else if clock_count == 2 {
+                for group in &r.port_groups {
+                    let expected = format!("clk_{}", group.name.name);
+                    if !clock_names.contains(&expected.as_str()) {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "true_dual ram `{}` with 2 clocks requires clock port `{expected}` for port group `{}`; clock declaration order is not used",
+                                r.name.name, group.name.name
+                            ),
+                            group.name.span,
+                        ));
+                    }
+                }
             }
         }
         // simple_dual requires exactly 2 port groups

@@ -1661,7 +1661,117 @@ end ram TwoClockTdp{latency}
                 1,
                 "port B output register must use clk_b:\n{sv}"
             );
+
+            let sim = compile_to_sim_h(&source(latency), false);
+            for pfx in ["a", "b"] {
+                let output_stage = sim
+                    .find(&format!("    _r2_{pfx}_rdata = _r_{pfx}_rdata;"))
+                    .expect("latency-2 native sim must advance the output stage");
+                let read_stage = sim
+                    .find(&format!("        _r_{pfx}_rdata = _mem[{pfx}_addr];"))
+                    .expect("latency-2 native sim must update the memory-read stage");
+                assert!(
+                    output_stage < read_stage,
+                    "latency-2 native sim must capture the previous read-stage value before performing the new read for port {pfx}:\n{sim}"
+                );
+            }
         }
+    }
+}
+
+#[test]
+fn test_true_dual_ram_uses_one_arbitrarily_named_shared_clock() {
+    let source = r#"
+ram SharedClockTdp
+  kind true_dual;
+  latency 1;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port core_mem_clk: in Clock<CoreDomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram SharedClockTdp
+"#;
+    let sv = compile_to_sv(source);
+    assert_eq!(
+        sv.matches("always @(posedge core_mem_clk)").count(),
+        2,
+        "a single clock must be shared by both true-dual RAM ports:\n{sv}"
+    );
+}
+
+#[test]
+fn test_true_dual_ram_rejects_partial_or_positional_clock_mapping() {
+    let source = |clocks: &str| {
+        format!(
+            r#"
+ram AmbiguousClockTdp
+  kind true_dual;
+  latency 1;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+{clocks}
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram AmbiguousClockTdp
+"#
+        )
+    };
+
+    for (clocks, missing_clock) in [
+        (
+            "  port clk_b: in Clock<B>;\n  port other_clk: in Clock<A>;",
+            "clk_a",
+        ),
+        (
+            "  port clk_a: in Clock<A>;\n  port other_clk: in Clock<B>;",
+            "clk_b",
+        ),
+        (
+            "  port first_clk: in Clock<A>;\n  port second_clk: in Clock<B>;",
+            "clk_a",
+        ),
+    ] {
+        let errors = typecheck_errors(&source(clocks))
+            .expect_err("two-clock true-dual RAM must not map clocks by declaration order");
+        assert!(
+            errors.iter().any(|error| {
+                error.contains(&format!("requires clock port `{missing_clock}`"))
+                    && error.contains("clock declaration order is not used")
+            }),
+            "missing explicit clock-mapping diagnostic for {missing_clock}:\n{}",
+            errors.join("\n")
+        );
     }
 }
 

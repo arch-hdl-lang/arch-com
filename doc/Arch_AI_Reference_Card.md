@@ -813,6 +813,10 @@ port is always enabled: it reads every cycle and writes whenever `wen` (or,
 for `simple_dual`, on every write-port access). Applies uniformly to
 `single`, `simple_dual`, and `true_dual` kinds at every `latency`.
 
+For `true_dual`, one clock is shared by both port groups. With two clocks,
+port group `g` requires clock `clk_g` (for example, `a` -> `clk_a` and `b` ->
+`clk_b`); declaration order is never used as a fallback.
+
 ---
 
 ### cam
