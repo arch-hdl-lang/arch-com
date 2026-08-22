@@ -163,8 +163,8 @@ Range `for` = runtime SV loop; value-list `for` = compile-time unroll; `generate
 UInt<N>  SInt<N>  Bool  Bit
 FP32  BF16                                    // IEEE-754 binary32 / bfloat16 (v1; see §2a)
 FP8E4M3  FP8E5M2                              // OCP OFP8 8-bit floats (v1; see §2a)
-FP4E2M1  FP6E2M3  FP6E3M2                     // OCP MX sub-8-bit elements: STORAGE-ONLY (conversions + literals; no + - * / compares / is_nan)
-E8M0                                          // MX block SCALE (2^(e-127)): NOT a float; no zero (0x00 = min scale), 0xFF = NaN; no arithmetic
+FP4E2M1  FP6E2M3  FP6E3M2                     // OCP MX sub-8-bit elements: STORAGE-ONLY as scalars (conversions + literals; no + - * / compares / is_nan) — block ops via ScaledVec, §2a
+E8M0  UE4M3                                    // block SCALE types: NOT floats, no scalar arithmetic. E8M0 = 2^(e-127) (no zero, 0xFF=NaN); UE4M3 = NVFP4 scale (has a zero, 0x7F=NaN) — used as ScaledVec<_,_,Scale>, §2a
 Clock<Domain>  Reset<Sync|Async, High|Low>   // polarity defaults High
 Vec<T,N>
 struct S  { f: T; }
@@ -277,6 +277,29 @@ x.to_uint<N>()   // float→UInt<N>: toward-zero, per-N saturating, negatives/Na
 |---|---|---|
 | `riscv` (default) | `0x7FC00000` / `0x7FC0` | type max |
 | `cuda` | `0x7FFFFFFF` / `0x7FFF` | `0` |
+
+**MX block-scale (`ScaledVec`) — v2.** Block-scaled aggregate for the OCP MX / NVFP4 formats: `N` narrow elements sharing one scale, packed as a single word `{scale, P[N-1..0]}` (width `scale_w + N×elem_w`). The sub-8-bit elements stay STORAGE-ONLY *as scalars* (the caveat in §2 still holds); the *block* is where real numeric ops live — an LLM should quantize into a `ScaledVec` rather than hand-roll scale handling.
+
+```
+ScaledVec<Elem, N, Scale>            // Elem ∈ FP4E2M1|FP6E2M3|FP6E3M2|FP8E4M3|FP8E5M2; N ≥ 1
+                                     //   Scale = E8M0 (OCP MX) or UE4M3 (NVFP4)
+type MXFP4 = ScaledVec<FP4E2M1, 32, E8M0>;    // 8 + 32×4 = 136 bits
+type NVFP4 = ScaledVec<FP4E2M1, 16, UE4M3>;   // UE4M3 ≠ FP8E4M3 (unsigned, 7 sig bits, NaN 0x7F, has a zero)
+```
+
+Only these operations — **no `+ - * /`, no ordered `< >`, no indexing `a[0]`** (all compile errors):
+
+```
+scaled_quantize<Fmt>(v)              // Vec<FP32,N> → block; Fmt REQUIRED (never inferred), len must == N
+scaled_quantize<Fmt, policy, rounding>(v)   // policy ∈ floor_pow2|ceil_pow2|exact; rounding = rne
+                                     //   default policy is scale-dependent: floor_pow2 (E8M0), exact (UE4M3)
+scaled_dequantize(b)                 // block → Vec<FP32,N> (scale applied; the ONLY way to read a lane)
+scaled_dot(a, b)                     // two blocks of the SAME type → FP32 (block dot product, FP32 accumulate)
+a == b   a != b                      // ENCODING compare on the packed word: equal bits ⇒ equal value, but
+                                     //   unequal bits ≠ unequal value — dequantize both for a true value test
+```
+
+`exact` policy is refused for `E8M0` (no mantissa). `port c: in split MXFP4;` splits the SV boundary into `c_scale` + `c_elems` (SV-shape only; body unchanged). Read one element as `scaled_dequantize(b)[i]`. See spec §3.10 / §3.10a / §3.11.
 
 **Pipelined operators (`<pipelined, N>`)** — `fma(a,b,c)` is combinational (latency 0). For a registry-backed staged implementation, declare the depth in the call: `fma<pipelined, N>(...)`. `N` is a compile-time integer literal, looked up against `(operator, profile, N)` in the compiler's builtin registry (`arch ops` lists what's registered). The call's depth is authoritative — bind the result into a matching `pipe_reg<T, N>` tap; a mismatch, an untapped target, or comb/`let` use is a compile error. No auto-alignment: combining a tapped and an untapped operand in one expression errors, naming both cycles.
 
