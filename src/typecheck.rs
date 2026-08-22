@@ -209,6 +209,13 @@ pub struct TypeChecker<'a> {
     file_scopes: Vec<std::ops::Range<usize>>,
     /// Package imports visible to the item currently being checked.
     active_uses: HashSet<String>,
+    /// Signal names implicitly declared by an `inst` output connection
+    /// (`clk_out -> clk_ifu_w;`) in the construct currently being checked.
+    ///
+    /// These never appear as a `wire` / `let` / `reg` declaration but are
+    /// real nets — SV codegen emits a `logic` for each. Undefined-name
+    /// checking (#748) has to treat them as declared.
+    active_inst_output_nets: HashSet<String>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -222,6 +229,7 @@ impl<'a> TypeChecker<'a> {
             in_sva_context: false,
             in_bound_err: false,
             vec_of_bus_ports: HashMap::new(),
+            active_inst_output_nets: HashSet::new(),
             active_params: Vec::new(),
             file_scopes: Vec::new(),
             active_uses: HashSet::new(),
@@ -274,6 +282,54 @@ impl<'a> TypeChecker<'a> {
                 .is_some_and(|packages| packages.is_disjoint(&self.active_uses))
     }
 
+    /// Can a bare value identifier that is absent from `local_types` still
+    /// resolve to something legal? (#748)
+    ///
+    /// The `ExprKind::Ident` fallback used to treat *every* such name as an
+    /// untyped-but-legal reference, which silently accepted undeclared nets.
+    /// Resolution now has to succeed against one of the non-local scopes below
+    /// before the name is allowed through.
+    fn ident_resolvable_nonlocal(&self, name: &str, module_name: &str) -> bool {
+        // The `__`-prefixed namespace is reserved for compiler-synthesized
+        // names (`__chwire_*` lifted credit-channel state, `__prop_*`,
+        // `__staged_*`, `__main_*`). A user `assert` may reference one before
+        // the pass that materializes it has run — `arch check` sees a plain
+        // `Ident` that only `arch formal` / thread lowering can resolve — so
+        // this namespace is out of scope for undefined-name checking.
+        if name.starts_with("__") {
+            return true;
+        }
+        // `param` in the construct currently being checked — width is generic.
+        if self.active_params.iter().any(|p| p.name.name == name) {
+            return true;
+        }
+        // Names declared in this construct's own symbol scope (ports, regs,
+        // lets, wires, instances) that never made it into `local_types`.
+        if self
+            .symbols
+            .module_scopes
+            .get(module_name)
+            .is_some_and(|scope| scope.contains_key(name))
+        {
+            return true;
+        }
+        // File/package-level globals visible here: enum and struct type names,
+        // functions, other constructs.
+        if self.symbols.globals.contains_key(name) {
+            return true;
+        }
+        // A net implicitly declared by an `inst` output connection.
+        if self.active_inst_output_nets.contains(name) {
+            return true;
+        }
+        // A bare enum variant (`c = Red;`) is legal and is not registered as a
+        // global in its own right — it lives inside its enum's variant list.
+        self.symbols.globals.values().any(|(sym, _)| match sym {
+            Symbol::Enum(info) => info.variants.iter().any(|v| v == name),
+            _ => false,
+        })
+    }
+
     fn check_hidden_package_expr(&mut self, expr: &Expr) {
         let mut names = HashSet::new();
         crate::comb_graph::collect_expr_idents(expr, &mut names);
@@ -299,8 +355,13 @@ impl<'a> TypeChecker<'a> {
                 self.active_uses.insert(package.name.name.clone());
             }
             let saved_params = std::mem::replace(&mut self.active_params, Self::item_params(item));
+            let saved_nets = std::mem::replace(
+                &mut self.active_inst_output_nets,
+                Self::item_inst_output_nets(item),
+            );
             item.as_construct().typecheck(&mut self);
             self.active_params = saved_params;
+            self.active_inst_output_nets = saved_nets;
         }
         // Cross-item check: every `inst foo: SomeRegfile` whose target
         // regfile has `kind: latch` must drive its write-port `addr` /
@@ -327,6 +388,75 @@ impl<'a> TypeChecker<'a> {
         } else {
             Err(self.errors)
         }
+    }
+
+    /// Collect every signal name bound by an `inst` **output** connection
+    /// (`port -> signal;`) anywhere in the construct, including inside
+    /// `generate` blocks and inst-body `for` loops. See
+    /// [`Self::active_inst_output_nets`].
+    fn item_inst_output_nets(item: &Item) -> HashSet<String> {
+        fn from_inst(inst: &crate::ast::InstDecl, out: &mut HashSet<String>) {
+            for c in &inst.connections {
+                if c.direction == crate::ast::ConnectDir::Output {
+                    let root = TypeChecker::expr_root_name_tc(&c.signal);
+                    if !root.is_empty() {
+                        out.insert(root);
+                    }
+                }
+            }
+            fn from_inst_for(fl: &crate::ast::InstForLoop, out: &mut HashSet<String>) {
+                for item in &fl.body {
+                    match item {
+                        crate::ast::InstBodyItem::Connection(c) => {
+                            if c.direction == crate::ast::ConnectDir::Output {
+                                let root = TypeChecker::expr_root_name_tc(&c.signal);
+                                if !root.is_empty() {
+                                    out.insert(root);
+                                }
+                            }
+                        }
+                        crate::ast::InstBodyItem::For(inner) => from_inst_for(inner, out),
+                    }
+                }
+            }
+            for fl in &inst.for_loops {
+                from_inst_for(fl, out);
+            }
+        }
+        fn from_body(body: &[ModuleBodyItem], out: &mut HashSet<String>) {
+            for it in body {
+                match it {
+                    ModuleBodyItem::Inst(inst) => from_inst(inst, out),
+                    ModuleBodyItem::Generate(g) => match g {
+                        crate::ast::GenerateDecl::For(gf) => from_gen(&gf.items, out),
+                        crate::ast::GenerateDecl::If(gi) => {
+                            from_gen(&gi.then_items, out);
+                            from_gen(&gi.else_items, out);
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+        fn from_gen(items: &[crate::ast::GenItem], out: &mut HashSet<String>) {
+            for gi in items {
+                match gi {
+                    crate::ast::GenItem::Inst(inst) => from_inst(inst, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = HashSet::new();
+        match item {
+            Item::Module(m) => from_body(&m.body, &mut out),
+            Item::Pipeline(p) => {
+                for st in &p.stages {
+                    from_body(&st.body, &mut out);
+                }
+            }
+            _ => {}
+        }
+        out
     }
 
     fn item_params(item: &Item) -> Vec<ParamDecl> {
@@ -3454,8 +3584,16 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Stmt::For(f) => {
+                // The loop iterator is a binding visible only inside the body.
+                // It is inserted as `Ty::Error` deliberately: that is the type
+                // it effectively had before undefined-name checking existed, so
+                // width/latency checks on iterator-derived expressions keep
+                // their previous behaviour and only name *resolution* changes.
+                // Giving iterators a real integer type is a separate change.
+                let mut body_types = local_types.clone();
+                body_types.insert(f.var.name.clone(), Ty::Error);
                 for s in &f.body {
-                    self.check_stmt(s, module_name, local_types, driven, block_kind, reg_names);
+                    self.check_stmt(s, module_name, &body_types, driven, block_kind, reg_names);
                 }
             }
             Stmt::Init(ib) => {
@@ -4374,8 +4512,18 @@ impl<'a> TypeChecker<'a> {
                 } else if self.package_member_hidden(name) {
                     self.errors.push(CompileError::undefined(name, expr.span));
                     Ty::Error
+                } else if self.ident_resolvable_nonlocal(name, module_name) {
+                    // A param reference, enum variant, or other in-scope global.
+                    // Its width is generic here, so it keeps the historical
+                    // `Ty::Error` poison value rather than gaining a concrete
+                    // type — this arm is about *resolution*, not typing.
+                    Ty::Error
                 } else {
-                    // Check param (treat as generic width)
+                    // #748: the name is not declared anywhere. Before this
+                    // check the arm fell through to `Ty::Error`, so `arch check`
+                    // reported "OK: no errors" and `arch build` emitted SV
+                    // referencing an undeclared net.
+                    self.errors.push(CompileError::undefined(name, expr.span));
                     Ty::Error
                 }
             }
