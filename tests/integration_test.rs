@@ -39247,3 +39247,151 @@ fn test_sext_loop_var_hoist_behavioral_equivalence_verilator_and_iverilog() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #748 — `arch check` accepted undefined value identifiers
+//
+// The `ExprKind::Ident` arm fell through to `Ty::Error` for any name absent
+// from `local_types`, so a typo'd or hallucinated signal passed `arch check`
+// clean and `arch build` emitted SV referencing an undeclared net. The arm now
+// resolves against params / construct scope / globals / enum variants / nets
+// bound by an `inst` output connection, and errors only when all of those miss.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_undefined_value_ident_is_rejected_748() {
+    let source = r#"
+module Undef
+  port a: in UInt<8>;
+  port o2: out UInt<8>;
+
+  comb
+    o2 = missing_one;
+  end comb
+end module Undef
+"#;
+    let errs = typecheck_errors(source)
+        .expect_err("a reference to an undeclared signal must not typecheck");
+    assert!(
+        errs.iter().any(|e| e.contains("missing_one")),
+        "error must name the undefined identifier, got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_undefined_value_ident_rejected_in_every_context_748() {
+    // The four value-expression contexts catalogued on the issue: `let`
+    // initializer, arithmetic sub-expression, `comb` if-condition, and seq RHS.
+    let source = r#"
+module Scope
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  port p: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+
+  let x: UInt<8> = ghost_let;
+
+  comb
+    o = a + ghost_expr;
+    if ghost_cond
+      p = x;
+    else
+      p = 0;
+    end if
+  end comb
+
+  seq on clk rising
+    r <= ghost_seq;
+  end seq
+end module Scope
+"#;
+    let errs = typecheck_errors(source).expect_err("undefined names must not typecheck");
+    for ghost in ["ghost_let", "ghost_expr", "ghost_cond", "ghost_seq"] {
+        assert!(
+            errs.iter().any(|e| e.contains(ghost)),
+            "`{ghost}` must be reported as undefined, got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_param_and_enum_variant_still_resolve_748() {
+    // Guards the two legal fallbacks the pre-#748 `else` branch was covering:
+    // a `param` reference (generic width) and a bare enum variant.
+    let source = r#"
+enum Color
+  Red,
+  Green,
+  Blue
+end enum Color
+
+module EnumProbe
+  param SCALE: const = 3;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  port c: out Color;
+
+  comb
+    o = a +% SCALE;
+    c = Red;
+  end comb
+end module EnumProbe
+"#;
+    typecheck_errors(source).expect("param reference and bare enum variant must stay legal");
+}
+
+#[test]
+fn test_for_loop_iterator_still_resolves_748() {
+    // The loop iterator is never inserted into `local_types` by the caller, so
+    // undefined-name checking has to bind it for the body itself.
+    let source = r#"
+module LoopIter
+  port a: in Vec<UInt<8>, 4>;
+  port o: out Vec<UInt<8>, 4>;
+
+  comb
+    for i in 0..3
+      o[i] = a[i] +% 1;
+    end for
+  end comb
+end module LoopIter
+"#;
+    typecheck_errors(source).expect("a `for` loop iterator must resolve inside the loop body");
+}
+
+#[test]
+fn test_inst_output_connection_net_still_resolves_748() {
+    // `clk_out -> gated_w;` implicitly declares `gated_w` (SV codegen emits a
+    // `logic` for it). Found by an e203 corpus sweep: an earlier cut of the
+    // #748 fix rejected 9 of these across the design.
+    let source = r#"
+clkgate Icg
+  kind latch;
+  port clk_in: in Clock<SysDomain>;
+  port enable: in Bool;
+  port test_en: in Bool;
+  port clk_out: out Clock<SysDomain>;
+end clkgate Icg
+
+module ClkCtrl
+  port clk: in Clock<SysDomain>;
+  port en: in Bool;
+  port clk_core: out Clock<SysDomain>;
+
+  inst icg: Icg
+    clk_in  <- clk;
+    enable  <- en;
+    test_en <- en;
+    clk_out -> gated_w;
+  end inst icg
+
+  comb
+    clk_core = gated_w;
+  end comb
+end module ClkCtrl
+"#;
+    typecheck_errors(source)
+        .expect("a net bound by an `inst` output connection must resolve at its read site");
+}
