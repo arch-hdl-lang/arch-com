@@ -274,6 +274,41 @@ impl<'a> TypeChecker<'a> {
                 .is_some_and(|packages| packages.is_disjoint(&self.active_uses))
     }
 
+    /// Can a bare value identifier that is absent from `local_types` still
+    /// resolve to something legal? (#748)
+    ///
+    /// The `ExprKind::Ident` fallback used to treat *every* such name as an
+    /// untyped-but-legal reference, which silently accepted undeclared nets.
+    /// Resolution now has to succeed against one of the non-local scopes below
+    /// before the name is allowed through.
+    fn ident_resolvable_nonlocal(&self, name: &str, module_name: &str) -> bool {
+        // `param` in the construct currently being checked — width is generic.
+        if self.active_params.iter().any(|p| p.name.name == name) {
+            return true;
+        }
+        // Names declared in this construct's own symbol scope (ports, regs,
+        // lets, wires, instances) that never made it into `local_types`.
+        if self
+            .symbols
+            .module_scopes
+            .get(module_name)
+            .is_some_and(|scope| scope.contains_key(name))
+        {
+            return true;
+        }
+        // File/package-level globals visible here: enum and struct type names,
+        // functions, other constructs.
+        if self.symbols.globals.contains_key(name) {
+            return true;
+        }
+        // A bare enum variant (`c = Red;`) is legal and is not registered as a
+        // global in its own right — it lives inside its enum's variant list.
+        self.symbols.globals.values().any(|(sym, _)| match sym {
+            Symbol::Enum(info) => info.variants.iter().any(|v| v == name),
+            _ => false,
+        })
+    }
+
     fn check_hidden_package_expr(&mut self, expr: &Expr) {
         let mut names = HashSet::new();
         crate::comb_graph::collect_expr_idents(expr, &mut names);
@@ -3454,8 +3489,16 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Stmt::For(f) => {
+                // The loop iterator is a binding visible only inside the body.
+                // It is inserted as `Ty::Error` deliberately: that is the type
+                // it effectively had before undefined-name checking existed, so
+                // width/latency checks on iterator-derived expressions keep
+                // their previous behaviour and only name *resolution* changes.
+                // Giving iterators a real integer type is a separate change.
+                let mut body_types = local_types.clone();
+                body_types.insert(f.var.name.clone(), Ty::Error);
                 for s in &f.body {
-                    self.check_stmt(s, module_name, local_types, driven, block_kind, reg_names);
+                    self.check_stmt(s, module_name, &body_types, driven, block_kind, reg_names);
                 }
             }
             Stmt::Init(ib) => {
@@ -4374,8 +4417,18 @@ impl<'a> TypeChecker<'a> {
                 } else if self.package_member_hidden(name) {
                     self.errors.push(CompileError::undefined(name, expr.span));
                     Ty::Error
+                } else if self.ident_resolvable_nonlocal(name, module_name) {
+                    // A param reference, enum variant, or other in-scope global.
+                    // Its width is generic here, so it keeps the historical
+                    // `Ty::Error` poison value rather than gaining a concrete
+                    // type — this arm is about *resolution*, not typing.
+                    Ty::Error
                 } else {
-                    // Check param (treat as generic width)
+                    // #748: the name is not declared anywhere. Before this
+                    // check the arm fell through to `Ty::Error`, so `arch check`
+                    // reported "OK: no errors" and `arch build` emitted SV
+                    // referencing an undeclared net.
+                    self.errors.push(CompileError::undefined(name, expr.span));
                     Ty::Error
                 }
             }
