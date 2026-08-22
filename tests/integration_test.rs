@@ -29464,6 +29464,79 @@ fn test_comb_loop_completed_for_grounding_reaches_later_condition() {
 }
 
 #[test]
+fn test_comb_loop_match_scrutinee_does_not_use_union_grounding() {
+    // The `match` scrutinee-read path shares the condition-grounding snapshot
+    // logic with `if`/`elsif` (src/comb_graph.rs, arch#941). This is the
+    // match analogue of
+    // `test_comb_loop_branch_condition_does_not_use_union_grounding`: `x` is
+    // written only on the `then` arm of a prior `if` (else empty), so it is
+    // NOT established on every path. A later `match x` therefore reads `x`'s
+    // unresolved pre-block value as its scrutinee, and the subsequent `x = y`
+    // closes a real x -> y -> x cycle. If the match scrutinee used the union
+    // grounding of `ever_written`, the branch-only write would wrongly ground
+    // the scrutinee and mask the cycle. Tripwire for the match path diverging
+    // from the if path.
+    let source = r#"
+        module M
+          port c: in Bool;
+          port o: out UInt<2>;
+          wire x: UInt<2>;
+          wire y: UInt<2>;
+          comb
+            if c
+              x = 0;
+            else
+            end if
+            match x
+              0 => y = 0;
+              _ => y = 1;
+            end match
+            x = y;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = errors_from(source);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("combinational feedback cycle (")),
+        "branch-only x write must not ground the later match scrutinee; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_grounded_match_scrutinee_not_falsely_flagged() {
+    // Positive companion to the above: when `x` IS established
+    // unconditionally before the `match`, the scrutinee read is grounded and
+    // no false x <-> y feedback may be fabricated. Guards against the arch#941
+    // snapshot logic over-warning on legitimately grounded match scrutinees.
+    let source = r#"
+        module M
+          port a: in UInt<2>;
+          port o: out UInt<2>;
+          wire x: UInt<2>;
+          wire y: UInt<2>;
+          comb
+            x = a;
+            match x
+              0 => y = 0;
+              _ => y = 1;
+            end match
+            o = y;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    assert!(
+        !ws.iter()
+            .any(|m| m.contains("combinational feedback cycle (")),
+        "grounded match scrutinee must not be flagged as feedback; got: {:?}",
+        ws
+    );
+}
+
+#[test]
 fn test_cond_only_grounded_fold_not_flagged_and_verilator_confirms_acyclic() {
     // arch#780, NEGATIVE direction: a self-fold (`p = q +% p;`) whose ONLY
     // prior establishment of `p` is a CONDITIONAL, single-arm write
