@@ -761,8 +761,17 @@ fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
     let _ = writeln!(o, "  logic {}code;", sv_w(8));
     let _ = writeln!(o, "  logic {}r;", sv_w(bw));
     // 1. amax as an unsigned integer max of |v_i| — see the module header.
+    // Loop iterator declared with the other locals, never inline in the
+    // `for` header. A `for (int unsigned i = ...)` nested inside an if/else
+    // arm leaves `i` undriven on the sibling paths, and yosys's `proc` pass
+    // then infers a LATCH per bit-slice of the iterator (arch#932). The
+    // emitted logic is pure combinational quantization, so those latches are
+    // spurious hardware -- but they are real in the netlist, and no simulator
+    // gate can see them. Hoisting the declaration alone clears it; no default
+    // assignment is needed (verified against yosys 0.67).
+    let _ = writeln!(o, "  int unsigned i;");
     let _ = writeln!(o, "  amax = {}'h0;", 32);
-    let _ = writeln!(o, "  for (int unsigned i = 0; i < {n}; i = i + 1) begin");
+    let _ = writeln!(o, "  for (i = 0; i < {n}; i = i + 1) begin");
     let _ = writeln!(o, "    mag = v[i*32 +: 32] & 32'h7FFFFFFF;");
     let _ = writeln!(o, "    if (mag > amax) amax = mag;");
     let _ = writeln!(o, "  end");
@@ -817,7 +826,7 @@ fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
             .sv_reciprocal("code")
             .expect("ExactReciprocal kernel implies the scale has one")
     );
-    let _ = writeln!(o, "    for (int unsigned i = 0; i < {n}; i = i + 1) begin");
+    let _ = writeln!(o, "    for (i = 0; i < {n}; i = i + 1) begin");
     let _ = writeln!(
         o,
         "      r[i*{ew} +: {ew}] = arch_f32_to_{tag}(arch_f32_mul(v[i*32 +: 32], inv));"
@@ -881,8 +890,17 @@ fn sv_quantize_boundary(s: BlockShape, policy: ScalePolicy) -> String {
     let _ = writeln!(o, "  logic {}p;", sv_w(ew));
     let _ = writeln!(o, "  logic sgn;");
     let _ = writeln!(o, "  logic {}r;", sv_w(bw));
+    // Loop iterator declared with the other locals, never inline in the
+    // `for` header. A `for (int unsigned i = ...)` nested inside an if/else
+    // arm leaves `i` undriven on the sibling paths, and yosys's `proc` pass
+    // then infers a LATCH per bit-slice of the iterator (arch#932). The
+    // emitted logic is pure combinational quantization, so those latches are
+    // spurious hardware -- but they are real in the netlist, and no simulator
+    // gate can see them. Hoisting the declaration alone clears it; no default
+    // assignment is needed (verified against yosys 0.67).
+    let _ = writeln!(o, "  int unsigned i;");
     let _ = writeln!(o, "  amax = 32'h0;");
-    let _ = writeln!(o, "  for (int unsigned i = 0; i < {n}; i = i + 1) begin");
+    let _ = writeln!(o, "  for (i = 0; i < {n}; i = i + 1) begin");
     let _ = writeln!(o, "    mag = v[i*32 +: 32] & 32'h7FFFFFFF;");
     let _ = writeln!(o, "    if (mag > amax) amax = mag;");
     let _ = writeln!(o, "  end");
@@ -914,7 +932,7 @@ fn sv_quantize_boundary(s: BlockShape, policy: ScalePolicy) -> String {
         );
     }
     let _ = writeln!(o, "    x = {}(code);", s.scale.widen_fn());
-    let _ = writeln!(o, "    for (int unsigned i = 0; i < {n}; i = i + 1) begin");
+    let _ = writeln!(o, "    for (i = 0; i < {n}; i = i + 1) begin");
     let _ = writeln!(o, "      sgn = v[i*32 + 31];");
     let _ = writeln!(o, "      a = v[i*32 +: 32] & 32'h7FFFFFFF;");
     let _ = writeln!(o, "      m = {ew}'h0;");
@@ -970,6 +988,15 @@ fn sv_dequantize(s: BlockShape) -> String {
     let _ = writeln!(o, "  logic {}w;", sv_w(32));
     let _ = writeln!(o, "  logic {}p;", sv_w(32));
     let _ = writeln!(o, "  logic {}r;", sv_w(vw));
+    // Loop iterator declared with the other locals, never inline in the
+    // `for` header. A `for (int unsigned i = ...)` nested inside an if/else
+    // arm leaves `i` undriven on the sibling paths, and yosys's `proc` pass
+    // then infers a LATCH per bit-slice of the iterator (arch#932). The
+    // emitted logic is pure combinational quantization, so those latches are
+    // spurious hardware -- but they are real in the netlist, and no simulator
+    // gate can see them. Hoisting the declaration alone clears it; no default
+    // assignment is needed (verified against yosys 0.67).
+    let _ = writeln!(o, "  int unsigned i;");
     // A NaN scale (code 0xFF) widens to a NaN f32, so every product below is
     // NaN and the element bits are ignored: the block value rule falls out of
     // the multiply rather than needing a branch.
@@ -981,7 +1008,7 @@ fn sv_dequantize(s: BlockShape) -> String {
         bw - sw
     );
     let _ = writeln!(o, "  r = {vw}'h0;");
-    let _ = writeln!(o, "  for (int unsigned i = 0; i < {n}; i = i + 1) begin");
+    let _ = writeln!(o, "  for (i = 0; i < {n}; i = i + 1) begin");
     let _ = writeln!(o, "    w = arch_{tag}_to_f32(b[i*{ew} +: {ew}]);");
     let _ = writeln!(o, "    p = arch_f32_mul(x, w);");
     // A finite element scaled by a finite scale saturates to +-FP32_MAX

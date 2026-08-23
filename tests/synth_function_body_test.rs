@@ -136,3 +136,76 @@ fn early_return_keeps_literal_return() {
         "must NOT rewrite an early return:\n{sv}"
     );
 }
+
+/// Loop iterators must be declared with the function's other locals, never
+/// inline in the `for` header (arch#932).
+///
+/// `for (int unsigned i = 0; ...)` nested inside an if/else arm leaves `i`
+/// undriven on the sibling paths, and yosys's `proc` pass infers a LATCH per
+/// bit-slice of the iterator — 18 of them in `ScaledQuant` alone. The emitted
+/// logic is pure combinational quantization, so those latches are spurious
+/// hardware that no simulator gate can see: Verilator and Icarus both accept
+/// the inline form happily.
+///
+/// The placement matters as much as the hoist. A declaration emitted *after*
+/// the function's first statement is illegal SV — yosys accepts it silently,
+/// Verilator rejects it — so this also pins that every iterator declaration
+/// precedes the first assignment in its function.
+#[test]
+fn block_helper_loop_iterators_are_declared_not_inline() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_path = td.path().join("ScaledQuant.sv");
+    let out = Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("build")
+        .arg("tests/fp_v1/ScaledQuant.arch")
+        .arg("-o")
+        .arg(&sv_path)
+        .arg("--no-auto-asserts")
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "arch build failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_path).expect("read sv");
+
+    assert!(
+        !sv.contains("for (int"),
+        "loop iterator must not be declared inline in the `for` header — \
+         nested in an if/else arm it yields a latch per bit-slice:\n{sv}"
+    );
+    assert!(
+        sv.contains("int unsigned i;"),
+        "iterator should be declared with the function's other locals:\n{sv}"
+    );
+
+    // Every iterator declaration must precede its function's first statement.
+    for body in sv.split("function automatic").skip(1) {
+        let body = body.split("endfunction").next().unwrap_or("");
+        let Some(decl) = body.find("int unsigned i;") else {
+            continue;
+        };
+        let first_stmt = body
+            .lines()
+            .scan(0usize, |off, l| {
+                let at = *off;
+                *off += l.len() + 1;
+                Some((at, l.trim().to_string()))
+            })
+            .find(|(_, l)| {
+                l.ends_with(';')
+                    && !l.starts_with("logic")
+                    && !l.starts_with("int ")
+                    && !l.starts_with("//")
+            })
+            .map(|(at, _)| at);
+        if let Some(stmt) = first_stmt {
+            assert!(
+                decl < stmt,
+                "iterator declared after the first statement (illegal SV; \
+                 yosys accepts it, Verilator does not):\n{body}"
+            );
+        }
+    }
+}
