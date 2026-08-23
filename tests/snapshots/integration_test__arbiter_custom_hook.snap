@@ -15,12 +15,17 @@ module QosArbiter #(
 );
 
   function automatic logic [3:0] QosGrant(input logic [3:0] req_mask, input logic [3:0] last_grant, input logic [7:0] qos);
-    logic [3:0] masked = req_mask & (last_grant ^ 'hF);
-    logic [3:0] fair_pick = masked != 0 ? masked : req_mask;
-    logic urgent = (qos & 'h80) != 0;
-    logic [3:0] pick = urgent ? req_mask : fair_pick;
-    logic [4:0] pick_neg = 5'($unsigned(pick ^ 'hF)) + 1;
-    return pick & 4'(pick_neg);
+    logic [3:0] masked;
+    logic [3:0] fair_pick;
+    logic urgent;
+    logic [3:0] pick;
+    logic [4:0] pick_neg;
+    masked = req_mask & (last_grant ^ 'hF);
+    fair_pick = masked != 0 ? masked : req_mask;
+    urgent = (qos & 'h80) != 0;
+    pick = urgent ? req_mask : fair_pick;
+    pick_neg = 5'($unsigned(pick ^ 'hF)) + 1;
+    QosGrant = pick & 4'(pick_neg);
   endfunction
   
   logic [3:0] last_grant_r;
