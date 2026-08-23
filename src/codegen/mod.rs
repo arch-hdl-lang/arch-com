@@ -148,6 +148,9 @@ pub struct Codegen<'a> {
     /// `ident_decl_type`/`ident_float_fmt` so float-op dispatch works
     /// inside `function` bodies; empty outside `emit_function`.
     fn_local_types: std::collections::HashMap<String, TypeExpr>,
+    /// SV name to assign to in place of `return` inside the function being
+    /// emitted, or `None` to emit a literal `return` (see `emit_function`).
+    fn_return_target: Option<String>,
     /// Maps call-site span.start → overload index (for overloaded functions only).
     overload_map: std::collections::HashMap<usize, usize>,
     /// Bus port names in the current module → bus name (for FieldAccess rewriting).
@@ -419,6 +422,7 @@ impl<'a> Codegen<'a> {
             pending_functions: Vec::new(),
             file_scopes: Vec::new(),
             fn_local_types: std::collections::HashMap::new(),
+            fn_return_target: None,
             overload_map,
             bus_ports: std::collections::HashMap::new(),
             vec_of_bus_port_count: std::collections::HashMap::new(),
@@ -1256,6 +1260,104 @@ impl<'a> Codegen<'a> {
     /// `pending_functions` is taken and restored because `emit_function`
     /// needs `&mut self` and the same set is re-emitted into every
     /// following construct in the file.
+    /// Does this item contain a `return` anywhere inside it?
+    fn item_has_return(it: &FunctionBodyItem) -> bool {
+        match it {
+            FunctionBodyItem::Return(_) => true,
+            FunctionBodyItem::IfElse(ie) => {
+                ie.then_body.iter().any(Self::item_has_return)
+                    || ie.else_body.iter().any(Self::item_has_return)
+            }
+            FunctionBodyItem::For(fl) => fl.body.iter().any(Self::item_has_return),
+            _ => false,
+        }
+    }
+
+    /// Can this function's `return`s be rewritten to `name = expr;`?
+    ///
+    /// Only when no `return` is an EARLY exit — i.e. no item that contains a
+    /// return is followed by more statements in its block. The unsound shape:
+    ///
+    /// ```text
+    /// if c        ->   if (c) begin
+    ///   return a;         fname = a;
+    /// end if            end
+    /// return b;         fname = b;   // early exit dropped: overwrites `a`
+    /// ```
+    ///
+    /// SV's `return` carries the control transfer; a bare assignment does not.
+    /// Nothing in the 900-file corpus has this shape (49 functions, 58 returns,
+    /// zero early exits), but the language permits it, so a function that does
+    /// keeps emitting a literal `return` — correct, merely not parseable by
+    /// yosys's built-in frontend, which is the status quo for every function
+    /// today (arch#932).
+    fn returns_are_rewritable(items: &[FunctionBodyItem]) -> bool {
+        for (i, it) in items.iter().enumerate() {
+            if Self::item_has_return(it) && i + 1 != items.len() {
+                return false;
+            }
+            let ok = match it {
+                FunctionBodyItem::IfElse(ie) => {
+                    Self::returns_are_rewritable(&ie.then_body)
+                        && Self::returns_are_rewritable(&ie.else_body)
+                }
+                FunctionBodyItem::For(fl) => Self::returns_are_rewritable(&fl.body),
+                _ => true,
+            };
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Every `let` declared anywhere in a function body, in first-appearance
+    /// order, as `(name, sv_type)` — deduplicated by name.
+    ///
+    /// Used to emit all declarations directly under the function header so the
+    /// bodies carry only assignments. Two reasons this cannot stay inline:
+    /// SV requires a block's declarations to precede its first statement (a
+    /// `let` after an `if` is already invalid where it stands), and yosys's
+    /// built-in Verilog frontend rejects a declaration carrying an initializer
+    /// inside a `function` at all (arch#932) — legal SV that Verilator and
+    /// Icarus accept, which is why no simulator gate ever caught it.
+    ///
+    /// Dedup by name is what makes hoisting out of `if`/`for` arms safe: the
+    /// compiler already models function locals as one flat namespace
+    /// (`collect_fn_local_types` walks nested bodies into a single map), so a
+    /// name reused across two arms is one variable assigned twice, exactly as
+    /// before — never two declarations.
+    fn collect_fn_let_decls(&mut self, f: &FunctionDecl) -> Vec<(String, String)> {
+        fn walk(items: &[FunctionBodyItem], out: &mut Vec<(String, Option<TypeExpr>)>) {
+            for item in items {
+                match item {
+                    FunctionBodyItem::Let(l) => {
+                        if !out.iter().any(|(n, _)| n == &l.name.name) {
+                            out.push((l.name.name.clone(), l.ty.clone()));
+                        }
+                    }
+                    FunctionBodyItem::IfElse(ie) => {
+                        walk(&ie.then_body, out);
+                        walk(&ie.else_body, out);
+                    }
+                    FunctionBodyItem::For(fl) => walk(&fl.body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut raw = Vec::new();
+        walk(&f.body, &mut raw);
+        raw.into_iter()
+            .map(|(n, ty)| {
+                let ty_str = match &ty {
+                    Some(ann) => self.emit_type_str(ann),
+                    None => "logic".to_string(),
+                };
+                (n, ty_str)
+            })
+            .collect()
+    }
+
     pub(crate) fn emit_pending_functions(&mut self) {
         let fns = std::mem::take(&mut self.pending_functions);
         for f in &fns {
@@ -1280,6 +1382,18 @@ impl<'a> Codegen<'a> {
             args_str.join(", ")
         ));
         self.indent += 1;
+        // All `let` declarations first — SV allows body declarations only
+        // before the first statement, and yosys rejects decl-with-initializer
+        // in a function outright (arch#932). The bodies below emit bare
+        // assignments.
+        self.fn_return_target = if Self::returns_are_rewritable(&f.body) {
+            Some(sv_name.clone())
+        } else {
+            None
+        };
+        for (name, ty_str) in self.collect_fn_let_decls(f) {
+            self.line(&format!("{ty_str} {name};"));
+        }
         // Hoist temps synthesized inside this body get their declaration
         // spliced here — just past the header, the only place SV allows a
         // body declaration — while the assignment stays in place (arch#846).
@@ -1293,17 +1407,17 @@ impl<'a> Codegen<'a> {
         for item in &f.body {
             match item {
                 FunctionBodyItem::Let(l) => {
-                    let ty_str = if let Some(ann) = &l.ty {
-                        self.emit_type_str(ann)
-                    } else {
-                        "logic".to_string()
-                    };
+                    // Declaration was emitted under the function header by
+                    // `collect_fn_let_decls`; only the assignment belongs here.
                     let val = self.emit_expr_str(&l.value);
-                    self.line(&format!("{} {} = {};", ty_str, l.name.name, val));
+                    self.line(&format!("{} = {};", l.name.name, val));
                 }
                 FunctionBodyItem::Return(expr) => {
                     let val = self.emit_expr_str(expr);
-                    self.line(&format!("return {};", val));
+                    match self.fn_return_target.clone() {
+                        Some(target) => self.line(&format!("{target} = {val};")),
+                        None => self.line(&format!("return {};", val)),
+                    }
                 }
                 FunctionBodyItem::IfElse(ie) => {
                     self.emit_function_if(ie);
@@ -1319,6 +1433,7 @@ impl<'a> Codegen<'a> {
             }
         }
         self.hoist_scope = saved_scope;
+        self.fn_return_target = None;
         self.indent -= 1;
         self.line("endfunction");
         self.line("");
@@ -1784,17 +1899,17 @@ impl<'a> Codegen<'a> {
         for item in items {
             match item {
                 FunctionBodyItem::Let(l) => {
-                    let ty_str = if let Some(ann) = &l.ty {
-                        self.emit_type_str(ann)
-                    } else {
-                        "logic".to_string()
-                    };
+                    // Declaration was emitted under the function header by
+                    // `collect_fn_let_decls`; only the assignment belongs here.
                     let val = self.emit_expr_str(&l.value);
-                    self.line(&format!("{} {} = {};", ty_str, l.name.name, val));
+                    self.line(&format!("{} = {};", l.name.name, val));
                 }
                 FunctionBodyItem::Return(expr) => {
                     let val = self.emit_expr_str(expr);
-                    self.line(&format!("return {};", val));
+                    match self.fn_return_target.clone() {
+                        Some(target) => self.line(&format!("{target} = {val};")),
+                        None => self.line(&format!("return {};", val)),
+                    }
                 }
                 FunctionBodyItem::IfElse(ie) => self.emit_function_if(ie),
                 FunctionBodyItem::For(fl) => self.emit_function_for(fl),

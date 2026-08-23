@@ -18341,7 +18341,9 @@ fn test_vec_sint_index_reads_preserve_signedness() {
     );
     assert!(
         sv.contains("function automatic logic signed [7:0] pick")
-            && sv.contains("return $signed(v[i]);"),
+            // The `return` lowers to an assignment to the function name
+            // (arch#932); what matters here is that `$signed` survives it.
+            && sv.contains("pick = $signed(v[i]);"),
         "{sv}"
     );
     assert!(sv.contains("copied[i] = $signed(values[i]);"), "{sv}");
@@ -34447,8 +34449,12 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
     );
     // 2. INCR-stepped sub-burst start address: base + (beats_done << size).
     assert!(
-        flat.contains("logic [ADDR_W-1:0] stepped = done << size;")
-            && flat.contains("return ADDR_W'(base + stepped);"),
+        // Declaration and assignment are emitted separately, and the
+        // `return` became an assignment to the (monomorphized) function
+        // name (arch#932) — so match the math, not the name.
+        flat.contains("logic [ADDR_W-1:0] stepped;")
+            && flat.contains("stepped = done << size;")
+            && flat.contains("ADDR_W'(base + stepped);"),
         "sub-burst start address must step by (i*16)<<size:\n{sv}",
     );
     // 3. AXI3 ar_len is 4-bit and is sub_beats-1.
@@ -34462,7 +34468,12 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
     );
     // min(16, remaining) clamp inside sub_beats().
     assert!(
-        flat.contains("if (remaining > 16) begin return 9'd16;"),
+        // Both arms return, so the returns lower to assignments to the
+        // (monomorphized) function name (arch#932) — assert the clamp in
+        // both arms without pinning that name.
+        flat.contains("if (remaining > 16) begin")
+            && flat.contains("= 9'd16; end else begin")
+            && flat.contains("= remaining; end"),
         "sub_beats must clamp to min(16, remaining):\n{sv}",
     );
     // 4. merged RLAST only on the final sub-burst.
@@ -34501,7 +34512,9 @@ fn test_nic400_axi3_to_axi4_limiter_field_mapping_sv() {
     );
     // 3. AXI3 2-bit lock → AXI4 1-bit lock via (l == 1).
     assert!(
-        flat.contains("return l == 1;"),
+        // `return` lowers to an assignment to the (monomorphized) function
+        // name (arch#932) — match the mapping, not the name.
+        flat.contains("= l == 1;"),
         "AXI3 2-bit AxLOCK must map EXCLUSIVE(01)→1, else 0:\n{sv}",
     );
     // 4. MAX_BURST is the programmable cap parameter, default 16.

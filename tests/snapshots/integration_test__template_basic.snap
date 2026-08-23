@@ -16,7 +16,7 @@ module MyArbiter #(
 );
 
   function automatic logic [3:0] FixedGrant(input logic [3:0] req_mask);
-    return req_mask & 4'(~req_mask + 1);
+    FixedGrant = req_mask & 4'(~req_mask + 1);
   endfunction
   
   logic [3:0] grant;
