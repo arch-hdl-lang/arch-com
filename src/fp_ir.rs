@@ -387,15 +387,24 @@ fn render_sv_fn(f: &FpFn) -> String {
         f.name,
         params.join(", ")
     );
+    // Declarations first, then the assignments — never `logic w _t0 = rhs;`
+    // inside a function body. Two reasons, and the second is the one that
+    // bites: SV requires a block's declarations to precede its first
+    // statement (so these cannot be interleaved), and yosys's built-in
+    // Verilog frontend rejects a declaration carrying an initializer inside
+    // a `function` outright — "Invalid nesting of always blocks and/or
+    // initializations". That is legal SV which Verilator 5.048 and Icarus
+    // both accept, so no simulator gate ever saw it, but it made every
+    // emitted soft-float helper unsynthesizable and took the whole MX/NVFP4
+    // quantizer line with it (arch#932). `fp_block.rs` already emits this
+    // split shape; this brings the IR renderer in line with it.
     for b in &lin.order {
         let id = lin.ids[&(Rc::as_ptr(&b.0) as usize)];
-        let _ = writeln!(
-            s,
-            "  logic {}_t{} = {};",
-            sv_decl_width(b.width()),
-            id,
-            sv_rhs(b, &lin)
-        );
+        let _ = writeln!(s, "  logic {}_t{};", sv_decl_width(b.width()), id);
+    }
+    for b in &lin.order {
+        let id = lin.ids[&(Rc::as_ptr(&b.0) as usize)];
+        let _ = writeln!(s, "  _t{} = {};", id, sv_rhs(b, &lin));
     }
     let _ = writeln!(s, "  {} = {};", f.name, sv_ref(&f.body, &lin));
     let _ = writeln!(s, "endfunction");
