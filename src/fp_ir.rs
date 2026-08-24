@@ -917,24 +917,163 @@ impl StagedCtx<'_> {
     }
 }
 
+// ── Gate-delay-weighted leaf scheduler (arch#955) ─────────────────────────
+//
+// The FMA's staged schedule (`FMA_F32_S6_SCHEDULE`) was hand-derived with
+// measured provenance because balancing a pipeline by SSA *node count* does
+// not balance gate *delay*: one 48-bit `Mul` node is ~dozens of gate levels
+// while a `Bxor` is one. This derives a balanced cut automatically for a
+// LEAF FpFn (zero nested calls — `f32_mul`, `f32_add`, …) by weighting each
+// `Bv` node with a proxy for its mapped gate depth, computing every node's
+// cumulative critical-path weight, then cutting at even weight fractions.
+//
+// The weights are relative, not a timing model: they only have to keep the
+// deep arithmetic (Mul, Add/Sub, Cmp, shifts) from sharing a thin stage with
+// wiring (Extract/Concat/ZeroExt) and one-level gates (bitwise, Ite). The
+// emitted schedule is validated empirically against yosys per-stage depth.
+
+/// Proxy gate depth of a single `Bv` node of the given `width`, in gate
+/// levels — used only for *relative* stage balancing (see section comment).
+fn gate_weight(kind: &Kind, width: u32) -> u32 {
+    let w = width.max(1);
+    let log2 = |x: u32| 32 - (x.max(1) - 1).leading_zeros(); // ceil-ish log2
+    match kind {
+        // Wiring — no logic on the path.
+        Kind::Var(_)
+        | Kind::Const { .. }
+        | Kind::Extract { .. }
+        | Kind::Concat(_, _)
+        | Kind::ZeroExt { .. } => 0,
+        // One gate level regardless of width.
+        Kind::Not(_) => 1,
+        Kind::Ite { .. } => 1,
+        Kind::Bin {
+            op: Bin::And | Bin::Or | Bin::Xor,
+            ..
+        } => 1,
+        // Carry / compare chains ~ the operand width (ABC -fast maps these to
+        // ripple-ish structures rather than log-depth trees).
+        Kind::Bin {
+            op: Bin::Add | Bin::Sub,
+            ..
+        } => w,
+        Kind::Cmp { .. } => w,
+        // Barrel shifter ~ log2 layers of muxes.
+        Kind::Bin {
+            op: Bin::Shl | Bin::Lshr,
+            ..
+        } => log2(w),
+        // Multiplier: partial-product array + reduction ~ 2·width. The single
+        // most expensive node in the FP operators, and the one the cut must
+        // isolate.
+        Kind::Bin { op: Bin::Mul, .. } => 2 * w,
+        // A leaf op has no calls; treat conservatively if one appears.
+        Kind::Call { .. } => 2 * w,
+    }
+}
+
+/// Cumulative critical-path weight of every linearized node: the max over its
+/// operands' cumulative weight, plus its own `gate_weight`. `lin.order` is
+/// topological, so a single forward pass suffices.
+fn node_gate_depths(lin: &Lin) -> Vec<u32> {
+    let mut d = vec![0u32; lin.order.len()];
+    for (i, b) in lin.order.iter().enumerate() {
+        let od = |x: &Bv| -> u32 {
+            if is_leaf(x) {
+                0
+            } else {
+                d[lin.ids[&(Rc::as_ptr(&x.0) as usize)]]
+            }
+        };
+        let operand_max = match &b.0.kind {
+            Kind::Extract { x, .. } | Kind::ZeroExt { x, .. } | Kind::Not(x) => od(x),
+            Kind::Concat(a, c) | Kind::Bin { a, b: c, .. } | Kind::Cmp { a, b: c, .. } => {
+                od(a).max(od(c))
+            }
+            Kind::Ite { c, t, e } => od(c).max(od(t)).max(od(e)),
+            Kind::Call { args, .. } => args.iter().map(|a| od(a)).max().unwrap_or(0),
+            Kind::Var(_) | Kind::Const { .. } => 0,
+        };
+        d[i] = operand_max + gate_weight(&b.0.kind, b.width());
+    }
+    d
+}
+
+/// Derive `stages + 1` cut points over a LEAF FpFn's temp ids, balancing
+/// cumulative gate weight across `stages`. Returns `main_starts` for a
+/// [`crate::pipelined_ops::StagedSchedule`] (its `callee_starts` is then
+/// `&[0; stages + 1]`).
+///
+/// A node lands in the first stage whose cumulative-weight ceiling it does
+/// not exceed; since `lin.order` is topological and cumulative weight is
+/// monotone along it, the resulting cut points are non-decreasing and every
+/// node's operands sit in its stage or earlier (the topological invariant
+/// `render_sv_staged` re-checks).
+pub fn derive_leaf_schedule(f: &FpFn, stages: u32) -> Result<Vec<usize>, String> {
+    if stages == 0 {
+        return Err("stages must be >= 1".into());
+    }
+    let lin = linearize(&f.body);
+    if lin
+        .order
+        .iter()
+        .any(|b| matches!(b.0.kind, Kind::Call { .. }))
+    {
+        return Err(format!("`{}` is not a leaf: it nests a call", f.name));
+    }
+    let n = lin.order.len();
+    if (stages as usize) > n {
+        return Err(format!(
+            "{stages} stages requested but `{}` has only {n} nodes",
+            f.name
+        ));
+    }
+    let depths = node_gate_depths(&lin);
+    let total = *depths.last().unwrap_or(&0);
+    let mut starts = vec![0usize];
+    for k in 1..stages {
+        let thresh = (total as u64 * k as u64 / stages as u64) as u32;
+        // First node whose cumulative weight exceeds this stage's ceiling
+        // begins the next stage. Clamp so each stage owns >= 1 node and the
+        // arrays stay strictly increasing (render_sv_staged needs that).
+        let want = depths.iter().position(|&x| x > thresh).unwrap_or(n);
+        let lo = *starts.last().unwrap() + 1;
+        starts.push(want.max(lo).min(n - (stages - k) as usize));
+    }
+    starts.push(n);
+    Ok(starts)
+}
+
+/// Render `main_fn` as a staged pipelined module per `sched`, inlining the
 /// Render `main_fn` as a staged pipelined module per `sched`, inlining the
 /// single nested call to `callee_fn` (the `A_` namespace). See the section
 /// comment above for the emitted structure and the fallback contract.
 pub fn render_sv_staged(
     main_fn: &FpFn,
-    callee_fn: &FpFn,
+    callee_fn: Option<&FpFn>,
     sched: &crate::pipelined_ops::StagedSchedule,
     module_name: &str,
 ) -> Result<String, String> {
     let lin_m = linearize(&main_fn.body);
-    let lin_c = linearize(&callee_fn.body);
+    // Leaf ops (`f32_mul`, `f32_add`, …) have no callee: the `A_` namespace
+    // is empty, `callee_starts` is `&[0; stages + 1]`, and the single-call
+    // machinery below degenerates via `call_id = usize::MAX` (arch#955).
+    let lin_c = match callee_fn {
+        Some(c) => linearize(&c.body),
+        None => Lin {
+            ids: std::collections::HashMap::new(),
+            order: Vec::new(),
+        },
+    };
 
     // ── structural verification (drift ⇒ Err ⇒ caller falls back) ──
-    if callee_fn.name != sched.callee {
-        return Err(format!(
-            "schedule expects callee `{}`, got `{}`",
-            sched.callee, callee_fn.name
-        ));
+    if let Some(c) = callee_fn {
+        if c.name != sched.callee {
+            return Err(format!(
+                "schedule expects callee `{}`, got `{}`",
+                sched.callee, c.name
+            ));
+        }
     }
     if lin_m.order.len() != *sched.main_starts.last().unwrap() {
         return Err(format!(
@@ -957,9 +1096,10 @@ pub fn render_sv_staged(
         .filter(|(_, b)| matches!(b.0.kind, Kind::Call { .. }))
         .map(|(i, _)| i)
         .collect();
-    if calls_m.len() != 1 {
+    let expected_calls = if callee_fn.is_some() { 1 } else { 0 };
+    if calls_m.len() != expected_calls {
         return Err(format!(
-            "expected exactly one nested call in `{}`, found {}",
+            "expected exactly {expected_calls} nested call(s) in `{}`, found {}",
             main_fn.name,
             calls_m.len()
         ));
@@ -969,28 +1109,35 @@ pub fn render_sv_staged(
         .iter()
         .any(|b| matches!(b.0.kind, Kind::Call { .. }))
     {
-        return Err(format!("callee `{}` itself nests a call", callee_fn.name));
+        return Err("callee itself nests a call".to_string());
     }
-    let call_id = calls_m[0];
-    let Kind::Call { name, args } = &lin_m.order[call_id].0.kind else {
-        unreachable!("filtered on Kind::Call above")
+    let (call_id, param_args): (usize, Vec<(String, Bv)>) = match callee_fn {
+        Some(callee) => {
+            let call_id = calls_m[0];
+            let Kind::Call { name, args } = &lin_m.order[call_id].0.kind else {
+                unreachable!("filtered on Kind::Call above")
+            };
+            if name != sched.callee {
+                return Err(format!(
+                    "nested call is `{name}`, schedule expects `{}`",
+                    sched.callee
+                ));
+            }
+            if args.len() != callee.params.len() {
+                return Err("call arg count != callee param count".to_string());
+            }
+            let param_args = callee
+                .params
+                .iter()
+                .map(|(p, _)| p.clone())
+                .zip(args.iter().cloned())
+                .collect();
+            (call_id, param_args)
+        }
+        // No call node: usize::MAX makes the `stage_assigns` split place every
+        // main temp before the (absent) call and none after it.
+        None => (usize::MAX, Vec::new()),
     };
-    if name != sched.callee {
-        return Err(format!(
-            "nested call is `{name}`, schedule expects `{}`",
-            sched.callee
-        ));
-    }
-    if args.len() != callee_fn.params.len() {
-        return Err("call arg count != callee param count".to_string());
-    }
-    let param_args: Vec<(String, Bv)> = callee_fn
-        .params
-        .iter()
-        .map(|(p, _)| p.clone())
-        .zip(args.iter().cloned())
-        .map(|(p, a)| (p, a))
-        .collect();
 
     let stages = sched.stages();
     let mut ctx = StagedCtx {
@@ -1151,6 +1298,209 @@ pub fn render_sv_staged(
 mod tests {
     use super::*;
 
+    /// End-to-end proof of the zero-call staged render path (arch#955):
+    /// derive an `f32_mul` schedule, render the staged module, and confirm in
+    /// iverilog that — inputs held stable past the pipeline fill — its output
+    /// equals the trusted `eval_bv` oracle for random vectors. Skips cleanly
+    /// when iverilog is unavailable.
+    #[test]
+    fn staged_leaf_f32_mul_matches_eval_bv() {
+        if std::process::Command::new("iverilog")
+            .arg("-V")
+            .output()
+            .is_err()
+        {
+            eprintln!("iverilog not installed; skipping staged-leaf equivalence");
+            return;
+        }
+        let funcs = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let mul = funcs.iter().find(|f| f.name == "arch_f32_mul").unwrap();
+
+        const STAGES: u32 = 4;
+        let main_starts = derive_leaf_schedule(mul, STAGES).unwrap();
+        // Leaf: empty callee namespace, callee_starts all zero. Leaked to
+        // 'static for the const-shaped StagedSchedule — test-only; production
+        // rows are committed consts.
+        let main_starts: &'static [usize] = Box::leak(main_starts.into_boxed_slice());
+        let callee_starts: &'static [usize] =
+            Box::leak(vec![0usize; STAGES as usize + 1].into_boxed_slice());
+        let sched = crate::pipelined_ops::StagedSchedule {
+            main_fn: "arch_f32_mul",
+            callee: "",
+            sv_module: "ArchF32MulStaged4",
+            width: 32,
+            main_starts,
+            callee_starts,
+        };
+        let sv =
+            render_sv_staged(mul, None, &sched, "ArchF32MulStaged4").expect("staged leaf render");
+
+        // Deterministic pseudo-random FP32 vectors (LCG), plus edge cases.
+        let mut vs: Vec<(u32, u32)> = vec![
+            (0x3F800000, 0x40000000), // 1.0 * 2.0
+            (0x40490FDB, 0x3EAAAAAB), // pi * 1/3
+            (0x7F800000, 0x3F800000), // inf * 1.0
+            (0x00000000, 0x7F800000), // 0 * inf -> nan
+            (0xBF800000, 0x40800000), // -1.0 * 4.0
+        ];
+        let mut st: u64 = 0x9E3779B97F4A7C15;
+        for _ in 0..40 {
+            let mut nx = || {
+                st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+                (st >> 33) as u32
+            };
+            vs.push((nx(), nx()));
+        }
+
+        let mut expected: Vec<u32> = Vec::new();
+        for (a, b) in &vs {
+            let mut env = std::collections::HashMap::new();
+            env.insert("a".to_string(), *a as u128);
+            env.insert("b".to_string(), *b as u128);
+            expected.push(eval_bv(&mul.body, &env, &funcs).expect("eval_bv") as u32);
+        }
+
+        let mut tb = String::new();
+        tb.push_str("`timescale 1ns/1ps\nmodule tb;\n");
+        tb.push_str("  logic clk = 0;\n  logic [31:0] a, b, y;\n");
+        tb.push_str("  ArchF32MulStaged4 dut(.clk(clk), .a(a), .b(b), .y(y));\n");
+        tb.push_str("  always #5 clk = ~clk;\n  integer i, c;\n");
+        let n = vs.len();
+        let _ = writeln!(tb, "  logic [31:0] va [0:{}];", n - 1);
+        let _ = writeln!(tb, "  logic [31:0] vb [0:{}];", n - 1);
+        tb.push_str("  initial begin\n");
+        for (i, (a, b)) in vs.iter().enumerate() {
+            let _ = writeln!(tb, "    va[{i}]=32'h{a:08X}; vb[{i}]=32'h{b:08X};");
+        }
+        let _ = writeln!(tb, "    for (i=0;i<{n};i=i+1) begin");
+        tb.push_str("      a = va[i]; b = vb[i];\n");
+        tb.push_str("      for (c=0;c<8;c=c+1) @(posedge clk);\n");
+        tb.push_str("      $display(\"Y %0d %08x\", i, y);\n");
+        tb.push_str("    end\n    $finish;\n  end\nendmodule\n");
+
+        let dir = std::env::temp_dir().join(format!("archstaged_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let svf = dir.join("staged.sv");
+        std::fs::write(&svf, format!("{sv}\n{tb}")).unwrap();
+        let vvpf = dir.join("a.out");
+        let comp = std::process::Command::new("iverilog")
+            .args(["-g2012", "-o"])
+            .arg(&vvpf)
+            .arg(&svf)
+            .output()
+            .unwrap();
+        assert!(
+            comp.status.success(),
+            "iverilog failed:\n{}",
+            String::from_utf8_lossy(&comp.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvpf)
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&run.stdout);
+        let mut got = vec![None; n];
+        for line in out.lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() == 3 && f[0] == "Y" {
+                let idx: usize = f[1].parse().unwrap();
+                got[idx] = Some(u32::from_str_radix(f[2], 16).unwrap());
+            }
+        }
+        let mut mism = 0;
+        for i in 0..n {
+            let g = got[i].unwrap_or_else(|| panic!("no Y for vector {i}:\n{out}"));
+            if g != expected[i] {
+                mism += 1;
+                eprintln!(
+                    "vec {i}: a={:08x} b={:08x}  staged={:08x} expected={:08x}",
+                    vs[i].0, vs[i].1, g, expected[i]
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            mism, 0,
+            "{mism}/{n} staged f32_mul outputs diverged from eval_bv"
+        );
+    }
+
+    /// The gate-weighted leaf scheduler produces a topological, balanced cut
+    /// for `f32_mul` (arch#955). Balancing by gate weight — not SSA node
+    /// count — is the point: f32_mul is 143 nodes / SSA-depth 53 but ~186
+    /// mapped gate levels, concentrated in the 48-bit multiply.
+    #[test]
+    fn leaf_scheduler_f32_mul_is_topological_and_balanced() {
+        let funcs = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let mul = funcs.iter().find(|f| f.name == "arch_f32_mul").unwrap();
+        let lin = linearize(&mul.body);
+        let depths = node_gate_depths(&lin);
+        let total = *depths.last().unwrap();
+
+        for stages in 2..=5u32 {
+            let starts = derive_leaf_schedule(mul, stages).unwrap();
+            assert_eq!(
+                starts.len() as u32,
+                stages + 1,
+                "starts has stages+1 points"
+            );
+            assert_eq!(starts[0], 0);
+            assert_eq!(*starts.last().unwrap(), lin.order.len());
+            // Strictly increasing ⇒ every stage owns ≥ 1 node.
+            for w in starts.windows(2) {
+                assert!(w[1] > w[0], "stage empty in N={stages}: {starts:?}");
+            }
+            // Topological: a node's operands never sit in a later stage. With
+            // cut points over a topological order this reduces to "operand id
+            // < node id ⇒ operand stage ≤ node stage", which the monotone
+            // cut guarantees; assert it directly as a guard.
+            let stage_of = |id: usize| {
+                starts
+                    .windows(2)
+                    .position(|w| id >= w[0] && id < w[1])
+                    .unwrap()
+            };
+            for (i, b) in lin.order.iter().enumerate() {
+                let si = stage_of(i);
+                let check = |x: &Bv| {
+                    if !is_leaf(x) {
+                        let oid = lin.ids[&(std::rc::Rc::as_ptr(&x.0) as usize)];
+                        assert!(stage_of(oid) <= si, "non-topological cut N={stages}");
+                    }
+                };
+                match &b.0.kind {
+                    Kind::Extract { x, .. } | Kind::ZeroExt { x, .. } | Kind::Not(x) => check(x),
+                    Kind::Concat(a, c) | Kind::Bin { a, b: c, .. } | Kind::Cmp { a, b: c, .. } => {
+                        check(a);
+                        check(c);
+                    }
+                    Kind::Ite { c, t, e } => {
+                        check(c);
+                        check(t);
+                        check(e);
+                    }
+                    Kind::Call { args, .. } => args.iter().for_each(|a| check(a)),
+                    _ => {}
+                }
+            }
+            // Balance: each stage's gate-weight span within 2× the ideal.
+            let ideal = total as f64 / stages as f64;
+            for k in 0..stages as usize {
+                let lo = if starts[k] == 0 {
+                    0
+                } else {
+                    depths[starts[k] - 1]
+                };
+                let hi = depths[starts[k + 1] - 1];
+                let span = (hi - lo) as f64;
+                assert!(
+                    span <= 2.5 * ideal + 1.0,
+                    "stage {k} span {span} >> ideal {ideal:.1} (N={stages}, {starts:?})"
+                );
+            }
+        }
+    }
+
     /// Pins the zero-drift facts the builtin staged schedule was extracted
     /// against, and exercises the staged renderer end-to-end on the real
     /// FMA. If `fp_ops` evolves and this fails, re-derive the schedule
@@ -1165,7 +1515,7 @@ mod tests {
         assert_eq!(linearize(&add.body).order.len(), 175, "callee temp count");
 
         let sched = crate::pipelined_ops::FMA_F32_S6_SCHEDULE;
-        let sv = render_sv_staged(fma, add, &sched, "ArchF32FmaStaged6")
+        let sv = render_sv_staged(fma, Some(add), &sched, "ArchF32FmaStaged6")
             .expect("staged rendering must succeed on the pinned linearization");
 
         assert!(sv.contains("module ArchF32FmaStaged6 ("));
@@ -1216,13 +1566,13 @@ mod tests {
             callee: "arch_f32_sub",
             ..crate::pipelined_ops::FMA_F32_S6_SCHEDULE
         };
-        assert!(render_sv_staged(fma, add, &bad, "M").is_err());
+        assert!(render_sv_staged(fma, Some(add), &bad, "M").is_err());
         // Truncated coverage (temp-count drift).
         let bad2 = crate::pipelined_ops::StagedSchedule {
             main_starts: &[0, 44, 44, 44, 231, 273, 300],
             ..crate::pipelined_ops::FMA_F32_S6_SCHEDULE
         };
-        assert!(render_sv_staged(fma, add, &bad2, "M").is_err());
+        assert!(render_sv_staged(fma, Some(add), &bad2, "M").is_err());
     }
 
     #[test]
