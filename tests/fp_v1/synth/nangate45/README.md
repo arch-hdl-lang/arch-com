@@ -30,10 +30,19 @@ report and understate fmax by up to 3.5x (exact-wide FMA: 45 MHz unbuffered vs
 strash
 dch -f
 map
+cleanup
 buffer -N 8
 upsize
 dnsize
 ```
+
+`cleanup` removes dangling combinational logic left inside ABC after `map`.
+On a single operator it is a no-op (zero dangling nodes — verified byte-identical
+netlist and fmax with and without it). It matters only for composite designs
+that instantiate many operators, where `map` leaves a handful of fanout-less
+nodes that make `buffer` abort (`node NNNN has no fanout`); `cleanup` is the
+mapped-safe remover for them. Do **not** substitute `sweep` — it rebuilds the
+network as BDDs, destroying the gate mapping `buffer` needs, and segfaults.
 
 For two BF16 netlists (`Bf16Add`, `Bf16Sub`) ABC's `dch -f` aborts; substitute
 `dc2` for the `dch -f` line for those two operators. The mapping and repair
