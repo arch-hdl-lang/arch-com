@@ -1,6 +1,7 @@
 strash
 dch -f
 map
+cleanup
 buffer -N 8
 upsize
 dnsize
