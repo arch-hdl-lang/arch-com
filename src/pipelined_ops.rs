@@ -861,7 +861,8 @@ fn lower_staged_sites(
             continue;
         };
         let sv_text =
-            match crate::fp_ir::render_sv_staged(main_fn, callee_fn, &sched, sched.sv_module) {
+            match crate::fp_ir::render_sv_staged(main_fn, Some(callee_fn), &sched, sched.sv_module)
+            {
                 Ok(t) => t,
                 Err(e) => {
                     out.fallbacks.push(StagedFallback {
