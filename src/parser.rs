@@ -4904,7 +4904,37 @@ impl Parser {
                                     // selectors are optional and default to the OCP §6.3
                                     // policy with RNE.
                     let fmt = self.parse_type_expr()?;
-                    let (policy, rounding) = if self.eat(TokenKind::Comma) {
+                    // Trailing selectors after the mandatory format. Two
+                    // shapes: `, pipelined, N` (a latency-N staged datapath,
+                    // arch#955 — default policy/rounding) or the ordinary
+                    // `, policy, rounding` pair. Combining an explicit policy
+                    // with `pipelined` is a later extension.
+                    let mut stages: Option<u32> = None;
+                    let (policy, rounding) = if self.check(TokenKind::Comma)
+                        && self.peek_real_kind_at(1) == Some(TokenKind::Pipelined)
+                    {
+                        self.advance(); // `,`
+                        self.advance(); // `pipelined`
+                        self.expect(TokenKind::Comma)?;
+                        let depth_span = self.peek_span();
+                        let old_no_angle = self.no_angle;
+                        self.no_angle = true;
+                        let depth_expr = self.parse_expr()?;
+                        self.no_angle = old_no_angle;
+                        stages = Some(match &depth_expr.kind {
+                            ExprKind::Literal(LitKind::Dec(n))
+                            | ExprKind::Literal(LitKind::Hex(n))
+                            | ExprKind::Literal(LitKind::Bin(n))
+                            | ExprKind::Literal(LitKind::Sized(_, n)) => *n as u32,
+                            _ => {
+                                return Err(CompileError::general(
+                                    "`scaled_quantize<Fmt, pipelined, N>(v)` requires N to be a                                      compile-time integer literal",
+                                    depth_span,
+                                ))
+                            }
+                        });
+                        (None, RoundMode::Rne)
+                    } else if self.eat(TokenKind::Comma) {
                         let p = self.expect_ident()?;
                         self.expect(TokenKind::Comma)?;
                         let r = self.expect_ident()?;
@@ -4961,6 +4991,7 @@ impl Parser {
                             Box::new(fmt),
                             policy,
                             rounding,
+                            stages,
                         ),
                         span,
                         parenthesized: false,

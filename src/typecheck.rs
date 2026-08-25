@@ -4023,8 +4023,9 @@ impl<'a> TypeChecker<'a> {
     fn expr_latency_tc(expr: &Expr) -> u32 {
         match &expr.kind {
             ExprKind::PipelinedCall(_, _, n) => *n,
-            // Combinational: the block quantizer adds no pipeline stages.
-            ExprKind::ScaledQuantize(_, _, _, _) => 0,
+            // `scaled_quantize<Fmt, pipelined, N>` carries latency N; the
+            // bare comb form adds no pipeline stages (arch#955).
+            ExprKind::ScaledQuantize(_, _, _, _, stages) => stages.unwrap_or(0),
             ExprKind::LatencyAt(_, n) => *n,
             _ => 0,
         }
@@ -4040,7 +4041,7 @@ impl<'a> TypeChecker<'a> {
         match &expr.kind {
             ExprKind::PipelinedCall(_, _, _) => true,
             // Not a pipelined call; recurse into the value being quantized.
-            ExprKind::ScaledQuantize(v, _, _, _) => Self::expr_contains_pipelined_call(v),
+            ExprKind::ScaledQuantize(v, _, _, _, _) => Self::expr_contains_pipelined_call(v),
             ExprKind::Binary(_, a, b) => {
                 Self::expr_contains_pipelined_call(a) || Self::expr_contains_pipelined_call(b)
             }
@@ -4173,6 +4174,69 @@ impl<'a> TypeChecker<'a> {
         module_name: &str,
         local_types: &HashMap<String, Ty>,
     ) -> Ty {
+        if name == "scaled_dot" {
+            // `scaled_dot<pipelined, N>(a, b) -> FP32` (arch#955): same operand
+            // rule as the comb form (two matching ScaledVec blocks), plus the
+            // staged datapath's fixed latency and E8M0-scale-only support.
+            if call_args.len() != 2 {
+                self.errors.push(CompileError::general(
+                    "`scaled_dot<pipelined, N>(a, b)` takes exactly 2 arguments (two blocks)",
+                    span,
+                ));
+                return Ty::Error;
+            }
+            let at = self.resolve_expr_type(&call_args[0], module_name, local_types);
+            let bt = self.resolve_expr_type(&call_args[1], module_name, local_types);
+            if matches!(at, Ty::Todo | Ty::Error) || matches!(bt, Ty::Todo | Ty::Error) {
+                return Ty::Error;
+            }
+            let (Ty::ScaledVec(_, an, ascale), Ty::ScaledVec(..)) = (&at, &bt) else {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "`scaled_dot<pipelined, N>` requires `ScaledVec` operands, got {} and {}",
+                        at.display(),
+                        bt.display()
+                    ),
+                    span,
+                ));
+                return Ty::Error;
+            };
+            if at != bt {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "`scaled_dot<pipelined, N>` requires matching block types: {} vs {}",
+                        at.display(),
+                        bt.display()
+                    ),
+                    span,
+                ));
+                return Ty::Error;
+            }
+            if **ascale != Ty::E8M0 {
+                self.errors.push(CompileError::general(
+                    "`scaled_dot<pipelined, N>` is implemented for E8M0 block scales only \
+                     today (arch#955)",
+                    span,
+                ));
+                return Ty::Error;
+            }
+            let want = crate::fp_block::staged_dot_binding_latency(*an);
+            if stages != want {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "`scaled_dot<pipelined, {stages}>` has a fixed latency of {want} for this \
+                         block size (one product stage + {} reduction levels + a scale stage + \
+                         the output register); write `pipelined, {want}`.",
+                        want - 3
+                    ),
+                    span,
+                ));
+                return Ty::Error;
+            }
+            let arg_refs: Vec<&Expr> = call_args.iter().collect();
+            self.check_operand_latency_alignment(&arg_refs, span);
+            return Ty::FP32;
+        }
         if name != "fma" {
             self.errors.push(CompileError::general(
                 &format!(
@@ -4327,7 +4391,33 @@ impl<'a> TypeChecker<'a> {
             // `scaled_quantize<Fmt, policy, rounding>(v)` — the output format
             // is named at the call site, never inferred: a `Vec<FP32,N>`
             // argument says nothing about the element format or scale.
-            ExprKind::ScaledQuantize(v, fmt, policy, rounding) => {
+            ExprKind::ScaledQuantize(v, fmt, policy, rounding, stages) => {
+                if let Some(n) = stages {
+                    let want = crate::fp_block::staged_quantize_binding_latency();
+                    if let Some(sh) = crate::fp_block::shape_of_type(fmt) {
+                        if !crate::fp_block::staged_quantize_supported(sh) {
+                            self.errors.push(CompileError::general(
+                                "`scaled_quantize<Fmt, pipelined, N>` is implemented for E8M0 \
+                                 block scales only today (arch#955); this format's scale needs \
+                                 the boundary-compare quantizer, which is a follow-up.",
+                                expr.span,
+                            ));
+                        }
+                    }
+                    if *n != want {
+                        let mstages =
+                            crate::pipelined_ops::F32_MUL_S4_SCHEDULE.main_starts.len() - 1;
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`scaled_quantize<Fmt, pipelined, {n}>(v)` — the staged block \
+                                 quantizer has a fixed latency of {want} (one scale stage + the \
+                                 {mstages}-stage multiply + the output register); write \
+                                 `pipelined, {want}`."
+                            ),
+                            expr.span,
+                        ));
+                    }
+                }
                 let vt = self.resolve_expr_type(v, module_name, local_types);
                 let n_in = match &vt {
                     Ty::Vec(elem, n) if **elem == Ty::FP32 => Some(*n),

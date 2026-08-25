@@ -56,7 +56,11 @@ fn emit_scaled_block_assign(
     indent: usize,
 ) -> Option<()> {
     match &a.value.kind {
-        ExprKind::ScaledQuantize(v, fmt, policy, round) => {
+        ExprKind::ScaledQuantize(v, fmt, policy, round, stages) => {
+            assert!(
+                stages.is_none(),
+                "scaled_quantize<pipelined, N> is not supported in native sim yet (arch#955)"
+            );
             let shape = crate::fp_block::shape_of_type(fmt.as_ref()).unwrap_or_else(|| {
                 panic!(
                     "scaled_quantize format has no resolvable block shape — typecheck \

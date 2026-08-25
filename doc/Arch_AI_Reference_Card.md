@@ -295,6 +295,8 @@ scaled_quantize<Fmt, policy, rounding>(v)   // policy ∈ floor_pow2|ceil_pow2|e
                                      //   default policy is scale-dependent: floor_pow2 (E8M0), exact (UE4M3)
 scaled_dequantize(b)                 // block → Vec<FP32,N> (scale applied; the ONLY way to read a lane)
 scaled_dot(a, b)                     // two blocks of the SAME type → FP32 (block dot product, FP32 accumulate)
+scaled_quantize<Fmt, pipelined, N>(v)       // pipelined block quantize (E8M0 only); N is FIXED per shape (a quantize is 5)
+scaled_dot<pipelined, N>(a, b)              // pipelined block dot (E8M0 only); N FIXED = 3 + tree-depth (6 for N=8). Both need --staged-ops
 a == b   a != b                      // ENCODING compare on the packed word: equal bits ⇒ equal value, but
                                      //   unequal bits ≠ unequal value — dequantize both for a true value test
 ```

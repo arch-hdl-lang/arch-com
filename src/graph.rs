@@ -1966,7 +1966,7 @@ impl Builder {
             }
             // Reads flow through the value being quantized; the format and
             // selectors are compile-time, not signal reads.
-            ExprKind::ScaledQuantize(v, _, _, _) => {
+            ExprKind::ScaledQuantize(v, _, _, _, _) => {
                 self.walk_expr(owner, rel, scope, v, use_kind);
             }
             ExprKind::PipelinedCall(_name, args, _stages) => {

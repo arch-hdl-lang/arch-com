@@ -965,6 +965,19 @@ characterized fmax — the concrete set is intentionally kept out of this
 normative section (it churns as implementations are added) and lives in the
 generated `doc/generated/pipelined_ops.md` instead.
 
+The **block operators** of §3.11 take the same variant:
+`scaled_quantize<Fmt, pipelined, N>(v)` and `scaled_dot<pipelined, N>(a, b)`,
+for `E8M0`-scale blocks (the boundary-compare `UE4M3` scale is not pipelined
+yet). Their critical path is dominated by the per-element FP32 multiplies, so
+those are staged while the block-specific work (the shared-scale reduction and
+the narrowing) stays combinational. Unlike `fma`, `N` here is **not a free
+choice**: each block shape has one fixed staged latency (a quantize is `5`; a
+dot is `3` plus its reduction-tree depth — `6` for an 8-element block), and the
+type checker reports the required `N` if a different one is written. As with
+`fma`, the staged form is emitted only under `arch build --staged-ops`;
+otherwise the call lowers to the combinational operator inside the pipe_reg
+cascade (correct latency, un-retimed).
+
 **The call's depth is authoritative; the tap is a consistency check.** A
 `<pipelined, N>` call produces a value with latency `N` — it must be bound
 into a `pipe_reg<T, N>`-typed target via the matching `@N` tap, exactly like

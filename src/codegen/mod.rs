@@ -621,6 +621,12 @@ impl<'a> Codegen<'a> {
     /// `pipelined_ops::lower_pipelined_calls_mode` (phase 3.5,
     /// `arch build --staged-ops`).
     pub fn set_staged_sites(&mut self, sites: Vec<crate::pipelined_ops::StagedSite>) {
+        // A staged module that references the shared fp-helper library forces
+        // that library to be emitted even when no comb site pulled it in
+        // (arch#955 — under --staged-ops the comb quantize call is gone).
+        if sites.iter().any(|s| s.needs_fp_lib) {
+            self.fp_helpers_used.set(true);
+        }
         self.staged_sites = sites;
     }
 
@@ -7826,7 +7832,11 @@ impl<'a> Codegen<'a> {
             // `scaled_quantize<Fmt, policy, rounding>(v)` — the block shape
             // comes from the EXPRESSION's own format argument, not from the
             // assignment target, so nothing here has to be inferred.
-            ExprKind::ScaledQuantize(value, fmt, policy, round) => {
+            ExprKind::ScaledQuantize(value, fmt, policy, round, stages) => {
+                assert!(
+                    stages.is_none(),
+                    "scaled_quantize<pipelined, N> reached codegen un-lowered (arch#955)"
+                );
                 let shape = crate::fp_block::shape_of_type(fmt).unwrap_or_else(|| {
                     panic!(
                         "scaled_quantize format has no resolvable block shape — \

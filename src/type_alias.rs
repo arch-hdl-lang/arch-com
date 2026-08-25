@@ -572,7 +572,7 @@ fn substitute_in_expr(e: &mut Expr, aliases: &AliasMap, errors: &mut Vec<Compile
         // expression. Without this arm `scaled_quantize<MXFP4>(v)` keeps a
         // dangling `Named("MXFP4")` that no later pass can resolve — the
         // aliases are substituted and then removed before typecheck runs.
-        ExprKind::ScaledQuantize(value, fmt, _, _) => {
+        ExprKind::ScaledQuantize(value, fmt, _, _, _) => {
             substitute_in_expr(value, aliases, errors);
             substitute_type(fmt.as_mut(), aliases, errors);
         }
