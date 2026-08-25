@@ -20,12 +20,14 @@ See `proofs/lean_fp_equiv/SCALED_DOT_ACCUMULATION_SCOPE.md` for the full plan.
   each already has an exhaustive SMT proof (`fp_smt_proof::MX_DOT`,
   `fp_smt_proof::MX_SCALE_CONV`) — Phase 3 imports them as lemmas.
 - **Theorem B** (`pairwise_sum_error_bound`) — the O(log N) pairwise-summation
-  bound — is the open obligation, stated here as an `axiom` placeholder. Phase 2
-  discharges it, lifting `RneValue.rneQuot_halfulp` into the per-add `(1+δ)`
-  lemma and inducting over the tree.
+  bound — is the open obligation, stated here as an `axiom` placeholder. Phase 3
+  discharges it, lifting the Phase-2 per-add `(1+δ)` lemma (from
+  `RneValue.rneQuot_halfulp`) and inducting over the tree.
+- **Phase 2 (done):** the rational-algebra step `ratAbs_sub_mul_le` is now a
+  proved `theorem` (core `Rat`, no Mathlib) rather than an axiom.
 - The composition (`scaled_dot_error_bound`) is a real `theorem`, sorry-free,
   reducing the end-to-end bound to Theorem B via the two exactness axioms and
-  one named rational-algebra fact (`ratAbs_sub_mul_le`, also a Phase-2 lemma).
+  the now-proved `ratAbs_sub_mul_le`.
 
 Everything is over `Rat`, not `ℝ`: a finite FP32 value is a dyadic rational, so
 `Rat` represents it exactly and keeps this development Mathlib-free, matching the
@@ -169,14 +171,50 @@ axiom pairwise_sum_error_bound (ps : List (BitVec 32)) (d : Nat)
     ratAbs (f32ToRat (archPairwiseSum ps) - ratSum (ps.map f32ToRat))
       ≤ gammaPairwise d * ratSum (ps.map (fun p => ratAbs (f32ToRat p)))
 
-/-- **Rational-algebra fact (Phase-2 lemma).** For `c ≥ 0`,
-    `|x − y| · c = |x·c − y·c|` and `≤` is preserved under multiplying by `c`.
-    Packaged as the single monotone-multiply step the composition needs; pure
-    `Rat`, no FP content. Phase 2 proves it (trivial with Mathlib's ordered-field
-    lemmas; by hand otherwise). -/
-axiom ratAbs_sub_mul_le (x y bound c : Rat) (hc : 0 ≤ c)
+/-! ### Rational-algebra facts (Phase 2 — proved, no Mathlib)
+
+The monotone-multiply step the composition needs, discharged in core `Rat`
+(`Rat.mul_le_mul_of_nonneg_right`, `Rat.abs_of_nonneg/nonpos`, `Rat.mul_nonneg`,
+`Rat.neg_mul` — no Mathlib required). What was `axiom ratAbs_sub_mul_le` in
+Phase 1 is now `theorem ratAbs_sub_mul_le`. -/
+
+/-- `ratAbs` agrees with core `Rat.abs` (which branches on `0 ≤ x`). -/
+theorem ratAbs_eq_abs (x : Rat) : ratAbs x = x.abs := by
+  unfold ratAbs Rat.abs
+  by_cases h : 0 ≤ x
+  · rw [if_pos h, if_neg (by rw [Rat.not_lt]; exact h)]
+  · rw [if_neg h, if_pos ((Rat.not_le).mp h)]
+
+/-- Right-distributivity of `*` over `-` on `Rat`. -/
+theorem rat_sub_mul (a b c : Rat) : (a - b) * c = a * c - b * c := by
+  rw [Rat.sub_eq_add_neg, Rat.add_mul, Rat.neg_mul, ← Rat.sub_eq_add_neg]
+
+theorem rat_neg_nonneg {z : Rat} (h : z ≤ 0) : 0 ≤ -z := by
+  have := Rat.neg_le_neg h; simpa using this
+
+theorem rat_mul_nonpos {z c : Rat} (hz : z ≤ 0) (hc : 0 ≤ c) : z * c ≤ 0 := by
+  have h2 : 0 ≤ (-z) * c := Rat.mul_nonneg (rat_neg_nonneg hz) hc
+  rw [Rat.neg_mul] at h2
+  have := Rat.neg_le_neg h2; simpa using this
+
+/-- `|z · c| = |z| · c` for `c ≥ 0`. -/
+theorem ratAbs_mul_nonneg (z : Rat) {c : Rat} (hc : 0 ≤ c) :
+    ratAbs (z * c) = ratAbs z * c := by
+  rw [ratAbs_eq_abs, ratAbs_eq_abs]
+  by_cases hz : 0 ≤ z
+  · rw [Rat.abs_of_nonneg (Rat.mul_nonneg hz hc), Rat.abs_of_nonneg hz]
+  · have hz0 : z ≤ 0 := Rat.le_of_lt ((Rat.not_le).mp hz)
+    rw [Rat.abs_of_nonpos (rat_mul_nonpos hz0 hc), Rat.abs_of_nonpos hz0, Rat.neg_mul]
+
+/-- **Monotone multiply (was an axiom in Phase 1).** For `c ≥ 0`, a bound on
+    `|x − y|` scales to a bound on `|x·c − y·c|`. This is the one algebra step the
+    end-to-end composition needs to push the pairwise bound through the two
+    (non-negative) block scales. -/
+theorem ratAbs_sub_mul_le (x y bound c : Rat) (hc : 0 ≤ c)
     (h : ratAbs (x - y) ≤ bound) :
-    ratAbs (x * c - y * c) ≤ bound * c
+    ratAbs (x * c - y * c) ≤ bound * c := by
+  rw [← rat_sub_mul, ratAbs_mul_nonneg (x - y) hc]
+  exact Rat.mul_le_mul_of_nonneg_right h hc
 
 /-! ## Provable now — product-exactness lifts to the sum, and the scale pull
 
@@ -224,9 +262,9 @@ theorem archScaledDot_scale_pull (sa sb : BitVec 8) (ea eb : List (BitVec 8))
     analogue of the FMA value theorem — a certified bound rather than an
     equality, since a multi-add is not exactly rounded.
 
-    Sorry-free, resting on exactly the three named obligations
-    (`pairwise_sum_error_bound`, the two exactness axioms, and the one
-    rational-algebra fact) — all discharged in Phases 2–3. -/
+    Sorry-free. Rests on the two exactness axioms (SMT-backed) and Theorem B
+    (`pairwise_sum_error_bound`, the one remaining open obligation); the
+    rational-algebra step it also uses (`ratAbs_sub_mul_le`) is proved above. -/
 theorem scaled_dot_error_bound
     (sa sb : BitVec 8) (ea eb : List (BitVec 8)) (d : Nat)
     (hlen : (archProducts ea eb).length ≤ 2 ^ d)

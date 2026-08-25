@@ -8,8 +8,10 @@ FP32). The **accumulation** — the summation tree that reduces the N products �
 has no value theorem and no error bound. This document scopes the proof that
 closes it.
 
-Status: **Phase 1 landed** (skeleton + structural miter). Theorem B and the
-value-level obligations remain (Phases 2–3). See §6.
+Status: **Phase 1 landed** (skeleton + structural miter); **Phase 2 partial**
+(`ratAbs_sub_mul_le` proved in core `Rat`; the `(1+δ)` add bridge is open and
+gated on an `arch_f32_add` correctly-rounded lemma that does not yet exist).
+Theorem B remains (Phase 3). See §6.
 
 ---
 
@@ -191,13 +193,36 @@ the schedule).
     proved as a real theorem resting on the three named obligations
     (`pairwise_sum_error_bound` = Theorem B, the two exactness axioms already
     backed by SMT, and one `Rat`-algebra fact).
-- **Phase 2:** item 1 (the `(1+δ)` bridge from `rneQuot_halfulp`) + discharge
-  `ratAbs_sub_mul_le`. Decide here whether the `Rat` algebra warrants a
-  `require mathlib` (core Lean lacks `mul_comm`/`mul_assoc`/`mul_le_mul_*`) or a
-  small hand-rolled ordered-field lemma set.
+- **Phase 2 — PARTIALLY DONE (2026-08-24).**
+  - *`ratAbs_sub_mul_le`: DONE.* Now a proved `theorem` in core `Rat` (no
+    Mathlib): the `Rat.` namespace supplies enough
+    (`mul_le_mul_of_nonneg_right`, `abs_of_nonneg/nonpos`, `mul_nonneg`,
+    `neg_mul`, `le_iff_sub_nonneg`) — the generic `mul_comm`/`mul_assoc`/
+    `mul_le_mul_*` that are missing turned out not to be needed once every
+    grouping is kept left-associative. **So the Mathlib decision does NOT bind
+    for the algebra.**
+  - *The `(1+δ)` per-add bridge: OPEN, and larger than first scoped.* Two
+    prerequisites, discovered while surveying the dev:
+    1. **`arch_f32_add` is not yet proved correctly-rounded.** The dev has only
+       `Equiv.arch_f32_add_comm`; there is no `arch_f32_add a b =
+       round-to-nearest(val a + val b)` lemma. The value/nearest machinery
+       (`RoundReal.f32MagScaled`, `IsNearestMag`, `RneValue.rneQuot_halfulp`) is
+       all in **Nat-scaled magnitude**, and the only end-to-end value proof
+       chained from it is the *fused* fma. Proving the bare adder correctly
+       rounds (alignment produces the exact sum significand, then the proven
+       round kernel) is an fma-scale sub-project.
+    2. **Nat→Rat bridge.** `rneQuot_halfulp` is a half-ULP bound in Nat-scaled
+       units; the `(1+δ)` form needs it as a `Rat` *relative* error, i.e. a
+       concrete `f32ToRat` and its link to `f32MagScaled`.
+  - **Mathlib decision (revised):** not needed for the algebra; still open for
+    the analytic `(1+δ)` step and Theorem B's induction. Recommendation: keep the
+    development Mathlib-free through the Nat-magnitude layer where the existing
+    proofs live, and only reach for `require mathlib` if the summation induction
+    proves unwieldy in `Rat` alone. Sequence prerequisite (1) first — it is the
+    real gate, and it is reusable well beyond this proof.
 - **Phase 3:** discharge Theorem B (`pairwise_sum_error_bound`) by induction over
-  the `pairUp` tree; import the `MX_DOT` / `MX_SCALE_CONV` SMT results to retire
-  `products_exact` / `scale_mul_exact`.
+  the `pairUp` tree (using the Phase-2 `(1+δ)` lemma); import the `MX_DOT` /
+  `MX_SCALE_CONV` SMT results to retire `products_exact` / `scale_mul_exact`.
 
 ## 7. Case-split investigation (2026-08-24) — why the wide-shape miter is not SMT
 
