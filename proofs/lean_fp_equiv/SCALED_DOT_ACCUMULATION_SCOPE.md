@@ -173,9 +173,11 @@ the schedule).
     schedule with one-at-a-time scale application, against a hand-composed
     define-fun tree built from the already-checked atomic nodes. Proven for
     `ScaledDotE4m3N2` (25 s) and `ScaledDotE2m1N4` (94 s, a genuine two-level
-    tree). `ScaledDotE4m3N4` (widest significand + 3 muls) is the stress shape;
-    if it does not clear monolithically it inherits the `renderer_miter.sh`
-    fma-style alignment case-split (a Phase-3 follow-up, noted in the script).
+    tree). `ScaledDotE4m3N4` (widest significand into a variable-alignment add)
+    is confirmed SAT-hard — bitwuzla and z3 both exhaust a 1200 s budget (2401 s
+    total, 2026-08-24), the same wall the fma renderer miter hits. Omitted from
+    the default set; awaits the `renderer_miter.sh` fma-style alignment
+    case-split (Phase 3).
   - *Lean frame* (`ArchFpEquiv/ScaledDot.lean`, sorry-free, dependency-free over
     `Rat`): faithful `archPairwiseSum`/`archProducts`/`archScaledDot` models with
     proved base cases (N=1,2,4); `products_sum_exact` and `archScaledDot_scale_pull`
