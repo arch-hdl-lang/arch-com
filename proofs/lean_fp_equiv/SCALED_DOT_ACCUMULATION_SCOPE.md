@@ -174,10 +174,16 @@ the schedule).
     define-fun tree built from the already-checked atomic nodes. Proven for
     `ScaledDotE4m3N2` (25 s) and `ScaledDotE2m1N4` (94 s, a genuine two-level
     tree). `ScaledDotE4m3N4` (widest significand into a variable-alignment add)
-    is confirmed SAT-hard — bitwuzla and z3 both exhaust a 1200 s budget (2401 s
-    total, 2026-08-24), the same wall the fma renderer miter hits. Omitted from
-    the default set; awaits the `renderer_miter.sh` fma-style alignment
-    case-split (Phase 3).
+    is confirmed SAT-hard and — unlike fma — a case-split does NOT rescue it (see
+    the case-split investigation below); wide/large shapes are covered by the
+    wiring test instead.
+  - *Theorem A, wiring leg* (`tests/scaled_dot_wiring_test.rs`, runs in CI):
+    checks the emitted `arch_scaled_dot_*` function IS `dot_schedule`'s
+    composition of the atomic nodes, by comparing its assignment sequence to an
+    independent balanced-pairwise reimplementation — for all N (incl. odd
+    pass-through) and all element formats. With node faithfulness from
+    `renderer_miter.sh`, this discharges Theorem A for the shapes SMT cannot
+    reach. Mutation-checked non-vacuous (swapped add operands fail).
   - *Lean frame* (`ArchFpEquiv/ScaledDot.lean`, sorry-free, dependency-free over
     `Rat`): faithful `archPairwiseSum`/`archProducts`/`archScaledDot` models with
     proved base cases (N=1,2,4); `products_sum_exact` and `archScaledDot_scale_pull`
@@ -191,5 +197,27 @@ the schedule).
   small hand-rolled ordered-field lemma set.
 - **Phase 3:** discharge Theorem B (`pairwise_sum_error_bound`) by induction over
   the `pairUp` tree; import the `MX_DOT` / `MX_SCALE_CONV` SMT results to retire
-  `products_exact` / `scale_mul_exact`; add the fma-style case-split leg to the
-  N=4 E4M3 miter if needed.
+  `products_exact` / `scale_mul_exact`.
+
+## 7. Case-split investigation (2026-08-24) — why the wide-shape miter is not SMT
+
+The Phase-1 plan floated an fma-style alignment case-split to bring
+`ScaledDotE4m3N4` under the SMT miter. Investigated and **rejected on evidence**:
+
+- The fma miter's split works because fma has exactly **one** alignment gap
+  (product vs. addend): 510 constant-gap sub-miters, each near-structural.
+- A block dot is a reduction **tree**: one alignment gap *per add*, and they are
+  coupled (the top add's gap depends on the leaf sums' exponents). Measurements:
+  - monolithic `ScaledDotE4m3N4`: bitwuzla + z3 both time out (2401 s total);
+  - the **pure** 4-way FP32 add-tree, no multipliers, also times out at 1200 s —
+    so the adder barrel shifters alone are already the wall;
+  - splitting on just the **top** add's gap still times out (900 s/case);
+  - splitting on **all** gaps is ~35^depth cases — infeasible.
+- There is no single splitting variable for a tree, so monolithic SMT does not
+  scale here regardless of splitting.
+
+Resolution: Theorem A is discharged **compositionally** for wide/large shapes —
+node faithfulness (`renderer_miter.sh`, already `unsat`) + wiring faithfulness
+(`tests/scaled_dot_wiring_test.rs`). Pure SV functions compose without context,
+so the two legs give Theorem A for every shape; the small-N end-to-end miters
+remain the bit-exact cross-check that the decomposition is sound.

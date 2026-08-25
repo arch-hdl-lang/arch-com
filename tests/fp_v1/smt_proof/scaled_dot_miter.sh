@@ -52,14 +52,23 @@ DUMP_FP_BIN="${DUMP_FP_BIN:-$(dirname "$ARCH_BIN")/examples/dump_fp}"
 # MOD | elem-format tag | arch widen fn | N | element width | scale width
 #
 # Default set = the shapes that clear monolithically. `ScaledDotE4m3N4` is
-# omitted: its two E4M3 8-bit-significand products land in a 16-bit-wide add
-# whose variable alignment shift puts every product bit in every shifted bit's
-# cone — the same SAT-hardness the fma renderer miter hits. Measured 2026-08-24:
-# bitwuzla and z3 BOTH exhaust a 1200 s budget (2401 s total) with no verdict.
-# It needs the alignment case-split (split on the exponent-gap diff so both
-# barrel shifters collapse and each sub-miter goes near-structural — see the
-# `*Fma` leg of `renderer_miter.sh`). That is the Phase-3 follow-up; add it back
-# here with the split once written. Run it standalone meanwhile with:
+# omitted: its wide-significand products in a variable-alignment reduction tree
+# are SAT-hard, and — unlike the fma miter — a case-split does NOT rescue it.
+# Investigated 2026-08-24:
+#   * monolithic: bitwuzla + z3 both exhaust a 1200 s budget (2401 s total);
+#   * even the pure 4-way add-tree over free FP32 (no multipliers) times out at
+#     1200 s, so the adder barrel shifters alone are the wall;
+#   * the fma alignment case-split works there because fma has ONE alignment gap
+#     (product vs addend). A reduction tree has one gap PER add, and they are
+#     coupled: splitting on just the top add's gap still times out (900 s/case),
+#     and splitting on all gaps is ~35^depth cases — infeasible.
+# There is no single splitting variable for a tree, so the monolithic-SMT route
+# is a dead end for wide/large shapes. Those are instead covered compositionally:
+# node faithfulness by `renderer_miter.sh` (F32Mul/F32Add/E*ToF32/E8m0ToF32 all
+# unsat) + wiring faithfulness by `tests/scaled_dot_wiring_test.rs` (checks the
+# emitted function IS dot_schedule's composition, for all N and all formats, in
+# CI). This miter's small shapes remain the bit-exact end-to-end cross-check.
+# Run the SAT-hard shape standalone anyway (expect timeout) with:
 #   shapes_override="ScaledDotE4m3N4|e4m3|arch_e4m3_to_f32|4|8|8" bash scaled_dot_miter.sh
 shapes=(
   "ScaledDotE4m3N2|e4m3|arch_e4m3_to_f32|2|8|8"
