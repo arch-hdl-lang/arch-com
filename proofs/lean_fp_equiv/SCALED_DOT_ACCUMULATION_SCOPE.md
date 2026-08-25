@@ -208,13 +208,17 @@ the schedule).
        sorry-free — NaN propagation (both sides), the four infinity cases (incl.
        `∞+(−∞)=NaN`), and the two signed-zero identities. `bv_decide` bit-blasts
        the full adder in seconds (no multiplier; cf. `arch_f32_add_comm` at
-       ~45 s). The **finite-region "= nearest"** is the remaining target,
-       stated + planned in the module: (1) pre-round 56-bit significand = exact
-       aligned sum; (2) normalize+round = `rneQuot`; (3) `rneQuot_halfulp`;
-       (4) Nat half-ULP → `Rat` relative `(1+δ)`. Materially smaller than the
-       fma value development (no 24×24 product) but still multi-session. The
-       value/nearest machinery (`RoundReal`, `RneValue.rneQuot_halfulp`) lives in
-       Nat-scaled magnitude and is reused.
+       ~45 s). **Finite base cases also done:** `add_self_exact` (`x+x=2x`,
+       δ=0), `add_same_sign_sign` (no spurious cancel), and — the
+       summation-critical one — `add_negligible` (a term ≥2²⁵× smaller than the
+       running sum rounds away, so a length-N sum accrues error only from the
+       ⌈log₂N⌉ additions that actually shift). The **general finite `(1+δ)`
+       bound** remains: (1) pre-round significand = sticky-folded aligned sum;
+       (2) normalize+round = `rneQuot`; (3) `rneQuot_halfulp`; (4) Nat half-ULP →
+       `Rat` relative `(1+δ)`. Steps (1)–(2) reduce to the sticky-fold argument
+       the fma proof handles (`FmaSticky`); (3)–(4) the algebraic bridge.
+       Materially smaller than the fma value development (no 24×24 product) but
+       still multi-session; `RoundReal`/`RneValue.rneQuot_halfulp` reused.
     2. **Nat→Rat bridge.** `rneQuot_halfulp` is a half-ULP bound in Nat-scaled
        units; the `(1+δ)` form needs it as a `Rat` *relative* error, i.e. a
        concrete `f32ToRat` and its link to `f32MagScaled`.

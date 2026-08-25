@@ -78,10 +78,49 @@ theorem add_zero_left (a b : BitVec 32)
   unfold finiteNonzero isNaN isInf isZero expField fracField at *
   unfold arch_f32_add; bv_decide
 
-/-! ## The finite region — the remaining target (future modules)
+/-! ## Finite region — exact and round-off cases (proved)
 
-With every special corner pinned above, the remaining obligation is the
-finite–finite case, and it is the one the Phase-2 `(1+δ)` bound needs:
+The general finite `(1+δ)` bound needs the magnitude development (below), but
+several finite cases are exact or structural and fall to `bv_decide` directly.
+They are the base cases of that bound — the exact ones give `δ = 0`, and
+`add_negligible` is the round-off fact the *summation* error bound rests on
+(a term ≥ 2²⁵× smaller than the running sum vanishes, so a length-N sum can only
+accumulate error from the ⌈log₂N⌉ additions that actually shift). -/
+
+/-- **Self-addition is exact.** For normal `x` (`1 ≤ exp < 254`), `x + x = 2x`
+    bit-exactly: same sign and significand, exponent incremented. `δ = 0`. -/
+theorem add_self_exact (a : BitVec 32)
+    (hlo : BitVec.ult 0#8 (expField a) = true)
+    (hhi : BitVec.ult (expField a) 254#8 = true) :
+    arch_f32_add a a = a + 0x00800000#32 := by
+  unfold expField at *; unfold arch_f32_add; bv_decide
+
+/-- **Sign preservation.** A same-sign finite-nonzero add cannot spuriously
+    cancel: the result carries the operands' sign. -/
+theorem add_same_sign_sign (a b : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true)
+    (hs : sgn a = sgn b) : sgn (arch_f32_add a b) = sgn a := by
+  unfold finiteNonzero isNaN isInf isZero sgn expField fracField at *
+  unfold arch_f32_add; bv_decide
+
+/-- **Negligible addend rounds away.** For same-sign normals with `b` at least
+    `2²⁵×` smaller than `a` (exponent gap ≥ 25, `a` finite, `b` exp ≤ 229 so the
+    gap test cannot wrap), `b` lands entirely below `a`'s round bit and
+    `a + b = a`. This is the fact that makes a length-N summation accumulate
+    error only from the additions that genuinely align — the crux of the
+    `O(log N)` pairwise bound (Theorem B). -/
+theorem add_negligible (a b : BitVec 32)
+    (hna : BitVec.ult 0#8 (expField a) = true) (hha : BitVec.ult (expField a) 255#8 = true)
+    (hnb : BitVec.ult 0#8 (expField b) = true) (hhb : BitVec.ule (expField b) 229#8 = true)
+    (hs : sgn a = sgn b)
+    (hgap : BitVec.ule (expField b + 25#8) (expField a) = true) :
+    arch_f32_add a b = a := by
+  unfold sgn expField at *; unfold arch_f32_add; bv_decide
+
+/-! ## Finite region — the general `(1+δ)` bound (remaining target)
+
+The exact/round-off cases above are the base cases; the general finite–finite
+bound is the one the Phase-2 `(1+δ)` step needs:
 
 > **Target.** For `finiteNonzero a`, `finiteNonzero b`, with the exact sum in the
 > normal range (no overflow to ∞, no flush to a subnormal), `arch_f32_add a b`
