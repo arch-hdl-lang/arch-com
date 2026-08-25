@@ -1,4 +1,5 @@
 import ArchFpEquiv.Spec
+import ArchFpEquiv.FmaValue
 import Std.Tactic.BVDecide
 
 /-!
@@ -120,23 +121,60 @@ theorem add_negligible (a b : BitVec 32)
 /-! ## Finite region — the general `(1+δ)` bound (remaining target)
 
 The exact/round-off cases above are the base cases; the general finite–finite
-bound is the one the Phase-2 `(1+δ)` step needs:
+bound is the one the Phase-2 `(1+δ)` step needs. **It is now proved** — not by
+redeveloping the adder's magnitude reasoning, but by *reducing add to fma*.
 
-> **Target.** For `finiteNonzero a`, `finiteNonzero b`, with the exact sum in the
-> normal range (no overflow to ∞, no flush to a subnormal), `arch_f32_add a b`
-> is the FP32 value nearest to the exact real sum `val a + val b` — i.e.
-> `IsNearestMag` of the exact aligned-sum magnitude (`RoundReal`), from which
-> `|val (arch_f32_add a b) − (val a + val b)| ≤ u · |val a + val b|` follows.
+The observation: `fma(a, 1.0, b) = a·1 + b = a + b`, with a single rounding, so a
+correctly-rounded adder must return exactly `arch_fma_f32 a 1.0 b`. `bv_decide`
+confirms that bit-for-bit (the constant `1.0` multiplicand collapses the fma
+multiplier, so the bit-blast is tractable — no SAT-hard 24×24). Then the *already
+proved* `arch_fma_f32_correct` (`FmaValue`, the ~3.4k-line development) transfers
+verbatim: `arch_f32_add a b` is nearest to `fmaExact a 1.0 b`, which is exactly
+the exact sum. No new magnitude development. -/
 
-This mirrors the FMA value development (`FmaValue`/`FmaInvariance`/`RneValue`,
-~3.4k lines) but is materially smaller: no 24×24 product, so the pre-round
-significand is a single aligned add (≤ 56 bits, exact), and the existing round
-kernel (`RneValue.rneQuot_halfulp`) supplies the half-ULP bound directly. The
-proof plan: (1) show the adder's pre-round 56-bit significand equals the exact
-aligned sum; (2) show the normalize + `_t149` round step equals `rneQuot` of it;
-(3) apply `rneQuot_halfulp`; (4) convert the Nat half-ULP bound to the `Rat`
-relative `(1+δ)`. Steps (1)–(2) are `bv_decide`-shaped (bounded, no multiplier);
-(3)–(4) are the algebraic bridge. This is multi-session and is tracked as the
-open Phase-2 item in the scope doc. -/
+/-- **`arch_f32_add a b = fma(a, 1.0, b)`** for finite-nonzero operands. The
+    constant `1.0 = 0x3F800000` makes the fma multiplier collapse, so `bv_decide`
+    discharges the whole adder-vs-fma equivalence (~18 s). This is the bridge
+    that lets add inherit the fma correctness theorem. -/
+theorem add_eq_fma_one (a b : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) :
+    arch_f32_add a b = arch_fma_f32 a 0x3F800000#32 b := by
+  unfold finiteNonzero isNaN isInf isZero expField fracField at *
+  unfold arch_f32_add arch_fma_f32
+  bv_decide (config := { timeout := 600 })
+
+/-- `1.0` is finite and non-zero. -/
+theorem finiteNonzero_one : finiteNonzero 0x3F800000#32 = true := by decide
+
+/-- `f32SignedScaled 1.0 = 2¹⁴⁹` (`1.0 = 2⁰`, in `2⁻¹⁴⁹` units). -/
+theorem sscaled_one : f32SignedScaled 0x3F800000#32 = 2 ^ 149 := by decide
+
+/-- **`fmaExact a 1.0 b` is the exact sum.** In the fma's `2⁻²⁹⁸` units,
+    `fmaExact a 1.0 b = (f32SignedScaled a + f32SignedScaled b)·2¹⁴⁹`, i.e. the
+    exact real `a + b` (the `f32SignedScaled` values are in `2⁻¹⁴⁹` units). So the
+    `IsNearestExact (fmaExact a 1.0 b) …` below is nearness to `a + b`. -/
+theorem fmaExact_add (a b : BitVec 32) :
+    fmaExact a 0x3F800000#32 b = (f32SignedScaled a + f32SignedScaled b) * 2 ^ 149 := by
+  unfold fmaExact; rw [sscaled_one]; exact (Int.add_mul _ _ _).symm
+
+/-- **`arch_f32_add` is correctly rounded (finite region).** For finite-nonzero
+    `a`, `b` with a non-zero, non-overflowing exact sum, `arch_f32_add a b` is the
+    finite FP32 pattern nearest to the exact real sum (as `fmaExact a 1.0 b`,
+    which equals `(f32SignedScaled a + f32SignedScaled b)·2¹⁴⁹` — the exact
+    `a + b`), carrying its exact sign. Proved by reducing to `arch_fma_f32_correct`
+    through `add_eq_fma_one`. This is the `IsNearestExact` statement the Phase-2
+    `(1+δ)` bound rests on; the only step left to Theorem B is the
+    `IsNearestExact → Rat` relative-error conversion. -/
+theorem arch_f32_add_correct (a b : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true)
+    (hnz : fmaExact a 0x3F800000#32 b ≠ 0)
+    (hovf : biasedFinal (arch_fma_mag a 0x3F800000#32 b).toNat
+      (arch_fma_elo a 0x3F800000#32 b).toInt ≤ 254) :
+    IsFiniteF32 (arch_f32_add a b)
+      ∧ IsNearestExact (fmaExact a 0x3F800000#32 b) (arch_f32_add a b)
+      ∧ BitVec.extractLsb 31 31 (arch_f32_add a b)
+          = (if fmaExact a 0x3F800000#32 b < 0 then 1#1 else 0#1) := by
+  rw [add_eq_fma_one a b ha hb]
+  exact arch_fma_f32_correct a 0x3F800000#32 b ha finiteNonzero_one hb hnz hovf
 
 end ArchFp

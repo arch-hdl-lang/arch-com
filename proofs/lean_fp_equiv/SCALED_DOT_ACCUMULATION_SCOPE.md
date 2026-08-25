@@ -201,9 +201,8 @@ the schedule).
     `mul_le_mul_*` that are missing turned out not to be needed once every
     grouping is kept left-associative. **So the Mathlib decision does NOT bind
     for the algebra.**
-  - *The `(1+δ)` per-add bridge: OPEN, and larger than first scoped.* Two
-    prerequisites, discovered while surveying the dev:
-    1. **`arch_f32_add` correctly-rounded — STARTED (`F32AddCorrect.lean`).**
+  - *The `(1+δ)` per-add bridge: prerequisite 1 now DONE; one step remains.*
+    1. **`arch_f32_add` correctly-rounded — PROVED (`F32AddCorrect.lean`).**
        The **special-value lattice is done** (2026-08-24): 8 `bv_decide` lemmas,
        sorry-free — NaN propagation (both sides), the four infinity cases (incl.
        `∞+(−∞)=NaN`), and the two signed-zero identities. `bv_decide` bit-blasts
@@ -211,23 +210,32 @@ the schedule).
        ~45 s). **Finite base cases also done:** `add_self_exact` (`x+x=2x`,
        δ=0), `add_same_sign_sign` (no spurious cancel), and — the
        summation-critical one — `add_negligible` (a term ≥2²⁵× smaller than the
-       running sum rounds away, so a length-N sum accrues error only from the
-       ⌈log₂N⌉ additions that actually shift). The **general finite `(1+δ)`
-       bound** remains: (1) pre-round significand = sticky-folded aligned sum;
-       (2) normalize+round = `rneQuot`; (3) `rneQuot_halfulp`; (4) Nat half-ULP →
-       `Rat` relative `(1+δ)`. Steps (1)–(2) reduce to the sticky-fold argument
-       the fma proof handles (`FmaSticky`); (3)–(4) the algebraic bridge.
-       Materially smaller than the fma value development (no 24×24 product) but
-       still multi-session; `RoundReal`/`RneValue.rneQuot_halfulp` reused.
-    2. **Nat→Rat bridge.** `rneQuot_halfulp` is a half-ULP bound in Nat-scaled
-       units; the `(1+δ)` form needs it as a `Rat` *relative* error, i.e. a
-       concrete `f32ToRat` and its link to `f32MagScaled`.
+       running sum rounds away). **The general finite correctness is now PROVED
+       (2026-08-25) — `arch_f32_add_correct`** — and the multi-session magnitude
+       development was AVOIDED by a reduction to fma:
+       - `fma(a, 1.0, b) = a·1 + b = a + b` with one rounding, so a correctly-
+         rounded adder must return exactly `arch_fma_f32 a 1.0 b`. `add_eq_fma_one`
+         proves that bit-for-bit by `bv_decide` (~18 s) — the constant `1.0`
+         collapses the fma multiplier, so no SAT-hard 24×24.
+       - The already-proved `arch_fma_f32_correct` (`FmaValue`, ~3.4k lines) then
+         transfers verbatim: `arch_f32_add a b` is `IsNearestExact` of
+         `fmaExact a 1.0 b`, which `fmaExact_add` shows `= (f32SignedScaled a +
+         f32SignedScaled b)·2¹⁴⁹`, the exact `a + b`.
+       So add inherits fma's nearest-to-exact result with ZERO new magnitude
+       reasoning. Hyps: `finiteNonzero a/b`, exact sum non-zero and
+       non-overflowing (the fma theorem's hyps, specialized).
+    2. **The one remaining step: `IsNearestExact` → `Rat` `(1+δ)`.** With (1)
+       done, `arch_f32_add_correct` gives `IsNearestExact V (arch_f32_add a b)`
+       (`V` = the exact sum in `2⁻²⁹⁸` units). Converting that to
+       `val (arch_f32_add a b) = (val a + val b)(1+δ), |δ|≤u` needs: (i) a concrete
+       `f32ToRat` linked to `f32MagScaled`, and (ii) nearest ⇒ within-half-ULP ⇒
+       relative-`u` (the grid-spacing/ULP argument, ~`RneValue`-flavoured). This
+       is a bounded, self-contained piece — no longer the fma-scale development.
   - **Mathlib decision (revised):** not needed for the algebra; still open for
-    the analytic `(1+δ)` step and Theorem B's induction. Recommendation: keep the
-    development Mathlib-free through the Nat-magnitude layer where the existing
+    the `IsNearestExact→Rat` step and Theorem B's induction. Recommendation: keep
+    the development Mathlib-free through the Nat-magnitude layer where the existing
     proofs live, and only reach for `require mathlib` if the summation induction
-    proves unwieldy in `Rat` alone. Sequence prerequisite (1) first — it is the
-    real gate, and it is reusable well beyond this proof.
+    proves unwieldy in `Rat` alone.
 - **Phase 3:** discharge Theorem B (`pairwise_sum_error_bound`) by induction over
   the `pairUp` tree (using the Phase-2 `(1+δ)` lemma); import the `MX_DOT` /
   `MX_SCALE_CONV` SMT results to retire `products_exact` / `scale_mul_exact`.
