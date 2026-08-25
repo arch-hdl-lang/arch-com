@@ -203,14 +203,18 @@ the schedule).
     for the algebra.**
   - *The `(1+δ)` per-add bridge: OPEN, and larger than first scoped.* Two
     prerequisites, discovered while surveying the dev:
-    1. **`arch_f32_add` is not yet proved correctly-rounded.** The dev has only
-       `Equiv.arch_f32_add_comm`; there is no `arch_f32_add a b =
-       round-to-nearest(val a + val b)` lemma. The value/nearest machinery
-       (`RoundReal.f32MagScaled`, `IsNearestMag`, `RneValue.rneQuot_halfulp`) is
-       all in **Nat-scaled magnitude**, and the only end-to-end value proof
-       chained from it is the *fused* fma. Proving the bare adder correctly
-       rounds (alignment produces the exact sum significand, then the proven
-       round kernel) is an fma-scale sub-project.
+    1. **`arch_f32_add` correctly-rounded — STARTED (`F32AddCorrect.lean`).**
+       The **special-value lattice is done** (2026-08-24): 8 `bv_decide` lemmas,
+       sorry-free — NaN propagation (both sides), the four infinity cases (incl.
+       `∞+(−∞)=NaN`), and the two signed-zero identities. `bv_decide` bit-blasts
+       the full adder in seconds (no multiplier; cf. `arch_f32_add_comm` at
+       ~45 s). The **finite-region "= nearest"** is the remaining target,
+       stated + planned in the module: (1) pre-round 56-bit significand = exact
+       aligned sum; (2) normalize+round = `rneQuot`; (3) `rneQuot_halfulp`;
+       (4) Nat half-ULP → `Rat` relative `(1+δ)`. Materially smaller than the
+       fma value development (no 24×24 product) but still multi-session. The
+       value/nearest machinery (`RoundReal`, `RneValue.rneQuot_halfulp`) lives in
+       Nat-scaled magnitude and is reused.
     2. **Nat→Rat bridge.** `rneQuot_halfulp` is a half-ULP bound in Nat-scaled
        units; the `(1+δ)` form needs it as a `Rat` *relative* error, i.e. a
        concrete `f32ToRat` and its link to `f32MagScaled`.
