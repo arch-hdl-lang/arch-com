@@ -22,3 +22,4 @@ import ArchFpEquiv.Bf16FmaNote
 import ArchFpEquiv.SpecCheck
 import ArchFpEquiv.FmaRefSpecial
 import ArchFpEquiv.FmaEquiv
+import ArchFpEquiv.ScaledDot
