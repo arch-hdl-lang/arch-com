@@ -1045,7 +1045,6 @@ pub fn derive_leaf_schedule(f: &FpFn, stages: u32) -> Result<Vec<usize>, String>
 }
 
 /// Render `main_fn` as a staged pipelined module per `sched`, inlining the
-/// Render `main_fn` as a staged pipelined module per `sched`, inlining the
 /// single nested call to `callee_fn` (the `A_` namespace). See the section
 /// comment above for the emitted structure and the fallback contract.
 pub fn render_sv_staged(
