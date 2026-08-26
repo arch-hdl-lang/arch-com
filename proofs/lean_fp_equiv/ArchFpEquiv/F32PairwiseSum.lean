@@ -74,7 +74,68 @@ theorem pairwise_bound_singleton (x : BitVec 32) (d : Nat) (hd : (d : Rat) * f32
   rw [show ratAbs (0 : Rat) = 0 by simp [ratAbs]]
   exact mul_nonneg hg hnn
 
-/-! ## Remaining: the tree induction + FP-precondition threading
+/-! ## Abstract single-level bounds (the induction step, over `Rat`)
+
+The mathematical core of the tree induction, parameterized over an abstract
+rounded-add `radd` with the per-add `(1+δ)` property `|radd a b − (a+b)| ≤
+u·|a+b|` — this is exactly what `F32AddRel.add_rel_bound_normal` supplies (with
+`radd = f32R ∘ arch_f32_add` and `u = 2⁻²⁴`). One `pairUp` level halves the list
+and its two effects are bounded here; the depth induction then folds them with
+`gamma_step`. Working over `Rat` (Mathlib `List.sum` / `|·|`) keeps this free of
+FP details. -/
+
+/-- One balanced-pairwise level over `Rat` (abstract add). -/
+def rpairUp (radd : Rat → Rat → Rat) : List Rat → List Rat
+  | a :: b :: rest => radd a b :: rpairUp radd rest
+  | rest => rest
+
+/-- A level exactly halves (rounding up). -/
+theorem rpairUp_length {radd : Rat → Rat → Rat} :
+    ∀ xs : List Rat, (rpairUp radd xs).length = (xs.length + 1) / 2
+  | [] => rfl
+  | [_] => by simp [rpairUp]
+  | _ :: _ :: rest => by
+      simp only [rpairUp, List.length_cons]; rw [rpairUp_length rest]; omega
+
+/-- **Single-level error.** One `pairUp` level perturbs the sum by at most
+    `u · Σ|xᵢ|`. -/
+theorem rpairUp_err {radd : Rat → Rat → Rat} {u : Rat} (hu : 0 ≤ u)
+    (hadd : ∀ a b, |radd a b - (a + b)| ≤ u * |a + b|) :
+    ∀ xs : List Rat, |(rpairUp radd xs).sum - xs.sum| ≤ u * (xs.map (|·|)).sum
+  | [] => by simp [rpairUp]
+  | [a] => by simp [rpairUp]; positivity
+  | a :: b :: rest => by
+      have ih := rpairUp_err hu hadd rest
+      simp only [rpairUp, List.sum_cons, List.map_cons]
+      calc |radd a b + (rpairUp radd rest).sum - (a + (b + rest.sum))|
+          = |(radd a b - (a + b)) + ((rpairUp radd rest).sum - rest.sum)| := by ring_nf
+        _ ≤ |radd a b - (a + b)| + |(rpairUp radd rest).sum - rest.sum| := abs_add_le _ _
+        _ ≤ u * |a + b| + u * (rest.map (|·|)).sum := by gcongr; exact hadd a b
+        _ ≤ u * (|a| + |b|) + u * (rest.map (|·|)).sum := by gcongr; exact abs_add_le a b
+        _ = u * (|a| + (|b| + (rest.map (|·|)).sum)) := by ring
+
+/-- **Absolute-sum growth.** One level grows `Σ|·|` by at most a factor `(1+u)`.
+    This is what turns the depth-`d` accumulation into the `(1+u)^d`-flavoured
+    `γ_d`. -/
+theorem rpairUp_absSum {radd : Rat → Rat → Rat} {u : Rat} (hu : 0 ≤ u)
+    (hadd : ∀ a b, |radd a b - (a + b)| ≤ u * |a + b|) :
+    ∀ xs : List Rat, ((rpairUp radd xs).map (|·|)).sum ≤ (1 + u) * (xs.map (|·|)).sum
+  | [] => by simp [rpairUp]
+  | [a] => by simp [rpairUp]; nlinarith [abs_nonneg a]
+  | a :: b :: rest => by
+      have ih := rpairUp_absSum hu hadd rest
+      have hb : |radd a b| ≤ (1 + u) * (|a| + |b|) :=
+        calc |radd a b| ≤ (1 + u) * |a + b| := by
+              nlinarith [hadd a b, abs_nonneg (a+b), abs_sub_abs_le_abs_sub (radd a b) (a+b)]
+          _ ≤ (1 + u) * (|a| + |b|) := by
+              have h0 : (0:Rat) ≤ 1 + u := by linarith
+              gcongr; exact abs_add_le a b
+      simp only [rpairUp, List.map_cons, List.sum_cons]
+      calc |radd a b| + ((rpairUp radd rest).map (|·|)).sum
+          ≤ (1 + u) * (|a| + |b|) + (1 + u) * (rest.map (|·|)).sum := by gcongr
+        _ = (1 + u) * (|a| + (|b| + (rest.map (|·|)).sum)) := by ring
+
+/-! ## Remaining: the depth induction + FP-precondition threading
 
 With `gamma_step` (the recurrence) and the base cases in hand, the full bound
 
