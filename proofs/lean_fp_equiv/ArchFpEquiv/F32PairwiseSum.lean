@@ -335,23 +335,54 @@ theorem gpair_bound_dom {u : Rat} (hu : 0 < u)
 
 end
 
-/-! ## Remaining: FP instantiation of `gpair_bound_dom`
+/-! ## Structure wiring: `archPairwiseSum = gpairSum arch_f32_add`
 
-`gpair_bound_dom` is the general form. Discharging
-`ScaledDot.pairwise_sum_error_bound` needs a concrete FP domain `P` and the
-structure wiring:
+`ScaledDot.archPairwiseSum` is the fuel-based `BitVec` tree; `gpairSum` is the
+well-founded one. They compute the same balanced-pairwise fold — proved here — so
+`gpair_bound_dom` (instantiated at `op = arch_f32_add`, `v = f32R`) transfers to
+`f32R (archPairwiseSum xs)`. -/
 
-1. **The FP domain `P`.** Choose `P` so that `P a ∧ P b` implies
-   `add_rel_bound_normal`'s hypotheses for `arch_f32_add a b` (`finiteNonzero`,
-   exact sum non-zero, `2¹⁷² ≤ |exact sum|`, no overflow) — giving `haddP` — AND
-   `P (arch_f32_add a b)` — giving `Pcl`. **Subtlety:** `Pcl` (closure under add)
-   is where the standard *no-underflow / no-overflow* summation assumption bites:
-   catastrophic cancellation can push a sum below the normal range, so `P` must
-   encode a genuine well-scaled-summation hypothesis (or be supplied per-tree),
-   not a naive magnitude interval. This is the classic caveat of the Higham
-   bound, now explicit.
-2. **Structure wiring.** Relate `f32R (archPairwiseSum xs)` (fuel-based `BitVec`
-   tree) to `gpairSum arch_f32_add xs`, and `ScaledDot`'s opaque `f32ToRat` to
-   `f32R`. -/
+theorem pairUp_eq : ∀ xs : List (BitVec 32), pairUp xs = gpairUp arch_f32_add xs
+  | [] => rfl
+  | [_] => rfl
+  | a :: b :: rest => by simp only [pairUp, gpairUp]; rw [pairUp_eq rest]
+
+/-- Fuel-based fold with enough fuel equals the well-founded fold. -/
+theorem pairwiseFuel_eq : ∀ (n : Nat) (xs : List (BitVec 32)), xs.length ≤ n →
+    pairwiseFuel n xs = gpairSum arch_f32_add xs := by
+  intro n
+  induction n using Nat.strong_induction_on with
+  | _ n IH =>
+    intro xs hlen
+    match xs with
+    | [] => simp only [pairwiseFuel, gpairSum]; rfl
+    | [x] => simp only [pairwiseFuel, gpairSum]
+    | a :: b :: rest =>
+      have hn : 1 ≤ n := by simp only [List.length_cons] at hlen; omega
+      obtain ⟨m, rfl⟩ : ∃ m, n = m + 1 := ⟨n - 1, by omega⟩
+      have hqlen : (gpairUp arch_f32_add (a::b::rest)).length ≤ m := by
+        rw [gpairUp_length]; simp only [List.length_cons] at hlen ⊢; omega
+      simp only [pairwiseFuel, pairUp_eq]
+      rw [IH m (by omega) _ hqlen,
+          show gpairSum arch_f32_add (a::b::rest)
+            = gpairSum arch_f32_add (gpairUp arch_f32_add (a::b::rest)) from by rw [gpairSum]]
+
+/-- **`archPairwiseSum` is the abstract fold at `arch_f32_add`.** -/
+theorem archPairwiseSum_eq (xs : List (BitVec 32)) :
+    archPairwiseSum xs = gpairSum arch_f32_add xs := by
+  unfold archPairwiseSum; exact pairwiseFuel_eq xs.length xs (le_refl _)
+
+/-! ## Remaining: FP domain and the `f32ToRat` wiring
+
+With `archPairwiseSum_eq` and `gpair_bound_dom`, the bound on `f32R
+(archPairwiseSum xs)` follows once two items are supplied:
+
+1. **The FP domain `P`** — giving `haddP` (from `add_rel_bound_normal`) and `Pcl`
+   (closure). As noted, `Pcl` carries the standard no-underflow / no-overflow
+   summation assumption (cancellation), so `P` encodes a genuine well-scaled
+   hypothesis, not a naive interval.
+2. **`f32ToRat` wiring.** `ScaledDot.pairwise_sum_error_bound` is stated against
+   the *opaque* `f32ToRat`; discharging it needs `f32ToRat = f32R` (a small edit
+   to the merged `ScaledDot` frame), or restating the target against `f32R`. -/
 
 end ArchFp
