@@ -2,10 +2,16 @@ name = "arch_fp_equiv_proof"
 version = "0.1.0"
 defaultTargets = ["ArchFpEquiv"]
 
-# Dependency-free: the model uses only Lean core `BitVec` (Init.Data.BitVec) and
-# the `bv_decide` tactic, both shipped with the toolchain above. No Mathlib —
-# a future algebraic correct-rounding development (FLoPS/Flocq style) for the
-# multiplier ops would add a `require mathlib` here.
+# Mostly dependency-free: the FP model and bit-level proofs use only Lean core
+# `BitVec` (Init.Data.BitVec) and `bv_decide`. Mathlib was added for the
+# `IsNearestExact → Rat (1+δ)` relative-error analysis and Theorem B's
+# pairwise-summation bound, which need the ordered-field / division / abs API
+# core `Rat` does not provide. Pinned to the tag matching the toolchain.
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4.git"
+rev = "v4.30.0"
 
 [[lean_lib]]
 name = "ArchFpEquiv"
