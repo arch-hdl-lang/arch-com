@@ -135,33 +135,100 @@ theorem rpairUp_absSum {radd : Rat → Rat → Rat} {u : Rat} (hu : 0 ≤ u)
           ≤ (1 + u) * (|a| + |b|) + (1 + u) * (rest.map (|·|)).sum := by gcongr
         _ = (1 + u) * (|a| + (|b| + (rest.map (|·|)).sum)) := by ring
 
-/-! ## Remaining: the depth induction + FP-precondition threading
+/-! ## Abstract `γ` (matches `gammaPairwise` at `u = f32u`) and the depth fold -/
 
-With `gamma_step` (the recurrence) and the base cases in hand, the full bound
+/-- Abstract Higham factor `γ_d = d·u/(1−d·u)`. `agamma f32u d = gammaPairwise d`. -/
+def agamma (u : Rat) (d : Nat) : Rat := (d : Rat) * u / (1 - (d : Rat) * u)
 
-  `ratAbs (f32R (archPairwiseSum xs) − ratSum (xs.map f32R))
-     ≤ gammaPairwise d · ratSum (xs.map (ratAbs ∘ f32R))`  for `xs.length ≤ 2^d`
+theorem agamma_nonneg (u : Rat) (hu : 0 ≤ u) (d : Nat) (hd : (d:Rat) * u < 1) :
+    0 ≤ agamma u d := by
+  unfold agamma; apply div_nonneg (by positivity); linarith
 
-reduces to two remaining pieces:
+/-- The recurrence, over abstract `u` (generalises `gamma_step`). -/
+theorem agamma_step (u : Rat) (hu : 0 < u) (d : Nat) (hd : ((d:Rat) + 1) * u < 1) :
+    (1 + u) * agamma u d + u ≤ agamma u (d + 1) := by
+  have hden1 : (0:Rat) < 1 - (d:Rat) * u := by nlinarith [hu, hd]
+  have hden2 : (0:Rat) < 1 - ((d:Rat) + 1) * u := by linarith
+  have hne : (1 - u * (d:Rat)) ≠ 0 := by rw [mul_comm]; exact ne_of_gt hden1
+  have hLHS : (1 + u) * agamma u d + u = ((d:Rat) + 1) * u / (1 - (d:Rat) * u) := by
+    unfold agamma; field_simp [hne]; ring
+  rw [hLHS]; unfold agamma; push_cast; gcongr; linarith
 
-1. **Single-level `pairUp` bound.** `pairUp xs = arch_f32_add` of adjacent pairs
-   (lone element passes through). Each pair contributes one rounding, bounded by
-   the per-add `(1+δ)` (`F32AddRel.add_rel_bound_normal`): so
-   `ratSum ((pairUp xs).map f32R)` differs from `ratSum (xs.map f32R)` by at most
-   `u · ratSum (xs.map (ratAbs ∘ f32R))`, and the `|·|`-sum is non-increasing.
+/-- Well-founded pairwise sum over `Rat` (recursion equation is definitional). -/
+def rpairSum (radd : Rat → Rat → Rat) : List Rat → Rat
+  | [] => 0
+  | [x] => x
+  | a :: b :: rest => rpairSum radd (rpairUp radd (a :: b :: rest))
+  termination_by xs => xs.length
+  decreasing_by simp only [rpairUp_length, List.length_cons]; omega
 
-2. **The fuel induction.** `archPairwiseSum xs = pairwiseFuel xs.length xs`, and
-   `pairwiseFuel (n+1) xs = pairwiseFuel n (pairUp xs)`. Induct on `d`: the depth
-   drops by one per `pairUp` level (`(pairUp xs).length ≤ ⌈xs.length/2⌉ ≤ 2^{d-1}`),
-   the IH gives `γ_{d-1}` on the halved list, and `gamma_step` combines the
-   level-1 error with the IH error into `γ_d`.
+theorem mapAbs_nonneg (l : List Rat) : 0 ≤ (l.map (|·|)).sum := by
+  apply List.sum_nonneg
+  intro y hy; simp only [List.mem_map] at hy
+  obtain ⟨z, _, rfl⟩ := hy; exact abs_nonneg z
 
-The genuine difficulty is **precondition threading**: `add_rel_bound_normal`
-requires each add's operands to be `finiteNonzero` and the partial sum to be in
-the normal range (`2¹⁷² ≤ |·|`) and non-overflowing — the standard no-underflow /
-no-overflow summation hypotheses. A concrete `AllFiniteNoOverflow`-style
-predicate over the tree, and a proof it is preserved by `pairUp`, is the
-substantial remaining work. Discharging `ScaledDot.pairwise_sum_error_bound` then
-also requires wiring `ScaledDot`'s opaque `f32ToRat` to this concrete `f32R`. -/
+/-- **Abstract pairwise-summation error bound (Higham ASNA 4.6).** For any
+    rounded-add `radd` with the per-add `(1+δ)` property, the balanced-pairwise
+    sum of a length-`≤2^d` list differs from the exact sum by at most
+    `γ_d · Σ|xᵢ|`. This is the complete mathematical content of Theorem B; the
+    depth induction folds `rpairUp_err` / `rpairUp_absSum` with `agamma_step`.
+    (`(d+1)·u < 1` — met for any real depth, `d < 2²⁴`.) -/
+theorem rpair_bound {radd : Rat → Rat → Rat} {u : Rat} (hu : 0 < u)
+    (hadd : ∀ a b, |radd a b - (a + b)| ≤ u * |a + b|) :
+    ∀ (d : Nat) (xs : List Rat), xs.length ≤ 2 ^ d → ((d:Rat) + 1) * u < 1 →
+      |rpairSum radd xs - xs.sum| ≤ agamma u d * (xs.map (|·|)).sum := by
+  intro d
+  induction d with
+  | zero =>
+    intro xs hlen _
+    match xs, hlen with
+    | [], _ => simp [rpairSum]
+    | [x], _ => simp [rpairSum, agamma]
+  | succ d IH =>
+    intro xs hlen hdu
+    have hduD : ((d:Rat) + 1) * u < 1 := by push_cast at hdu; nlinarith [hu]
+    have hgnn : 0 ≤ agamma u d := agamma_nonneg u (le_of_lt hu) d (by nlinarith [hu, hduD])
+    have hgnn1 : 0 ≤ agamma u (d + 1) := by
+      apply agamma_nonneg u (le_of_lt hu) (d + 1); push_cast; nlinarith [hu, hdu]
+    match xs with
+    | [] => simp [rpairSum]
+    | [x] => simp only [rpairSum, List.map_cons, List.map_nil, List.sum_cons,
+        List.sum_nil, add_zero, sub_self, abs_zero]; exact mul_nonneg hgnn1 (by positivity)
+    | a :: b :: rest =>
+      have hqlen : (rpairUp radd (a::b::rest)).length ≤ 2 ^ d := by
+        rw [rpairUp_length]; simp only [List.length_cons] at hlen ⊢; omega
+      have hih := IH (rpairUp radd (a::b::rest)) hqlen hduD
+      have herr := rpairUp_err (le_of_lt hu) hadd (a::b::rest)
+      have hgrow := rpairUp_absSum (le_of_lt hu) hadd (a::b::rest)
+      rw [show rpairSum radd (a::b::rest)
+          = rpairSum radd (rpairUp radd (a::b::rest)) by rw [rpairSum]]
+      calc |rpairSum radd (rpairUp radd (a::b::rest)) - (a::b::rest).sum|
+          ≤ |rpairSum radd (rpairUp radd (a::b::rest)) - (rpairUp radd (a::b::rest)).sum|
+              + |(rpairUp radd (a::b::rest)).sum - (a::b::rest).sum| := abs_sub_le _ _ _
+        _ ≤ agamma u d * ((rpairUp radd (a::b::rest)).map (|·|)).sum
+              + u * ((a::b::rest).map (|·|)).sum := by gcongr
+        _ ≤ agamma u d * ((1 + u) * ((a::b::rest).map (|·|)).sum)
+              + u * ((a::b::rest).map (|·|)).sum := by gcongr
+        _ = ((1 + u) * agamma u d + u) * ((a::b::rest).map (|·|)).sum := by ring
+        _ ≤ agamma u (d + 1) * ((a::b::rest).map (|·|)).sum := by
+            gcongr
+            · exact mapAbs_nonneg _
+            · exact agamma_step u hu d hduD
+
+/-! ## Remaining: FP instantiation of `rpair_bound`
+
+The abstract bound `rpair_bound` is the full Higham result. Discharging
+`ScaledDot.pairwise_sum_error_bound` now needs only the **FP instantiation**:
+`radd := ` the value-level rounded add (`f32R ∘ arch_f32_add`), `u := f32u`, with
+`hadd` supplied by `F32AddRel.add_rel_bound_normal`. Two plumbing tasks remain:
+
+1. **Precondition threading.** `add_rel_bound_normal` needs each add's operands
+   `finiteNonzero` and the partial sum normal-range / non-overflowing (the
+   standard no-underflow / no-overflow summation hypotheses). A concrete
+   `AllFiniteNoOverflow` predicate that yields `hadd` for the terms in play, and
+   is preserved down the tree, replaces the abstract obligation.
+2. **Structure wiring.** Relate `f32R (archPairwiseSum xs)` (the fuel-based
+   `BitVec` tree) to `rpairSum radd (xs.map f32R)`, and `ScaledDot`'s opaque
+   `f32ToRat` to `f32R`. -/
 
 end ArchFp
