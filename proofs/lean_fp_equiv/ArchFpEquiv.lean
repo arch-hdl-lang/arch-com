@@ -24,3 +24,4 @@ import ArchFpEquiv.FmaRefSpecial
 import ArchFpEquiv.FmaEquiv
 import ArchFpEquiv.ScaledDot
 import ArchFpEquiv.F32AddCorrect
+import ArchFpEquiv.F32AddRel
