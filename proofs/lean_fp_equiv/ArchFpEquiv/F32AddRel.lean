@@ -1,4 +1,5 @@
 import ArchFpEquiv.F32AddCorrect
+import ArchFpEquiv.RoundReal
 import Mathlib
 
 /-!
@@ -129,17 +130,64 @@ theorem add_rel_bound (a b : BitVec 32)
   rw [hval, add_err_eq _ _ hsg, habs]
   exact rel_bound_of_scaled _ _ hgrid
 
-/-! ## The one remaining obligation: the half-ULP grid bound
+/-! ## The half-ULP grid bound (proved) — discharges `hgrid` -/
 
-`add_rel_bound`'s only open hypothesis is
-`scaledDist (f32MagScaled (add a b) · 2¹⁴⁹) (fmaExact a 1.0 b).natAbs · 2²⁴ ≤
-(fmaExact a 1.0 b).natAbs` — the half-ULP-relative bound. It follows from
-`IsNearestExact` (the nearest finite pattern, from `arch_f32_add_correct`) plus
-FP grid spacing: the nearest pattern is within half a ULP, and half a ULP is ≤
-`2⁻²⁴ ·` value in the normal range. This is the bracketing-pattern / ULP-spacing
-argument (`RoundReal.f32MagScaled_gap` is the granularity fact) — the one
-genuinely FP-grid piece left; Mathlib does not shortcut it. Once discharged,
-`add_rel_bound` becomes unconditional and Theorem B's induction
-(`ScaledDot.pairwise_sum_error_bound`) consumes it. -/
+/-- **Half-ULP grid bound.** For a nearest-in-magnitude pattern `y` to a
+    normal-range exact value `V` (`2¹⁷² ≤ |V|`, i.e. `|V| ≥` smallest normal, in
+    `2⁻²⁹⁸` units), the scaled distance obeys the half-ULP-relative bound
+    `scaledDist · 2²⁴ ≤ |V|`.
+
+    Proof: use `roundNE_f32 false |V| (-298)` — itself a nearest pattern to `|V|`
+    (`roundNE`) — as the competitor. Its magnitude is `keptNorm |V| · 2^(log₂|V|−23)`
+    (`roundNE_normal_value`; the exponents align, `E'+149 = log₂|V|−23`), and
+    `keptNorm |V| = rneQuot |V| (log₂|V|−23)`, so `rneQuot_halfulp` +
+    `gridDist_eq_scaledDist` bound its distance by `2^(log₂|V|−24)`, whence
+    `· 2²⁴ = 2^(log₂|V|) ≤ |V|`. `IsNearestExact` makes `y` at least as close. -/
+theorem halfulp_grid_bound (y : BitVec 32) (V : Int)
+    (hnear : IsNearestExact V y)
+    (hW : 2 ^ 172 ≤ V.natAbs)
+    (hovf : biasedFinal V.natAbs (-298) ≤ 254) :
+    scaledDist (f32MagScaled y * 2 ^ 149) V.natAbs * 2 ^ 24 ≤ V.natAbs := by
+  have hW0 : V.natAbs ≠ 0 := by positivity
+  have hlog : 172 ≤ Nat.log2 V.natAbs := (Nat.le_log2 hW0).mpr hW
+  set zr := roundNE_f32 false V.natAbs (-298) with hzr
+  obtain ⟨hzrfin, hzrval, _⟩ :=
+    roundNE_normal_value false V.natAbs (-298) hW0 (by omega) hovf
+  have hsh : Nat.log2 V.natAbs - 23
+      = ((Nat.log2 V.natAbs : Int) + (-298) + 126).toNat + 149 := by omega
+  have hkept : keptNorm V.natAbs = rneQuot V.natAbs (Nat.log2 V.natAbs - 23) := by
+    rw [keptNorm, if_neg (by omega)]
+  have hdist0 : scaledDist (f32MagScaled zr * 2 ^ 149) V.natAbs
+      ≤ 2 ^ (Nat.log2 V.natAbs - 23 - 1) := by
+    rw [hzrval, Nat.mul_assoc, ← Nat.pow_add, ← hsh, hkept, ← gridDist_eq_scaledDist]
+    exact rneQuot_halfulp V.natAbs (Nat.log2 V.natAbs - 23) (by omega)
+  have hdist : scaledDist (f32MagScaled zr * 2 ^ 149) V.natAbs * 2 ^ 24 ≤ V.natAbs :=
+    calc scaledDist (f32MagScaled zr * 2 ^ 149) V.natAbs * 2 ^ 24
+        ≤ 2 ^ (Nat.log2 V.natAbs - 23 - 1) * 2 ^ 24 := Nat.mul_le_mul_right _ hdist0
+      _ = 2 ^ (Nat.log2 V.natAbs) := by rw [← Nat.pow_add]; congr 1; omega
+      _ ≤ V.natAbs := Nat.log2_self_le hW0
+  calc scaledDist (f32MagScaled y * 2 ^ 149) V.natAbs * 2 ^ 24
+      ≤ scaledDist (f32MagScaled zr * 2 ^ 149) V.natAbs * 2 ^ 24 :=
+        Nat.mul_le_mul_right _ (hnear zr hzrfin)
+    _ ≤ V.natAbs := hdist
+
+/-- **Per-add `(1+δ)` — normal range (unconditional in `hgrid`).** For
+    finite-nonzero operands whose exact sum is in the normal range
+    (`2¹⁷² ≤ |exact sum|`) and does not overflow, the `arch_f32_add` relative
+    error is ≤ `2⁻²⁴`. The half-ULP grid bound is discharged by
+    `halfulp_grid_bound`, so this is the fully-assembled per-add relative-error
+    theorem — the `(1+δ)` model Theorem B's pairwise induction consumes. The
+    normal-range / no-overflow side conditions are exactly the standard `(1+δ)`
+    preconditions (no underflow, no overflow). -/
+theorem add_rel_bound_normal (a b : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true)
+    (hnz : fmaExact a 0x3F800000#32 b ≠ 0)
+    (hovf : biasedFinal (arch_fma_mag a 0x3F800000#32 b).toNat
+      (arch_fma_elo a 0x3F800000#32 b).toInt ≤ 254)
+    (hW : 2 ^ 172 ≤ (fmaExact a 0x3F800000#32 b).natAbs)
+    (hovf298 : biasedFinal (fmaExact a 0x3F800000#32 b).natAbs (-298) ≤ 254) :
+    |f32R (arch_f32_add a b) - (f32R a + f32R b)| ≤ uF32 * |f32R a + f32R b| := by
+  obtain ⟨_, hnear, _⟩ := arch_f32_add_correct a b ha hb hnz hovf
+  exact add_rel_bound a b ha hb hnz hovf (halfulp_grid_bound _ _ hnear hW hovf298)
 
 end ArchFp
