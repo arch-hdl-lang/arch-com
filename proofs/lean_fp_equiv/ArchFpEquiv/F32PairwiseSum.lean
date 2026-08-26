@@ -216,21 +216,142 @@ theorem gpair_bound {u : Rat} (hu : 0 < u)
 
 end
 
-/-! ## Remaining: FP instantiation of `gpair_bound`
+/-! ## Domain-restricted bound (handles the FP preconditions)
 
-`gpair_bound` is the full Higham result. Discharging
-`ScaledDot.pairwise_sum_error_bound` now needs only the **FP instantiation** with
-`op = arch_f32_add`, `v = f32R`, `u = f32u`. Two tasks remain, both plumbing:
+`gpair_bound`'s `hadd` is unconditional, but `arch_f32_add` meets the `(1+δ)`
+only on a "good" domain. This variant threads a predicate `P` — closed under
+`op`, with `hadd` holding on `P` — and the invariant that every list element
+satisfies `P`, preserved down the tree. Instantiating `P` with the FP
+preconditions (`finiteNonzero`, normal-range, no-overflow) gives the FP bound. -/
 
-1. **Precondition threading.** `add_rel_bound_normal` supplies `hadd` only when
-   each add's operands are `finiteNonzero` and the partial sum is normal-range /
-   non-overflowing. `gpair_bound`'s `hadd` is an unconditional `∀`; the FP add
-   meets it only on a "good" domain, so a domain-restricted variant of
-   `gpair_bound` (a predicate `P` closed under `op` with `hadd` on `P`) is the
-   real remaining work — the standard no-underflow / no-overflow summation
-   hypotheses made concrete.
-2. **Structure wiring.** Relate `f32R (archPairwiseSum xs)` (the fuel-based
-   `BitVec` tree) to `gpairSum arch_f32_add xs`, and `ScaledDot`'s opaque
-   `f32ToRat` to `f32R`. -/
+section
+set_option linter.unusedSectionVars false
+variable {α : Type} (op : α → α → α) (v : α → Rat) (P : α → Prop)
+
+/-- `P`-membership is preserved by one level (needs closure of `P` under `op`). -/
+theorem gpairUp_forall (Pcl : ∀ a b, P a → P b → P (op a b)) :
+    ∀ xs : List α, (∀ x ∈ xs, P x) → ∀ y ∈ gpairUp op xs, P y
+  | [], _ => by simp [gpairUp]
+  | [a], h => by simpa [gpairUp] using h
+  | a :: b :: rest, h => by
+      have hrest : ∀ x ∈ rest, P x := fun x hx => h x (by simp [hx])
+      have ih := gpairUp_forall Pcl rest hrest
+      intro y hy; simp only [gpairUp, List.mem_cons] at hy
+      rcases hy with rfl | hy
+      · exact Pcl a b (h a (by simp)) (h b (by simp))
+      · exact ih y hy
+
+theorem gpairUp_err_dom {u : Rat} (hu : 0 ≤ u)
+    (haddP : ∀ a b, P a → P b → |v (op a b) - (v a + v b)| ≤ u * |v a + v b|) :
+    ∀ xs : List α, (∀ x ∈ xs, P x) →
+      |((gpairUp op xs).map v).sum - (xs.map v).sum| ≤ u * (xs.map (fun x => |v x|)).sum
+  | [], _ => by simp [gpairUp]
+  | [a], _ => by simp [gpairUp]; positivity
+  | a :: b :: rest, h => by
+      have hrest : ∀ x ∈ rest, P x := fun x hx => h x (by simp [hx])
+      have ih := gpairUp_err_dom hu haddP rest hrest
+      simp only [gpairUp, List.map_cons, List.sum_cons]
+      calc |v (op a b) + ((gpairUp op rest).map v).sum - (v a + (v b + (rest.map v).sum))|
+          = |(v (op a b) - (v a + v b)) + (((gpairUp op rest).map v).sum - (rest.map v).sum)| := by
+            ring_nf
+        _ ≤ |v (op a b) - (v a + v b)| + |((gpairUp op rest).map v).sum - (rest.map v).sum| :=
+            abs_add_le _ _
+        _ ≤ u * |v a + v b| + u * (rest.map (fun x => |v x|)).sum := by
+            gcongr; exact haddP a b (h a (by simp)) (h b (by simp))
+        _ ≤ u * (|v a| + |v b|) + u * (rest.map (fun x => |v x|)).sum := by
+            gcongr; exact abs_add_le _ _
+        _ = u * (|v a| + (|v b| + (rest.map (fun x => |v x|)).sum)) := by ring
+
+theorem gpairUp_absSum_dom {u : Rat} (hu : 0 ≤ u)
+    (haddP : ∀ a b, P a → P b → |v (op a b) - (v a + v b)| ≤ u * |v a + v b|) :
+    ∀ xs : List α, (∀ x ∈ xs, P x) →
+      ((gpairUp op xs).map (fun x => |v x|)).sum ≤ (1 + u) * (xs.map (fun x => |v x|)).sum
+  | [], _ => by simp [gpairUp]
+  | [a], _ => by simp [gpairUp]; nlinarith [abs_nonneg (v a)]
+  | a :: b :: rest, h => by
+      have hrest : ∀ x ∈ rest, P x := fun x hx => h x (by simp [hx])
+      have ih := gpairUp_absSum_dom hu haddP rest hrest
+      have hb : |v (op a b)| ≤ (1 + u) * (|v a| + |v b|) :=
+        calc |v (op a b)| ≤ (1 + u) * |v a + v b| := by
+              nlinarith [haddP a b (h a (by simp)) (h b (by simp)), abs_nonneg (v a + v b),
+                abs_sub_abs_le_abs_sub (v (op a b)) (v a + v b)]
+          _ ≤ (1 + u) * (|v a| + |v b|) := by
+              have h0 : (0:Rat) ≤ 1 + u := by linarith
+              gcongr; exact abs_add_le _ _
+      simp only [gpairUp, List.map_cons, List.sum_cons]
+      calc |v (op a b)| + ((gpairUp op rest).map (fun x => |v x|)).sum
+          ≤ (1 + u) * (|v a| + |v b|) + (1 + u) * (rest.map (fun x => |v x|)).sum := by gcongr
+        _ = (1 + u) * (|v a| + (|v b| + (rest.map (fun x => |v x|)).sum)) := by ring
+
+variable [Inhabited α]
+
+/-- **Domain-restricted pairwise bound.** The Higham bound under a domain
+    predicate `P` (closed under `op`, `hadd` on `P`) with every element in `P`.
+    The general form that instantiates to FP: `P` supplies `add_rel_bound_normal`'s
+    preconditions. -/
+theorem gpair_bound_dom {u : Rat} (hu : 0 < u)
+    (Pcl : ∀ a b, P a → P b → P (op a b))
+    (haddP : ∀ a b, P a → P b → |v (op a b) - (v a + v b)| ≤ u * |v a + v b|) :
+    ∀ (d : Nat) (xs : List α), xs ≠ [] → (∀ x ∈ xs, P x) → xs.length ≤ 2 ^ d →
+      ((d:Rat) + 1) * u < 1 →
+      |v (gpairSum op xs) - (xs.map v).sum| ≤ agamma u d * (xs.map (fun x => |v x|)).sum := by
+  intro d
+  induction d with
+  | zero =>
+    intro xs hne _ hlen _
+    match xs, hne, hlen with
+    | [x], _, _ => simp [gpairSum, agamma]
+  | succ d IH =>
+    intro xs hne hmem hlen hdu
+    have hduD : ((d:Rat) + 1) * u < 1 := by push_cast at hdu; nlinarith [hu]
+    have hgnn1 : 0 ≤ agamma u (d + 1) := by
+      apply agamma_nonneg u (le_of_lt hu) (d + 1); push_cast; nlinarith [hu, hdu]
+    match xs with
+    | [x] => simp only [gpairSum, List.map_cons, List.map_nil, List.sum_cons,
+        List.sum_nil, add_zero, sub_self, abs_zero]; exact mul_nonneg hgnn1 (by positivity)
+    | a :: b :: rest =>
+      have hgnn : 0 ≤ agamma u d := agamma_nonneg u (le_of_lt hu) d (by nlinarith [hu, hduD])
+      have hqlen : (gpairUp op (a::b::rest)).length ≤ 2 ^ d := by
+        rw [gpairUp_length]; simp only [List.length_cons] at hlen ⊢; omega
+      have hqne : gpairUp op (a::b::rest) ≠ [] :=
+        List.ne_nil_of_length_pos (by rw [gpairUp_length]; simp only [List.length_cons]; omega)
+      have hqmem := gpairUp_forall op P Pcl (a::b::rest) hmem
+      have hih := IH (gpairUp op (a::b::rest)) hqne hqmem hqlen hduD
+      have herr := gpairUp_err_dom op v P (le_of_lt hu) haddP (a::b::rest) hmem
+      have hgrow := gpairUp_absSum_dom op v P (le_of_lt hu) haddP (a::b::rest) hmem
+      rw [show gpairSum op (a::b::rest) = gpairSum op (gpairUp op (a::b::rest)) by rw [gpairSum]]
+      calc |v (gpairSum op (gpairUp op (a::b::rest))) - ((a::b::rest).map v).sum|
+          ≤ |v (gpairSum op (gpairUp op (a::b::rest))) - ((gpairUp op (a::b::rest)).map v).sum|
+              + |((gpairUp op (a::b::rest)).map v).sum - ((a::b::rest).map v).sum| := abs_sub_le _ _ _
+        _ ≤ agamma u d * ((gpairUp op (a::b::rest)).map (fun x => |v x|)).sum
+              + u * ((a::b::rest).map (fun x => |v x|)).sum := by gcongr
+        _ ≤ agamma u d * ((1 + u) * ((a::b::rest).map (fun x => |v x|)).sum)
+              + u * ((a::b::rest).map (fun x => |v x|)).sum := by gcongr
+        _ = ((1 + u) * agamma u d + u) * ((a::b::rest).map (fun x => |v x|)).sum := by ring
+        _ ≤ agamma u (d + 1) * ((a::b::rest).map (fun x => |v x|)).sum := by
+            gcongr
+            · exact mapAbs_nonneg v _
+            · exact agamma_step u hu d hduD
+
+end
+
+/-! ## Remaining: FP instantiation of `gpair_bound_dom`
+
+`gpair_bound_dom` is the general form. Discharging
+`ScaledDot.pairwise_sum_error_bound` needs a concrete FP domain `P` and the
+structure wiring:
+
+1. **The FP domain `P`.** Choose `P` so that `P a ∧ P b` implies
+   `add_rel_bound_normal`'s hypotheses for `arch_f32_add a b` (`finiteNonzero`,
+   exact sum non-zero, `2¹⁷² ≤ |exact sum|`, no overflow) — giving `haddP` — AND
+   `P (arch_f32_add a b)` — giving `Pcl`. **Subtlety:** `Pcl` (closure under add)
+   is where the standard *no-underflow / no-overflow* summation assumption bites:
+   catastrophic cancellation can push a sum below the normal range, so `P` must
+   encode a genuine well-scaled-summation hypothesis (or be supplied per-tree),
+   not a naive magnitude interval. This is the classic caveat of the Higham
+   bound, now explicit.
+2. **Structure wiring.** Relate `f32R (archPairwiseSum xs)` (fuel-based `BitVec`
+   tree) to `gpairSum arch_f32_add xs`, and `ScaledDot`'s opaque `f32ToRat` to
+   `f32R`. -/
 
 end ArchFp
