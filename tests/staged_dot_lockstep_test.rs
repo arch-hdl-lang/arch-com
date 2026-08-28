@@ -158,3 +158,62 @@ fn staged_dot_throughput_lockstep_verilator() {
         "sim produced no non-zero output (vacuous):\n{txt}"
     );
 }
+
+// ── Power-of-two block-size guard (typecheck) ───────────────────────────────
+// The coarse per-level staging pipelines the reduction tree one level per
+// stage, which is latency-balanced only for a power-of-two block size. A
+// non-power-of-two count carries an odd element across levels and skews the
+// pipeline (a silent miscompile invisible to stable-input testing — the
+// structural balance check reports UNBALANCED). The type checker rejects it.
+
+/// Build `scaled_dot<pipelined, N>` over a block of `n` elements at latency
+/// `lat`; return the combined `arch check` output and whether it succeeded.
+fn check_dot(n: u32, lat: u32) -> (bool, String) {
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("d.arch");
+    std::fs::write(
+        &path,
+        format!(
+            "package DF\n  type Bn = ScaledVec<FP4E2M1, {n}, E8M0>;\nend package DF\n\
+             module Dot\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync, High>;\n\
+             \x20 port a: in Bn;\n  port b: in Bn;\n\
+             \x20 port o: out pipe_reg<FP32, {lat}> reset rst => 0.0;\n\
+             \x20 seq on clk rising\n    o@{lat} <= scaled_dot<pipelined, {lat}>(a, b);\n\
+             \x20 end seq\nend module Dot\n"
+        ),
+    )
+    .unwrap();
+    let out = arch().arg("check").arg(&path).output().expect("run check");
+    let merged = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), merged)
+}
+
+#[test]
+fn staged_dot_rejects_non_power_of_two_block() {
+    // N=8 (tree depth 3, latency 6) is a power of two → accepted.
+    let (ok8, _) = check_dot(8, 6);
+    assert!(ok8, "power-of-two block size (8) must be accepted");
+
+    // N=6 is not a power of two → rejected with the power-of-two message,
+    // NOT silently emitted as a skewed pipeline.
+    let (ok6, out6) = check_dot(6, 6);
+    assert!(
+        !ok6,
+        "non-power-of-two block size (6) must be rejected:\n{out6}"
+    );
+    assert!(
+        out6.contains("power-of-two block size"),
+        "rejection must name the power-of-two rule:\n{out6}"
+    );
+
+    // N=12 too (a larger non-power-of-two).
+    let (ok12, out12) = check_dot(12, 7);
+    assert!(
+        !ok12,
+        "non-power-of-two block size (12) must be rejected:\n{out12}"
+    );
+}
