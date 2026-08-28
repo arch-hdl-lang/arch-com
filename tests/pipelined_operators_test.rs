@@ -41,8 +41,34 @@ fn run_check(src: &str) -> std::process::Output {
 /// substring can straddle a line break. Drop the continuation markers and
 /// collapse all whitespace runs to a single space before substring-matching
 /// so assertions are wrap-insensitive.
+/// Remove ANSI/VT escape sequences so diagnostic text matches regardless of
+/// whether the environment forced color (e.g. `FORCE_COLOR`): a forced-color
+/// run wraps miette's gutter glyph as "\x1b[31m│\x1b[0m", and those escapes
+/// survive the bare-`│` filter below and break substring matching.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&d) = chars.peek() {
+                    chars.next();
+                    if ('\u{40}'..='\u{7e}').contains(&d) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn normalize(s: &str) -> String {
-    s.split_whitespace()
+    strip_ansi(s)
+        .split_whitespace()
         .filter(|tok| *tok != "│")
         .collect::<Vec<_>>()
         .join(" ")

@@ -2072,6 +2072,32 @@ fn fp_formal_vacuity_guard() {
 // The contract is as much about what is REJECTED as what works: E2M1 is a
 // carrier for conversions and literals, with no operator surface at all.
 
+/// Remove ANSI/VT escape sequences (SGR color, CSI cursor moves) so diagnostic
+/// text can be matched regardless of whether the environment forced color.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // CSI sequence: ESC '[' params… final-byte (0x40..=0x7e). Consume it.
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&d) = chars.peek() {
+                    chars.next();
+                    if ('\u{40}'..='\u{7e}').contains(&d) {
+                        break;
+                    }
+                }
+            }
+            // Any other escape form: the ESC alone is dropped (miette emits only
+            // CSI here); leave following bytes intact.
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Helper: run `arch check` on inline source, returning combined output and
 /// whether it succeeded.
 fn check_src(name: &str, src: &str) -> (bool, String) {
@@ -2087,8 +2113,12 @@ fn check_src(name: &str, src: &str) -> (bool, String) {
     );
     // miette word-wraps diagnostics AND prefixes continuation lines with a
     // box-drawing gutter, so a phrase can straddle a break as
-    // "storage-only float | format". Strip the gutter glyphs first, then
-    // collapse whitespace, before any substring matching.
+    // "storage-only float | format". It ALSO colorizes when the environment
+    // forces color (e.g. `FORCE_COLOR`), wrapping the gutter glyph in SGR
+    // escapes like "\x1b[31m│\x1b[0m" — those escapes survive the glyph map and
+    // wreck substring matching. Strip ANSI escapes first, then the gutter
+    // glyphs, then collapse whitespace, before any substring matching.
+    let merged = strip_ansi(&merged);
     let stripped: String = merged
         .chars()
         .map(|c| {
