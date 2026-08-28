@@ -148,6 +148,66 @@ fn normround(sign: &Bv, sig: &Bv, e0: &Bv) -> Bv {
     )
 }
 
+/// Rounding result **and** the three IEEE flags computable at round-and-pack:
+/// `(result, overflow, underflow, inexact)`. The `result` is bit-identical to
+/// [`normround`] (same formula) — this is a *separate* function so the
+/// machine-proved `normround` stays byte-identical; the flags reuse its existing
+/// `guard`/`sticky`/`overflow`/`biased_le0` signals:
+/// - `inexact`   = a nonzero bit was dropped (`guard | sticky`),
+/// - `overflow`  = normal-branch result rounded to `±Inf`,
+/// - `underflow` = subnormal-branch result **and** inexact (IEEE tininess +
+///   inexactness — this excludes the benign flush of a negligible addend, whose
+///   result stays normal, and exact subnormal results).
+fn normround_flags(sign: &Bv, sig: &Bv, e0: &Bv) -> (Bv, Bv, Bv, Bv) {
+    let w = sig.width();
+    let w2 = w + 2;
+    let zsig = zext(sig, w2);
+    let p = msb_index(sig);
+    let ev = add(&p, e0);
+    let biased = add(&ev, &cst(127, 16));
+    let biased_le0 = sle(&biased, &cst(0, 16));
+    let k = ite(&biased_le0, &cst(NEG149_16, 16), &sub(&ev, &cst(23, 16)));
+    let sh = sub(&k, e0);
+    let sh_le0 = sle(&sh, &cst(0, 16));
+    let kept_left = shl(&zsig, &neg(&sh));
+    let kept_right = lshr(&zsig, &sh);
+    let kept0 = ite(&sh_le0, &kept_left, &kept_right);
+    let gpos = sub(&sh, &cst(1, 16));
+    let guard = ite(&sh_le0, &cst(0, 1), &extract(&lshr(&zsig, &gpos), 0, 0));
+    let mask = sub(&shl(&cst(1, w2), &gpos), &cst(1, w2));
+    let sticky = ite(&sh_le0, &cst(0, 1), &ne(&band(&zsig, &mask), &cst(0, w2)));
+    let roundup = and(&guard, &or(&sticky, &extract(&kept0, 0, 0)));
+    let kept = add(&kept0, &zext(&roundup, w2));
+    let sub_res = bor(
+        &concat(sign, &cst(0, 31)),
+        &concat(sign, &extract(&kept, 30, 0)),
+    );
+    let carry = is1(&extract(&kept, 24, 24));
+    let biased_n = ite(&carry, &add(&biased, &cst(1, 16)), &biased);
+    let kept_n = ite(&carry, &lshr(&kept, &cst(1, 16)), &kept);
+    let overflow = sge(&biased_n, &cst(255, 16));
+    let inf = concat(sign, &concat(&cst(0xFF, 8), &cst(0, 23)));
+    let packed = concat(
+        sign,
+        &concat(&extract(&biased_n, 7, 0), &extract(&kept_n, 22, 0)),
+    );
+    let norm_res = ite(&overflow, &inf, &packed);
+    let zero = concat(sign, &cst(0, 31));
+    let sig_nz = ne(sig, &cst(0, w));
+    let result = ite(
+        &eq(sig, &cst(0, w)),
+        &zero,
+        &ite(&biased_le0, &sub_res, &norm_res),
+    );
+    let inexact_raw = or(&guard, &sticky);
+    let f_overflow = and(&sig_nz, &and(&bnot(&biased_le0), &overflow));
+    // IEEE: overflow (result → ±Inf) is always inexact, even when the mantissa
+    // was exact (e.g. MAX+MAX), since Inf ≠ the true finite value.
+    let f_inexact = and(&sig_nz, &or(&inexact_raw, &f_overflow));
+    let f_underflow = and(&sig_nz, &and(&biased_le0, &inexact_raw));
+    (result, f_overflow, f_underflow, f_inexact)
+}
+
 // ── predicates / simple ops (as expressions for reuse) ──────────────────────
 
 fn isnan(x: &Bv) -> Bv {
@@ -798,6 +858,78 @@ fn f32_add_core(name: &str, flip_b_sign: bool, p: FpCompat) -> FpFn {
     FpFn::new(name, &[("a", 32), ("b", 32)], 32, body)
 }
 
+/// Checked `f32` add: the ordinary result **plus** the four IEEE flags, packed
+/// into a 36-bit value `{inexact[35], invalid[34], underflow[33], overflow[32],
+/// value[31:0]}`. Backs the surface `checked(a + b) : FpResult<FP32>`. The 32-bit
+/// value is bit-identical to `arch_f32_add` (shares the same body); flags are
+/// gated to the finite path (a propagated `Inf`/`NaN` input is not an overflow),
+/// and `invalid` is the `∞ + (−∞)` case.
+fn f32_add_checked(p: FpCompat) -> FpFn {
+    let a = var("a", 32);
+    let b = var("b", 32);
+    let da = decode(&a);
+    let db = decode(&b);
+    let n = cst(nan32(p), 32);
+    let hi_is_a = sge(&da.eunb, &db.eunb);
+    let pick = |fa: &Bv, fb: &Bv| ite(&hi_is_a, fa, fb);
+    let mant_hi = pick(&da.mant, &db.mant);
+    let mant_lo = pick(&db.mant, &da.mant);
+    let eunb_hi = pick(&da.eunb, &db.eunb);
+    let eunb_lo = pick(&db.eunb, &da.eunb);
+    let sign_hi = pick(&da.sign, &db.sign);
+    let sign_lo = pick(&db.sign, &da.sign);
+    let diff = sub(&eunb_hi, &eunb_lo);
+    let fw = 24 + ADD_G;
+    let hi_field = shl(&zext(&mant_hi, fw), &cst(ADD_G as u128, 16));
+    let lo_ext = shl(&zext(&mant_lo, fw), &cst(ADD_G as u128, 16));
+    let lo_field = lshr(&lo_ext, &diff);
+    let mask = sub(&shl(&cst(1, fw), &diff), &cst(1, fw));
+    let sticky = ne(&band(&lo_ext, &mask), &cst(0, fw));
+    let hi_e = concat(&hi_field, &cst(0, 1));
+    let lo_e = concat(&lo_field, &sticky);
+    let same_sign = eq(&sign_hi, &sign_lo);
+    let ge = uge(&hi_e, &lo_e);
+    let raw = ite(&ge, &sub(&hi_e, &lo_e), &sub(&lo_e, &hi_e));
+    let mw = fw + 2;
+    let mag = ite(
+        &same_sign,
+        &add(&zext(&hi_e, mw), &zext(&lo_e, mw)),
+        &zext(&raw, mw),
+    );
+    let res_sign = ite(&same_sign, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
+    let e0 = sub(&eunb_hi, &cst((ADD_G + 1) as u128, 16));
+    let (rounded, ovf, unf, inx) = normround_flags(&res_sign, &mag, &e0);
+    let cancel = and(&bnot(&same_sign), &eq(&raw, &cst(0, fw + 1)));
+    let finite = ite(&cancel, &cst(0, 32), &rounded);
+    let both_inf = and(&da.is_inf, &db.is_inf);
+    let inf_a = concat(&da.sign, &concat(&cst(0xFF, 8), &cst(0, 23)));
+    let inf_b = concat(&db.sign, &concat(&cst(0xFF, 8), &cst(0, 23)));
+    let value = ite(
+        &or(&da.is_nan, &db.is_nan),
+        &n,
+        &ite(
+            &both_inf,
+            &ite(&eq(&da.sign, &db.sign), &inf_a, &n),
+            &ite(&da.is_inf, &inf_a, &ite(&db.is_inf, &inf_b, &finite)),
+        ),
+    );
+    // flags fire only on the genuine finite (non-cancelling) datapath
+    let is_special = or(&or(&da.is_nan, &db.is_nan), &or(&da.is_inf, &db.is_inf));
+    let finite_path = and(&bnot(&is_special), &bnot(&cancel));
+    let f_overflow = and(&finite_path, &ovf);
+    let f_underflow = and(&finite_path, &unf);
+    let f_inexact = and(&finite_path, &inx);
+    let f_invalid = and(&both_inf, &ne(&da.sign, &db.sign)); // ∞ + (−∞)
+    let packed = concat(
+        &f_inexact,
+        &concat(
+            &f_invalid,
+            &concat(&f_underflow, &concat(&f_overflow, &value)),
+        ),
+    );
+    FpFn::new("arch_f32_add_checked", &[("a", 32), ("b", 32)], 36, packed)
+}
+
 fn fma_f32(p: FpCompat) -> FpFn {
     let a = var("a", 32);
     let b = var("b", 32);
@@ -1233,6 +1365,7 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
         f32_mul(p),
         f32_add_core("arch_f32_add", false, p),
         f32_add_core("arch_f32_sub", true, p),
+        f32_add_checked(p),
         fma_f32(p),
         bf16_to_f32(p),
         f32_to_bf16(p),
