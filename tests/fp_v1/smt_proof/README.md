@@ -286,11 +286,15 @@ silently taking the f32 branch.
 
 `arch build --staged-ops` cuts a combinational FP operator's dataflow graph into
 a registered pipeline so the design clocks faster (`fma<pipelined, 6>` ~ 260 MHz
-vs ~180 MHz single-cycle). The proof obligation — *stated but deferred* by `arch
-formal` (`src/formal.rs`: "the staged datapath and its equivalence proof
-obligation land in a later phase") — is that the staged datapath, sampled at its
-latency `L`, computes exactly the single-cycle operator's correctly-rounded
-result **for all inputs**. Until now that rested on a prose "by construction"
+vs ~180 MHz single-cycle). The proof obligation is that the staged datapath,
+sampled at its latency `L`, computes exactly the single-cycle operator's
+correctly-rounded result **for all inputs**. `arch formal` used to *refuse* any
+design containing a `<pipelined, N>` call rather than encode it as an unverified
+pipeline; with this proof discharged, the encoder now treats the pipelined call
+as the single-cycle operator it is proven equal to, fed into the pipe_reg the
+formal model already delays by `N` cycles (see `formal_pipelined_fma_*` in
+`tests/formal_test.rs`, which proves the pipelined fma equals the combinational
+fma delayed `N` cycles, inside `arch formal` itself). Until now that rested on a prose "by construction"
 argument plus randomized lockstep *simulation*
 (`tests/pipelined_fma_lockstep_test.rs`) — samples, not a proof. Simulation had
 already missed one bug of this class (the scaled_dot scale-byte off-by-one,

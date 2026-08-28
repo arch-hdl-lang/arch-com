@@ -1,0 +1,21 @@
+// `arch formal` now discharges `op<pipelined, N>` by encoding it as the
+// single-cycle operator it is proven equal to (arch#968: Route A SMT miter +
+// Route B Lean retiming lemma). This design checks that discharge end to end:
+// `y` is the pipelined fma into a 6-deep pipe_reg; `z` is the *combinational*
+// fma delayed through an identical 6-deep pipe_reg. The retiming lemma says
+// they must agree at every cycle. The `is_nan` disjunct makes the equality
+// bit-exact rather than IEEE (NaN != NaN under `==`).
+module PipelinedFmaEquiv
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port a: in FP32;
+  port b: in FP32;
+  port c: in FP32;
+  port y: out pipe_reg<FP32, 6> reset rst => 0.0;
+  port z: out pipe_reg<FP32, 6> reset rst => 0.0;
+  seq on clk rising
+    y@6 <= fma<pipelined, 6>(a, b, c);
+    z@6 <= fma(a, b, c);
+  end seq
+  assert pipelined_eq_delayed_comb: (y == z) or (is_nan(y) and is_nan(z));
+end module PipelinedFmaEquiv

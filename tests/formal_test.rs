@@ -238,6 +238,33 @@ fn formal_guard_fail() {
     assert!(out.contains("REFUTED"));
 }
 
+// ── Pipelined operators (`op<pipelined, N>`) ────────────────────────────────
+// `arch formal` used to refuse any design containing a `<pipelined, N>` call.
+// Since arch#968 proved the retimed staged datapath bit-identical to the
+// single-cycle operator for all inputs (Route A SMT miter + Route B Lean
+// retiming lemma), the encoder discharges it as that comb operator, fed into
+// the pipe_reg the formal model already delays by N cycles.
+
+/// The pipelined fma equals the *combinational* fma delayed through an
+/// identical N-deep pipe_reg — proven for all inputs. This is the whole
+/// discharge in one property: it fails (a) if `arch formal` still refuses the
+/// pipelined call, (b) if the call were stubbed to anything but the fma, or
+/// (c) if the pipeline latency were mismodeled (a wrong N refutes it).
+#[test]
+fn formal_pipelined_fma_equals_delayed_comb() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    let (code, out) = run_formal("tests/formal/pipelined_fma_equiv.arch", &["--bound", "20"]);
+    assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
+    assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
+    assert!(
+        !out.contains("not yet supported"),
+        "`arch formal` must no longer refuse pipelined operators:\n{out}"
+    );
+}
+
 #[test]
 fn formal_emit_smt_file() {
     if !z3_available() {

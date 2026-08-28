@@ -2456,21 +2456,29 @@ impl<'a> FormalCtx<'a> {
                 expr.span,
             )),
             LatencyAt(inner, _) => self.encode_raw(inner, t),
-            // `fma<pipelined, N>(...)` — the retimed staged datapath (and
-            // its sequential-equivalence proof obligation vs. the trusted
-            // comb operator) is proposal phase 3
-            // (doc/proposal_pipelined_operators.md), not yet implemented.
-            // Reject explicitly rather than silently encoding it as the
-            // comb operator, which would misrepresent an unverified
-            // pipeline as formally checked.
-            PipelinedCall(name, _, stages) => Err(CompileError::general(
-                &format!(
-                    "`{name}<pipelined, {stages}>(...)` is not yet supported by `arch formal` \
-                     — the staged datapath and its equivalence proof obligation land in a \
-                     later phase of doc/proposal_pipelined_operators.md"
-                ),
-                expr.span,
-            )),
+            // `op<pipelined, N>(...)` — the retimed staged datapath is proven
+            // bit-identical to the single-cycle `op` for every input: the SMT
+            // miter shows the register-shorted transfer function equals the
+            // comb operator's model and the pipeline is balanced (Route A,
+            // tests/fp_v1/smt_proof/staged_ops_miter.sh), and the Lean retiming
+            // lemma bridges that to `output[t+N] = op(input[t])` (Route B,
+            // proofs/lean_fp_equiv/ArchFpEquiv/StagedPipeline.lean; arch#968).
+            // So encode it as exactly that comb operator — the value the
+            // pipeline delivers. The earlier refusal was to avoid
+            // misrepresenting an *unverified* pipeline as formally checked;
+            // that verification now exists, so the comb encoding is faithful.
+            // The pipe_reg latency is modeled the same way `arch formal` v1
+            // models every `@N` register — the pre-existing single-cycle
+            // approximation shared by all pipe_regs, pipelined or not — not a
+            // new approximation introduced here.
+            PipelinedCall(name, args, _stages) => {
+                let comb = Expr {
+                    kind: ExprKind::FunctionCall(name.clone(), args.clone()),
+                    span: expr.span,
+                    parenthesized: expr.parenthesized,
+                };
+                self.encode_raw(&comb, t)
+            }
             // SVA `##N expr` — forward cycle-shift. Encode `expr` at
             // cycle `t + N`. run_property clamps max_t so this never
             // goes out of the unrolled range.
