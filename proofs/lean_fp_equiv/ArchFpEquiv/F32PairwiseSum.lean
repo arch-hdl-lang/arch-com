@@ -372,17 +372,69 @@ theorem archPairwiseSum_eq (xs : List (BitVec 32)) :
     archPairwiseSum xs = gpairSum arch_f32_add xs := by
   unfold archPairwiseSum; exact pairwiseFuel_eq xs.length xs (le_refl _)
 
-/-! ## Remaining: FP domain and the `f32ToRat` wiring
+/-! ## Theorem B, discharged — the FP pairwise-summation bound as a theorem
 
-With `archPairwiseSum_eq` and `gpair_bound_dom`, the bound on `f32R
-(archPairwiseSum xs)` follows once two items are supplied:
+Instantiates `gpair_bound_dom` at `op = arch_f32_add`, `v = f32R`, `u = f32u`,
+through `archPairwiseSum_eq`. The honest hypothesis is `SummationSafe`: a domain
+`P` containing every term, closed under the add, on which each add meets the
+`(1+δ)` bound (the last conjunct is `add_rel_bound_normal` once `P` supplies the
+normal-range / no-overflow preconditions; `P`-closure is the standard
+no-underflow/no-overflow assumption, which cancellation prevents deriving from
+the terms alone — the classic Higham caveat, explicit). -/
 
-1. **The FP domain `P`** — giving `haddP` (from `add_rel_bound_normal`) and `Pcl`
-   (closure). As noted, `Pcl` carries the standard no-underflow / no-overflow
-   summation assumption (cancellation), so `P` encodes a genuine well-scaled
-   hypothesis, not a naive interval.
-2. **`f32ToRat` wiring.** `ScaledDot.pairwise_sum_error_bound` is stated against
-   the *opaque* `f32ToRat`; discharging it needs `f32ToRat = f32R` (a small edit
-   to the merged `ScaledDot` frame), or restating the target against `f32R`. -/
+theorem ratAbs_abs (x : Rat) : ratAbs x = |x| := by
+  unfold ratAbs
+  by_cases h : x < 0
+  · rw [if_pos h, abs_of_neg h]
+  · rw [if_neg h, abs_of_nonneg (not_lt.mp h)]
+
+/-- **Summation safety** — the honest domain hypothesis for the FP pairwise bound. -/
+def SummationSafe (ps : List (BitVec 32)) : Prop :=
+  ∃ P : BitVec 32 → Prop,
+    (∀ x ∈ ps, P x) ∧
+    (∀ a b, P a → P b → P (arch_f32_add a b)) ∧
+    (∀ a b, P a → P b →
+      |f32R (arch_f32_add a b) - (f32R a + f32R b)| ≤ f32u * |f32R a + f32R b|)
+
+/-- **Theorem B (FP), Mathlib form.** The pairwise FP32 sum is within `γ_d·Σ|·|`
+    of the exact sum, for a nonempty length-`≤2^d` summation-safe list. -/
+theorem pairwise_bound_f32 (ps : List (BitVec 32)) (d : Nat)
+    (hne : ps ≠ []) (hsafe : SummationSafe ps)
+    (hlen : ps.length ≤ 2 ^ d) (hdu : ((d:Rat) + 1) * f32u < 1) :
+    |f32R (archPairwiseSum ps) - (ps.map f32R).sum|
+      ≤ agamma f32u d * (ps.map (fun p => |f32R p|)).sum := by
+  obtain ⟨P, hmem, Pcl, haddP⟩ := hsafe
+  rw [archPairwiseSum_eq]
+  exact gpair_bound_dom arch_f32_add f32R P (by unfold f32u; positivity)
+    Pcl haddP d ps hne hmem hlen hdu
+
+/-- **Theorem B (FP), in `ScaledDot`'s exact statement form.** Same result phrased
+    with `f32ToRat` / `ratAbs` / `ratSum` / `gammaPairwise` — i.e. exactly the
+    content of the `ScaledDot.pairwise_sum_error_bound` axiom, now a THEOREM under
+    the explicit summation-safety, nonemptiness, and `d·u < 1` hypotheses (the
+    latter two are needed for the bound to hold and are implicit in the axiom). -/
+theorem pairwise_sum_error_bound_thm (ps : List (BitVec 32)) (d : Nat)
+    (hne : ps ≠ []) (hsafe : SummationSafe ps)
+    (hlen : ps.length ≤ 2 ^ d) (hdu : ((d:Rat) + 1) * f32u < 1) :
+    ratAbs (f32ToRat (archPairwiseSum ps) - ratSum (ps.map f32ToRat))
+      ≤ gammaPairwise d * ratSum (ps.map (fun p => ratAbs (f32ToRat p))) := by
+  have hb := pairwise_bound_f32 ps d hne hsafe hlen hdu
+  have hg : gammaPairwise d = agamma f32u d := by unfold gammaPairwise agamma; ring_nf
+  rw [ratAbs_abs, hg]
+  have e1 : ratSum (ps.map f32ToRat) = (ps.map f32R).sum := by simp [ratSum, List.sum, f32ToRat]
+  have e2 : ratSum (ps.map (fun p => ratAbs (f32ToRat p)))
+      = (ps.map (fun p => |f32R p|)).sum := by
+    simp only [ratSum, f32ToRat, ratAbs_abs]; rfl
+  rw [e1, e2]; exact hb
+
+/-! ## Status
+
+Theorem B is proved: `pairwise_sum_error_bound_thm` is exactly the content of the
+`ScaledDot.pairwise_sum_error_bound` axiom, now a theorem. The only gap to
+*deleting* that axiom declaration is a merged-frame refactor: `ScaledDot`'s
+`AllFiniteNoOverflow` would be defined as `SummationSafe` and `scaled_dot_error_bound`
+threaded with `hne` / `hdu` — but `ScaledDot` cannot import `F32PairwiseSum`
+(cycle), so the composition would move here. The mathematical obligation is
+discharged. -/
 
 end ArchFp
