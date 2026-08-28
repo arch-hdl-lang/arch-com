@@ -281,3 +281,52 @@ silently taking the f32 branch.
   clamp or either side of the floor bound.
 
 - The renderer miter gains 8 rows (widen + narrow for all four MX formats).
+
+## Retimed staged operators — latency equivalence (`staged_ops_miter.sh`) — 2026-08-28
+
+`arch build --staged-ops` cuts a combinational FP operator's dataflow graph into
+a registered pipeline so the design clocks faster (`fma<pipelined, 6>` ~ 260 MHz
+vs ~180 MHz single-cycle). The proof obligation — *stated but deferred* by `arch
+formal` (`src/formal.rs`: "the staged datapath and its equivalence proof
+obligation land in a later phase") — is that the staged datapath, sampled at its
+latency `L`, computes exactly the single-cycle operator's correctly-rounded
+result **for all inputs**. Until now that rested on a prose "by construction"
+argument plus randomized lockstep *simulation*
+(`tests/pipelined_fma_lockstep_test.rs`) — samples, not a proof. Simulation had
+already missed one bug of this class (the scaled_dot scale-byte off-by-one,
+arch#955 follow-up), which is invisible under stable/low-entropy stimulus.
+
+The obligation decomposes into two independently-checkable lemmas:
+
+| Lemma | What | How | Cost |
+|---|---|---|---|
+| **B — timing** | staged module is a *balanced* feed-forward pipeline: every input→output path crosses the same `L` registers | levelize the netlist, assert min FF-depth = max FF-depth = `L` for every output bit (`tests/fp_v1/synth/pipeline_balance.py`) | structural, **no solver** |
+| **A — arithmetic** | register-shorted transfer function (`Q:=D`) equals the operator's `render_smt` model | combinational miter vs `arch_fma_f32`, reusing the single-cycle fma alignment case-split | SMT, 510 cases |
+
+Balanced-at-`L` (B) plus register-shorted-function-equals-op (A) give, for a
+feed-forward pipeline, `output[t+L] == op(input[t])` for all inputs. The
+"balanced feed-forward ⟹ transfer = `L`-delayed comb function" step is the
+standard retiming fact; the Lean development (`proofs/lean_fp_equiv`, Route B)
+formalizes it once so A+B become a complete machine-checked proof for every
+shape. Lemma B directly rules out the skew class Lemma A alone cannot see (a
+pipeline that computes the right function but delivers a bit one cycle early
+passes A and fails B).
+
+**Results (`fma<pipelined, 6>`, 2026-08-28):**
+- Lemma B: `ArchF32FmaStaged6` is **balanced at latency 5** (the 6th cycle to the
+  user-visible output is the wrapper's reset/valid register — an ordinary
+  `pipe_reg`, covered by the flat renderer miters). All 32 output bits: min = max
+  FF-depth = 5.
+- Lemma A: **all 510 alignment cases `unsat`** — the register-shorted staged fma
+  is bit-identical to `arch_fma_f32`.
+- **Non-vacuity**: the register-shorted miter goes `sat` for a wrong-op spec
+  (`arch_f32_mul`) and for a single-bit corruption of `y`; `pipeline_balance.py`
+  reports `UNBALANCED [1,2]` for a hand-skewed two-stage pipeline and the correct
+  latency for the balanced one; sampling at the wrong depth (L=4 or L=6) is `sat`.
+
+Only `fma<pipelined, 6>` is surface-emittable on `main`; the staged block
+operators (`scaled_quantize` / `scaled_dot`, arch#955 / PR #960) get rows in the
+`ops` table as they land — the `ArchF32MulStaged4` leaf they share is a
+split-free mul miter. A bounded slice runs under `cargo test`
+(`tests/staged_fma_equivalence_miter_test.rs`) when yosys/z3 are present; the
+full 510-case proof is the manual long-verification.
