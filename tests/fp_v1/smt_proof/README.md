@@ -346,12 +346,22 @@ composition* of primitives as the comb operator; the primitives' own correctness
 separately by the renderer miters above, at native 32-bit width. Non-vacuity is
 self-checked: corrupting one tree add flips the verdict to `sat`.
 
-**`scaled_quantize` stays `balance-only`** (Lemma A deferred): its per-element
-multiplies are done by staged-multiply *instances* (`ArchF32MulStaged4`), a
-two-level structure the straight-line UF extractor doesn't cover, and its
-parallel-uniform-depth datapath is well covered by balance + the throughput
-lockstep. `scaled_dot` is emittable only for power-of-two block sizes (the type
-checker rejects the rest, arch#960).
+**The shared staged-multiply leaf `ArchF32MulStaged4`** (row `mulstaged4`) gets
+its own Lemma A + Lemma B: it is balanced at latency 3, and its register-shorted
+function equals `arch_f32_mul` — a *single* multiply, so a direct bit-blast miter
+clears in seconds (no split). Every staged block op that instantiates it (the
+eight parallel multiplies of `scaled_quantize`, etc.) therefore builds on a
+proven-correct pipelined multiply.
+
+**`scaled_quantize` stays `balance-only`** at the whole-operator level (Lemma A
+deferred). With the multiply leaf now proven, the remaining gap is only its
+*composition* — a `for`-loop max-reduction to pick the block scale, a `generate`
+array of the (proven) multiply instances, and `? :` special-case narrowing.
+That's beyond the straight-line UF extractor (which handles the `scaled_dot`
+tree); covering it would need loop/generate/conditional elaboration. Balance +
+the throughput lockstep + the proven multiply leaf cover it in the meantime.
+`scaled_dot` is emittable only for power-of-two block sizes (the type checker
+rejects the rest, arch#960).
 
 Composing the pieces, the staged `scaled_dot` equivalence is now machine-checked
 end to end: Lemma A (UF — same composition) ∘ leaf primitive correctness

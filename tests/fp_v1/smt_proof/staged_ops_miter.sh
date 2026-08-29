@@ -82,10 +82,12 @@ DUMP_FP_BIN="${DUMP_FP_BIN:-$(dirname "$ARCH_BIN")/examples/dump_fp}"
 #
 # `L` is the staged *submodule* latency (the user-visible pipe_reg adds one more
 # cycle via the wrapper's reset/valid register, an ordinary pipe_reg cascade).
+# NAME | staged module | L | render_smt fn | mode | args (space-sep in-ports)
 ops=(
-  "fma6|ArchF32FmaStaged6|5|arch_fma_f32|fma"
-  "dot8|arch_scaled_dot_e2m1_8_e8m0_staged6|5|-|uf-dot"
-  "quant8|arch_scaled_quantize_e2m1_8_e8m0_floor_rne_staged5|4|-|balance-only"
+  "fma6|ArchF32FmaStaged6|5|arch_fma_f32|fma|a b c"
+  "mulstaged4|ArchF32MulStaged4|3|arch_f32_mul|mono|a b"
+  "dot8|arch_scaled_dot_e2m1_8_e8m0_staged6|5|-|uf-dot|"
+  "quant8|arch_scaled_quantize_e2m1_8_e8m0_floor_rne_staged5|4|-|balance-only|"
 )
 
 # combinationalize: within a staged submodule's always_ff blocks (which are pure
@@ -105,7 +107,8 @@ combinationalize () { # $1 = infile  $2 = module  $3 = outfile
 echo "# module                                        lemmaB(balance)  lemmaA(arith)    L"
 fail=0
 for spec in "${ops[@]}"; do
-  IFS='|' read -r name mod L fn split <<<"$spec"
+  IFS='|' read -r name mod L fn split args <<<"$spec"
+  [[ -n "${MITER_ONLY:-}" && "$name" != "$MITER_ONLY" ]] && continue
   d="$outdir/$name"; mkdir -p "$d"
 
   # emit the staged SV for this operator
@@ -123,6 +126,25 @@ module ${name}_top
     y@6 <= fma<pipelined, 6>(a, b, c);
   end seq
 end module ${name}_top
+ARCH
+      ;;
+    mulstaged4)
+      # ArchF32MulStaged4 is the shared staged-multiply leaf; it is emitted as a
+      # submodule of any staged block op. Emit a staged quantize and pick it out
+      # with `hierarchy -top ArchF32MulStaged4`.
+      cat > "$d/src.arch" <<'ARCH'
+package QF
+  type B4 = ScaledVec<FP4E2M1, 8, E8M0>;
+end package QF
+module mulstaged4_top
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port v: in Vec<FP32, 8>;
+  port y: out pipe_reg<B4, 5> reset rst => 0;
+  seq on clk rising
+    y@5 <= scaled_quantize<B4, pipelined, 5>(v);
+  end seq
+end module mulstaged4_top
 ARCH
       ;;
     dot8)
@@ -220,14 +242,16 @@ src = re.sub(r'\(define-fun \|%s_t\|[^\n]*\n' % mod, '', src)
 open(f'{d}/comb.qfbv.smt2', 'w').write(src)
 PYSPEC
 
+  # arity-generic: each in-port p -> a define-fun `pp` (a->aa, b->bb, c->cc), and
+  # the spec application `($fn aa bb ...)`. The fma split below reuses aa/bb/cc.
+  argapp=""
   {
     cat "$outdir/arch_defs.smt2" "$d/comb.qfbv.smt2"
-    cat <<SPL
-(define-fun aa () (_ BitVec 32) |${mod}_n a|)
-(define-fun bb () (_ BitVec 32) |${mod}_n b|)
-(define-fun cc () (_ BitVec 32) |${mod}_n c|)
-(assert (not (= |${mod}_n y| ($fn aa bb cc))))
-SPL
+    for p in $args; do
+      echo "(define-fun ${p}${p} () (_ BitVec 32) |${mod}_n $p|)"
+      argapp+=" ${p}${p}"
+    done
+    echo "(assert (not (= |${mod}_n y| ($fn$argapp))))"
   } > "$d/miter_body.smt2"
 
   if [[ "$split" == "fma" ]]; then
