@@ -84,7 +84,7 @@ DUMP_FP_BIN="${DUMP_FP_BIN:-$(dirname "$ARCH_BIN")/examples/dump_fp}"
 # cycle via the wrapper's reset/valid register, an ordinary pipe_reg cascade).
 ops=(
   "fma6|ArchF32FmaStaged6|5|arch_fma_f32|fma"
-  "dot8|arch_scaled_dot_e2m1_8_e8m0_staged6|5|-|balance-only"
+  "dot8|arch_scaled_dot_e2m1_8_e8m0_staged6|5|-|uf-dot"
   "quant8|arch_scaled_quantize_e2m1_8_e8m0_floor_rne_staged5|4|-|balance-only"
 )
 
@@ -171,11 +171,37 @@ ARCH
 
   # ── Lemma A: register-shorted arithmetic miter vs render_smt ──────────────
   if [[ "$split" == "balance-only" ]]; then
-    # Block operators: Lemma A is SAT-hard (see the operator table). The balance
-    # check above is the structural guard; arithmetic equivalence rests on the
-    # comb schedule miter + the by-construction/Lean retiming composition.
+    # scaled_quantize: parallel per-element multiplies via staged-multiply
+    # INSTANCES (two-level), so the UF datapath extractor below does not apply.
+    # Balance (above) is the structural guard; arithmetic rests on the throughput
+    # lockstep + the by-construction/Lean retiming composition.
     vA="deferred(block)"
     printf "%-46s %-16s %-16s %s\n" "$mod" "$vB" "$vA" "$L"
+    continue
+  fi
+  if [[ "$split" == "uf-dot" ]]; then
+    # scaled_dot Lemma A via uninterpreted-function abstraction: the tree is a
+    # straight line of `arch_f32_add/mul/*_to_f32` calls, so declaring those
+    # primitives uninterpreted reduces the staged-vs-comb miter to congruence
+    # over the wiring — `unsat` in milliseconds where the bit-blasted version
+    # times out even at N=2. The primitives' own correctness is discharged by
+    # renderer_miter.sh. combfn = staged module name minus the `_stagedN` tag.
+    combfn="${mod%_staged*}"
+    cat > "$d/comb_ref.arch" <<'ARCH'
+package DF
+  type B8 = ScaledVec<FP4E2M1, 8, E8M0>;
+end package DF
+module dot8_comb
+  port a: in B8;
+  port b: in B8;
+  port o: out FP32;
+  comb o = scaled_dot(a, b); end comb
+end module dot8_comb
+ARCH
+    "$ARCH_BIN" build "$d/comb_ref.arch" -o "$d/comb_ref.sv" >/dev/null 2>&1
+    vA=$(python3 "$here/../synth/uf_datapath.py" "$d/comb_ref.sv" "$combfn" "$d/staged.sv" "$mod" 2>/dev/null)
+    [[ "$vA" == "unsat" ]] || fail=1
+    printf "%-46s %-16s %-16s %s\n" "$mod" "$vB" "unsat(uf)" "$L"
     continue
   fi
   combinationalize "$d/staged.sv" "$mod" "$d/comb.v"
