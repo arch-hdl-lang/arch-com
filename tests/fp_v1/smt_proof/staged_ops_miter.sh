@@ -57,16 +57,35 @@ DUMP_FP_BIN="${DUMP_FP_BIN:-$(dirname "$ARCH_BIN")/examples/dump_fp}"
 
 # ── operator table ─────────────────────────────────────────────────────────
 # NAME | staged module | latency L (input->out of the staged submodule) | \
-#   render_smt fn | split? (fma alignment split | none)
+#   render_smt fn | mode
 #
-# Only `fma<pipelined,6>` is surface-emittable on main today; the staged block
-# operators (scaled_quantize / scaled_dot) land with arch#955 (PR #960) and get
-# rows here as they merge — the ArchF32MulStaged4 leaf they share is a plain
-# split-free mul miter. The staged fma submodule is latency 5; the extra cycle
-# to the user-visible latency-6 output is the wrapper's reset/valid register,
-# which is an ordinary pipe_reg cascade (verified by the flat renderer miters).
+# mode selects how the arithmetic half (Lemma A) is discharged:
+#   fma          — register-shorted miter vs `arch_fma_f32`, alignment split
+#   balance-only — Lemma B only; Lemma A deferred (see below)
+#
+# The block operators (`scaled_dot`, `scaled_quantize`, arch#955) run
+# `balance-only`. Their arithmetic Lemma A — the register-shorted transfer
+# function equals the combinational block operator — is SAT-hard: mitering the
+# two independently bit-blasted `f32_add` reduction trees has no single
+# collapsing split (unlike fma's one alignment gap), and times out even at N=2.
+# For the block ops the equivalence rests instead on the composition of:
+#   * Lemma B here (the staged pipeline is balanced — the check that catches the
+#     non-power-of-two skew of arch#960, and skew generally);
+#   * the *combinational* block schedule miter (`scaled_dot_miter.sh`, Theorem A
+#     — emitted comb SV == the balanced-pairwise + one-at-a-time-scale schedule);
+#   * the by-construction identity (the staged emitter cuts that same comb IR
+#     into stages without changing operations) formalized generally by the Lean
+#     retiming lemma (proofs/lean_fp_equiv/ArchFpEquiv/StagedPipeline.lean).
+# `scaled_dot` is emittable only for power-of-two block sizes (the type checker
+# rejects the rest — arch#960); `scaled_quantize`'s per-element multiplies are
+# parallel at uniform depth, so any N balances.
+#
+# `L` is the staged *submodule* latency (the user-visible pipe_reg adds one more
+# cycle via the wrapper's reset/valid register, an ordinary pipe_reg cascade).
 ops=(
   "fma6|ArchF32FmaStaged6|5|arch_fma_f32|fma"
+  "dot8|arch_scaled_dot_e2m1_8_e8m0_staged6|5|-|balance-only"
+  "quant8|arch_scaled_quantize_e2m1_8_e8m0_floor_rne_staged5|4|-|balance-only"
 )
 
 # combinationalize: within a staged submodule's always_ff blocks (which are pure
@@ -83,7 +102,7 @@ combinationalize () { # $1 = infile  $2 = module  $3 = outfile
   ' "$1" > "$3"
 }
 
-echo "# module              lemmaB(balance)  lemmaA(arith)   L"
+echo "# module                                        lemmaB(balance)  lemmaA(arith)    L"
 fail=0
 for spec in "${ops[@]}"; do
   IFS='|' read -r name mod L fn split <<<"$spec"
@@ -106,6 +125,39 @@ module ${name}_top
 end module ${name}_top
 ARCH
       ;;
+    dot8)
+      cat > "$d/src.arch" <<'ARCH'
+package DF
+  type B8 = ScaledVec<FP4E2M1, 8, E8M0>;
+end package DF
+module dot8_top
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port a: in B8;
+  port b: in B8;
+  port o: out pipe_reg<FP32, 6> reset rst => 0.0;
+  seq on clk rising
+    o@6 <= scaled_dot<pipelined, 6>(a, b);
+  end seq
+end module dot8_top
+ARCH
+      ;;
+    quant8)
+      cat > "$d/src.arch" <<'ARCH'
+package QF
+  type B4 = ScaledVec<FP4E2M1, 8, E8M0>;
+end package QF
+module quant8_top
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port v: in Vec<FP32, 8>;
+  port y: out pipe_reg<B4, 5> reset rst => 0;
+  seq on clk rising
+    y@5 <= scaled_quantize<B4, pipelined, 5>(v);
+  end seq
+end module quant8_top
+ARCH
+      ;;
   esac
   "$ARCH_BIN" build --staged-ops "$d/src.arch" -o "$d/staged.sv" >/dev/null 2>&1
 
@@ -118,6 +170,14 @@ ARCH
   fi
 
   # ── Lemma A: register-shorted arithmetic miter vs render_smt ──────────────
+  if [[ "$split" == "balance-only" ]]; then
+    # Block operators: Lemma A is SAT-hard (see the operator table). The balance
+    # check above is the structural guard; arithmetic equivalence rests on the
+    # comb schedule miter + the by-construction/Lean retiming composition.
+    vA="deferred(block)"
+    printf "%-46s %-16s %-16s %s\n" "$mod" "$vB" "$vA" "$L"
+    continue
+  fi
   combinationalize "$d/staged.sv" "$mod" "$d/comb.v"
   yosys -q -p "read_verilog -sv $d/comb.v; hierarchy -top $mod; proc; flatten; opt_clean; check -assert; write_smt2 $d/comb.smt2" 2>/dev/null
   # specialize yosys's state sort away -> pure QF_BV (combinational: one state)
@@ -187,6 +247,6 @@ SPL
     [[ "$vA" == "unsat" ]] || fail=1
   fi
 
-  printf "%-20s %-16s %-14s %s\n" "$mod" "$vB" "$vA" "$L"
+  printf "%-46s %-16s %-16s %s\n" "$mod" "$vB" "$vA" "$L"
 done
 exit $fail
