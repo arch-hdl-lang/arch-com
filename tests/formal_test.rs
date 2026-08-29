@@ -265,6 +265,64 @@ fn formal_pipelined_fma_equals_delayed_comb() {
     );
 }
 
+/// The sibling `pipelined_fma_equiv.arch` uses `@6` on both sides, so its
+/// equality holds for any common latency — it proves value discharge but says
+/// nothing about latency. This test closes that gap two ways, one per latency
+/// guarantee:
+///
+///   1. The `pipe_reg` delay is a genuine N-stage chain, not free. The
+///      pipelined fma into a 6-deep pipe_reg vs the comb fma into a 5-deep one
+///      are a cycle apart, so the property REFUTES — and the counterexample
+///      carries the real per-stage registers. A collapsed/mismodeled pipeline
+///      latency would realign the delays and flip this to PROVED.
+///
+///   2. A `op<pipelined, N>` result can only bind to a matching-latency `@N`
+///      write. `y@3 <= fma<pipelined, 6>(...)` is rejected by the type checker
+///      ("latency-6 result bound at @3") before any solver runs — this is the
+///      mechanism that actually enforces the declared latency at the surface.
+#[test]
+fn formal_pipelined_fma_wrong_latency_is_caught() {
+    // Half 2 (typecheck rejection) is a front-end error and needs no solver,
+    // so assert it first and unconditionally.
+    let (code, out) = run_formal(
+        "tests/formal/pipelined_fma_wrong_binding_rejected.arch",
+        &["--bound", "4"],
+    );
+    assert_eq!(
+        code, 1,
+        "wrong-latency binding must be rejected at typecheck; got {code}\n{out}"
+    );
+    assert!(
+        out.contains("latency-6 result bound at @3"),
+        "expected the latency-mismatch diagnostic:\n{out}"
+    );
+
+    // Half 1 (REFUTED asymmetric delay) needs z3.
+    if !z3_available() {
+        eprintln!("skipping REFUTED half: z3 not in PATH");
+        return;
+    }
+    // Bound 8 is enough for the @6/@5 divergence to surface (it REFUTES at
+    // cycle 8) and keeps the query cheap (~2s) — well under the 60s per-query
+    // timeout even when `cargo test` runs many solver tests in parallel.
+    let (code, out) = run_formal(
+        "tests/formal/pipelined_fma_wrong_latency_refutes.arch",
+        &["--bound", "8"],
+    );
+    assert_eq!(
+        code, 1,
+        "asymmetric pipe_reg latency (@6 vs @5) must REFUTE; got {code}\n{out}"
+    );
+    assert!(out.contains("REFUTED"), "expected REFUTED:\n{out}");
+    // The counterexample must expose the genuine stage registers — proof the
+    // latency is modeled as an N-stage chain, not a single-cycle stand-in.
+    assert!(
+        out.contains("y_stg5") && out.contains("z_stg4"),
+        "counterexample must contain the real per-stage regs \
+         (6-deep `y`, 5-deep `z`):\n{out}"
+    );
+}
+
 #[test]
 fn formal_emit_smt_file() {
     if !z3_available() {

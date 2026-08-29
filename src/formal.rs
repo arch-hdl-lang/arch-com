@@ -2467,10 +2467,17 @@ impl<'a> FormalCtx<'a> {
             // pipeline delivers. The earlier refusal was to avoid
             // misrepresenting an *unverified* pipeline as formally checked;
             // that verification now exists, so the comb encoding is faithful.
-            // The pipe_reg latency is modeled the same way `arch formal` v1
-            // models every `@N` register — the pre-existing single-cycle
-            // approximation shared by all pipe_regs, pipelined or not — not a
-            // new approximation introduced here.
+            // Note this handler encodes only the VALUE; it ignores `_stages`.
+            // The N-cycle latency is carried entirely by the `pipe_reg<T, N>`
+            // that receives this value, which `arch formal` expands into N
+            // genuine chained stage registers — the same faithful delay it
+            // gives any `pipe_reg`, pipelined or not. That delay is a bit-exact
+            // N-stage register chain, NOT an approximation: a `pipe_reg`
+            // delayed @N is PROVED equal to an explicit N-deep reg chain and
+            // REFUTED (with the real stage regs in the counterexample) against
+            // an (N-1)-deep one. See tests/formal/pipelined_fma_equiv.arch
+            // (value discharge) and pipelined_fma_wrong_latency_refutes.arch
+            // (the modeled latency is genuinely N, not free).
             PipelinedCall(name, args, _stages) => {
                 let comb = Expr {
                     kind: ExprKind::FunctionCall(name.clone(), args.clone()),

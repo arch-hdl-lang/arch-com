@@ -1,0 +1,17 @@
+// A `op<pipelined, N>` result may only be bound to an `@N` write of matching
+// latency. This design binds a `fma<pipelined, 6>` result to a `@3` register,
+// which the type checker rejects ("latency-6 result bound at @3") — before any
+// solver runs. This is the mechanism that actually guarantees the declared
+// pipeline latency at the language surface; the formal encoder never has to
+// re-check it. Asserted in formal_test.rs (front-end error, z3 not required).
+module PipelinedFmaWrongBinding
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port a: in FP32;
+  port b: in FP32;
+  port c: in FP32;
+  port y: out pipe_reg<FP32, 6> reset rst => 0.0;
+  seq on clk rising
+    y@3 <= fma<pipelined, 6>(a, b, c);
+  end seq
+end module PipelinedFmaWrongBinding
