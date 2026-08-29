@@ -127,6 +127,101 @@ fn staged_fma_is_balanced_latency_5() {
     );
 }
 
+/// Emit `src` with `--staged-ops`, extract `module` via yosys, and assert the
+/// balance checker reports a uniform pipeline latency of `expect`. Shared by the
+/// staged block-operator Lemma-B guards below. Skips (returns) if the toolchain
+/// is missing.
+fn assert_staged_balanced(src: &str, module: &str, expect: u32) {
+    if !tool_ok("yosys") || !tool_ok("python3") {
+        eprintln!("skipping: yosys/python3 not available");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("m.arch");
+    std::fs::write(&arch_path, src).unwrap();
+    let sv = td.path().join("m.sv");
+    let out = arch()
+        .args(["build", "--staged-ops"])
+        .arg(&arch_path)
+        .arg("-o")
+        .arg(&sv)
+        .output()
+        .expect("run arch build --staged-ops");
+    assert!(
+        out.status.success(),
+        "arch build --staged-ops failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = td.path().join("m.json");
+    let ys = format!(
+        "read_verilog -sv {}; hierarchy -top {module}; proc; flatten; opt_clean; \
+         write_json {}",
+        sv.display(),
+        json.display()
+    );
+    let y = Command::new("yosys")
+        .args(["-q", "-p", &ys])
+        .output()
+        .unwrap();
+    assert!(
+        y.status.success(),
+        "yosys failed for {module}:\n{}",
+        String::from_utf8_lossy(&y.stderr)
+    );
+    let balance = repo_root().join("tests/fp_v1/synth/pipeline_balance.py");
+    let out = Command::new("python3")
+        .arg(&balance)
+        .arg(&json)
+        .arg(module)
+        .args(["--expect", &expect.to_string()])
+        .output()
+        .expect("run pipeline_balance.py");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "Lemma B FAILED — {module} is not a balanced latency-{expect} pipeline \
+         (skew is a silent miscompile — cf. the arch#960 non-power-of-two dot):\n{}\n{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Lemma B for the staged `scaled_dot` block operator (arch#955): the N products
+/// → `f32_add` reduction tree → scale multiplies must form a balanced pipeline.
+/// This is the exact check that catches the non-power-of-two skew of arch#960
+/// (there the type checker now rejects non-power-of-two sizes; a power-of-two
+/// block must stay balanced).
+#[test]
+fn staged_scaled_dot_is_balanced() {
+    assert_staged_balanced(
+        "package DF\n  type B8 = ScaledVec<FP4E2M1, 8, E8M0>;\nend package DF\n\
+         module Dot\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync, High>;\n\
+         \x20 port a: in B8;\n  port b: in B8;\n\
+         \x20 port o: out pipe_reg<FP32, 6> reset rst => 0.0;\n\
+         \x20 seq on clk rising\n    o@6 <= scaled_dot<pipelined, 6>(a, b);\n  end seq\n\
+         end module Dot\n",
+        "arch_scaled_dot_e2m1_8_e8m0_staged6",
+        5,
+    );
+}
+
+/// Lemma B for the staged `scaled_quantize` block operator (arch#955): its
+/// per-element multiplies run in parallel at uniform depth, so the staged
+/// pipeline is balanced.
+#[test]
+fn staged_scaled_quantize_is_balanced() {
+    assert_staged_balanced(
+        "package QF\n  type B4 = ScaledVec<FP4E2M1, 8, E8M0>;\nend package QF\n\
+         module Quant\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync, High>;\n\
+         \x20 port v: in Vec<FP32, 8>;\n\
+         \x20 port y: out pipe_reg<B4, 5> reset rst => 0;\n\
+         \x20 seq on clk rising\n    y@5 <= scaled_quantize<B4, pipelined, 5>(v);\n  end seq\n\
+         end module Quant\n",
+        "arch_scaled_quantize_e2m1_8_e8m0_floor_rne_staged5",
+        4,
+    );
+}
+
 /// Lemma A (smoke) — the register-shorted staged fma equals `arch_fma_f32` on a
 /// bounded slice of the alignment split. Requires yosys + z3 + python3 + the
 /// `dump_fp` example binary. The full 510-way proof is the manual

@@ -328,9 +328,21 @@ passes A and fails B).
   reports `UNBALANCED [1,2]` for a hand-skewed two-stage pipeline and the correct
   latency for the balanced one; sampling at the wrong depth (L=4 or L=6) is `sat`.
 
-Only `fma<pipelined, 6>` is surface-emittable on `main`; the staged block
-operators (`scaled_quantize` / `scaled_dot`, arch#955 / PR #960) get rows in the
-`ops` table as they land — the `ArchF32MulStaged4` leaf they share is a
-split-free mul miter. A bounded slice runs under `cargo test`
-(`tests/staged_fma_equivalence_miter_test.rs`) when yosys/z3 are present; the
-full 510-case proof is the manual long-verification.
+The staged block operators (`scaled_dot`, `scaled_quantize`, arch#955 / PR #960)
+now have rows too, in `balance-only` mode: Lemma B (balance) runs, Lemma A
+(arithmetic) is **deferred as SAT-hard**. Mitering the two independently
+bit-blasted `f32_add` reduction trees has no single collapsing split the way
+fma's one alignment gap does — it times out even at N=2. For the block ops the
+equivalence instead rests on the composition of (a) Lemma B here — which is
+exactly the check that catches the non-power-of-two skew of arch#960, and skew
+generally; (b) the *combinational* schedule miter (`scaled_dot_miter.sh`,
+Theorem A); and (c) the by-construction identity — the staged emitter cuts that
+comb IR into stages without changing operations — formalized generally by the
+Lean retiming lemma. `scaled_dot` is emittable only for power-of-two block sizes
+(the type checker rejects the rest, arch#960); `scaled_quantize`'s per-element
+multiplies are parallel at uniform depth, so any N balances.
+
+A bounded slice (fma Lemma B + a Lemma-A smoke, and both block-op balance
+checks) runs under `cargo test` (`tests/staged_fma_equivalence_miter_test.rs`)
+when yosys/z3 are present; the full 510-case fma proof is the manual
+long-verification.
