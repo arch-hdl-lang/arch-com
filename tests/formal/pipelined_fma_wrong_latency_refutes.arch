@@ -1,0 +1,25 @@
+// Companion to pipelined_fma_equiv.arch that closes the latency gap the
+// symmetric fixture leaves open. Here the pipelined fma feeds a 6-deep
+// pipe_reg (`y@6`) while the combinational fma feeds a 5-deep one (`z@5`), so
+// the two results are one cycle apart. This REFUTES — and the counterexample
+// contains the real per-stage registers (`y_stg1..y_stg5`, `z_stg1..z_stg4`),
+// showing `arch formal` models the `pipe_reg<T, N>` latency as a genuine
+// N-stage register chain rather than a free/single-cycle approximation. If the
+// pipelined path's latency were mismodeled (collapsed, or off by a stage), the
+// delays would realign and this property would flip to PROVED — so the REFUTED
+// verdict is what pins the latency down. The `is_nan` disjunct keeps the
+// compare bit-exact (NaN != NaN under `==`), matching the sibling fixture.
+module PipelinedFmaWrongLatency
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port a: in FP32;
+  port b: in FP32;
+  port c: in FP32;
+  port y: out pipe_reg<FP32, 6> reset rst => 0.0;
+  port z: out pipe_reg<FP32, 5> reset rst => 0.0;
+  seq on clk rising
+    y@6 <= fma<pipelined, 6>(a, b, c);
+    z@5 <= fma(a, b, c);
+  end seq
+  assert pipelined_neq_wrong_delay: (y == z) or (is_nan(y) and is_nan(z));
+end module PipelinedFmaWrongLatency

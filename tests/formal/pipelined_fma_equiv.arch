@@ -5,6 +5,20 @@
 // fma delayed through an identical 6-deep pipe_reg. The retiming lemma says
 // they must agree at every cycle. The `is_nan` disjunct makes the equality
 // bit-exact rather than IEEE (NaN != NaN under `==`).
+//
+// WHAT THIS FIXTURE PROVES: value-discharge — the pipelined call delivers the
+// same value as the combinational `fma` (any other value would REFUTE).
+//
+// WHAT IT DOES NOT PROVE: latency correctness. Both sides use `@6`, so the
+// delays cancel and the equality would hold for any common N — this fixture
+// alone cannot catch a mismodeled latency. The two latency guarantees are
+// covered separately:
+//   * that the pipe_reg delay is a genuine N-stage chain (not free) —
+//     pipelined_fma_wrong_latency_refutes.arch (`@6` vs `@5` REFUTES);
+//   * that `op<pipelined, N>` can only bind to an `@N` result of matching
+//     latency — enforced at typecheck (a `y@3 <= fma<pipelined, 6>(...)`
+//     binding is rejected), asserted in formal_test.rs.
+// Do not over-read this fixture as evidence of latency modeling.
 module PipelinedFmaEquiv
   port clk: in Clock<Sys>;
   port rst: in Reset<Sync, High>;
