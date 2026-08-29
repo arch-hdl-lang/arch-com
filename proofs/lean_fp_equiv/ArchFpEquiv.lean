@@ -26,3 +26,4 @@ import ArchFpEquiv.ScaledDot
 import ArchFpEquiv.F32AddCorrect
 import ArchFpEquiv.F32AddRel
 import ArchFpEquiv.StagedPipeline
+import ArchFpEquiv.F32PairwiseSum

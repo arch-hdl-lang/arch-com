@@ -1,4 +1,5 @@
 import ArchFpEquiv.Model
+import ArchFpEquiv.F32AddRel
 
 /-!
 # `scaled_dot` accumulation — the value/error frame (Phase 1 skeleton)
@@ -49,11 +50,11 @@ opaque widenElem : BitVec 8 → BitVec 32
 /-- Widen an E8M0 block *scale* to FP32 (a power of two, or NaN at `0xFF`). -/
 opaque widenScale : BitVec 8 → BitVec 32
 
-/-- Exact rational value of a **finite** FP32. Opaque in Phase 1; Phase 2
-    defines it (finite FP32 are dyadic rationals). On non-finite inputs the
-    value is unconstrained — every theorem below carries an all-finite
-    hypothesis, exactly as the block value rule scopes it. -/
-opaque f32ToRat : BitVec 32 → Rat
+/-- Exact rational value of a **finite** FP32 — now the concrete `F32AddRel.f32R`
+    (`f32SignedScaled z / 2¹⁴⁹`, a dyadic rational). Was `opaque` in Phase 1; this
+    wiring is what lets Theorem B (`F32PairwiseSum`) discharge
+    `pairwise_sum_error_bound`. `abbrev`, so it is definitionally `f32R`. -/
+@[reducible] noncomputable def f32ToRat : BitVec 32 → Rat := f32R
 
 /-! ## The datapath model — faithful to `dot_schedule` / `sv_dot` -/
 
@@ -126,7 +127,7 @@ def ratSum (xs : List Rat) : Rat := xs.foldr (· + ·) 0
     The `(sum) * Xa * Xb` grouping (left-associative) is deliberate: it matches
     the hardware's one-at-a-time scale application, so the composition proof
     chains through `ratAbs_sub_mul_le` per scale with no reassociation. -/
-def exactBlockDot (sa sb : BitVec 8) (ea eb : List (BitVec 8)) : Rat :=
+noncomputable def exactBlockDot (sa sb : BitVec 8) (ea eb : List (BitVec 8)) : Rat :=
   ratSum ((ea.zip eb).map (fun p => f32ToRat (widenElem p.1) * f32ToRat (widenElem p.2)))
     * f32ToRat (widenScale sa) * f32ToRat (widenScale sb)
 
