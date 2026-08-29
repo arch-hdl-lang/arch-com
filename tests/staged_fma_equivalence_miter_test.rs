@@ -345,3 +345,51 @@ fn staged_scaled_dot_uf_arithmetic_equivalence() {
         "UF miter is vacuous — a corrupted tree add did not change the verdict"
     );
 }
+
+/// Both lemmas for the shared staged-multiply leaf `ArchF32MulStaged4` (used by
+/// every staged block op): Lemma B (balanced at latency 3) and Lemma A (the
+/// register-shorted multiply equals `arch_f32_mul` — a single mul, tractable by
+/// direct bit-blast, no split). Runs the `mulstaged4` row of the miter script.
+/// Requires yosys + z3 + python3 + the dump_fp example.
+#[test]
+fn staged_mul_leaf_equivalence() {
+    if !tool_ok("yosys") || !tool_ok("z3") || !tool_ok("python3") {
+        eprintln!("skipping: yosys/z3/python3 not available");
+        return;
+    }
+    let dump_fp = PathBuf::from(env!("CARGO_BIN_EXE_arch"))
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join("dump_fp");
+    if !dump_fp.exists() {
+        eprintln!("skipping: dump_fp example not built");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let script = repo_root().join("tests/fp_v1/smt_proof/staged_ops_miter.sh");
+    let out = Command::new("bash")
+        .arg(&script)
+        .arg(td.path())
+        .env("ARCH_BIN", env!("CARGO_BIN_EXE_arch"))
+        .env("DUMP_FP_BIN", &dump_fp)
+        .env("MITER_ONLY", "mulstaged4")
+        .env("MITER_TIMEOUT", "300")
+        .output()
+        .expect("run staged_ops_miter.sh");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "staged mul miter FAILED:\n{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("ArchF32MulStaged4") && stdout.contains("balanced@3"),
+        "staged mul must be balanced at latency 3:\n{stdout}"
+    );
+    // the Lemma-A column for this row must be a clean `unsat` (not deferred/smoke)
+    assert!(
+        stdout.contains("balanced@3       unsat"),
+        "staged mul register-shorted != arch_f32_mul:\n{stdout}"
+    );
+}
