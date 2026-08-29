@@ -1371,6 +1371,12 @@ impl<'a> Codegen<'a> {
             .collect();
         for site in sites {
             self.staged_emitted.set(true);
+            // A site with an empty instance name contributes only its module
+            // text (a shared dependency such as the staged multiplier, emitted
+            // once via the deduped-by-sv_module prefix) — no instance line.
+            if site.instance.is_empty() {
+                continue;
+            }
             let w = if site.width == 1 {
                 String::new()
             } else {

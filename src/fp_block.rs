@@ -722,6 +722,152 @@ fn sv_dot(s: BlockShape) -> String {
     o
 }
 
+/// Group a dot reduction tree (`dot_schedule`) into dependency levels: an add
+/// is in level `L` iff both its inputs are produced in a level below `L`
+/// (products are level 0). Returns, per level, the list of `(dst, l, r)` adds.
+fn dot_levels(n: u32) -> Vec<Vec<(usize, usize, usize)>> {
+    let (adds, _last) = dot_schedule(n);
+    let mut level = vec![0i32; n as usize + adds.len()];
+    let mut out: Vec<Vec<(usize, usize, usize)>> = Vec::new();
+    for (k, (l, r)) in adds.iter().enumerate() {
+        let dst = n as usize + k;
+        let lv = level[*l].max(level[*r]) + 1;
+        level[dst] = lv;
+        let idx = (lv - 1) as usize;
+        while out.len() <= idx {
+            out.push(Vec::new());
+        }
+        out[idx].push((dst, *l, *r));
+    }
+    out
+}
+
+/// Binding latency of the staged (coarse per-level) `scaled_dot`: one products
+/// stage, one register per reduction-tree level, one first-scale-multiply
+/// stage, and the binding output register (the second scale multiply is the
+/// combinational tail). Verified against the prototype (arch#955).
+pub fn staged_dot_binding_latency(n: u32) -> u32 {
+    let tree_depth = dot_levels(n).len() as u32;
+    1 + tree_depth + 1 + 1
+}
+
+/// Staged (coarse per-level pipelined) `scaled_dot` for an E8M0-scale block
+/// (arch#955): N exact element products (stage 1), the `f32_add` reduction tree
+/// one level per stage, then the two power-of-two scale multiplies. One
+/// f32-op-level per stage, initiation interval one. Returns
+/// `(module_name, sv_text, binding_latency)`.
+pub fn sv_staged_dot(s: BlockShape) -> (String, String, u32) {
+    assert_eq!(
+        s.scale.quant_kernel(),
+        QuantKernel::ExactReciprocal,
+        "staged scaled_dot is implemented for E8M0 scales only (arch#955)"
+    );
+    let (bw, ew, sw) = (s.bits(), s.elem_width(), s.scale.width());
+    let (n, tag) = (s.n, s.elem_tag());
+    let levels = dot_levels(n);
+    let binding_latency = staged_dot_binding_latency(n);
+    let scale_stages = binding_latency - 1;
+    let base = BlockHelper::Dot { shape: s }.sv_name();
+    let name = format!("{base}_staged{binding_latency}");
+    let widen = s.scale.widen_fn();
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "// {name}: staged latency-{binding_latency} scaled_dot, II=1 (arch#955)."
+    );
+    let _ = writeln!(o, "module {name} (");
+    let _ = writeln!(o, "  input logic clk,");
+    let _ = writeln!(o, "  input logic {}a,", sv_w(bw));
+    let _ = writeln!(o, "  input logic {}b,", sv_w(bw));
+    let _ = writeln!(o, "  output logic {}y", sv_w(32));
+    let _ = writeln!(o, ");");
+    // stage 1: element products
+    for i in 0..n as usize {
+        let _ = writeln!(o, "  logic {}pp{i};", sv_w(32));
+    }
+    let _ = writeln!(o, "  always_comb begin");
+    for i in 0..n as usize {
+        let lo = i * ew as usize;
+        let _ = writeln!(
+            o,
+            "    pp{i} = arch_f32_mul(arch_{tag}_to_f32(a[{lo} +: {ew}]), arch_{tag}_to_f32(b[{lo} +: {ew}]));"
+        );
+    }
+    let _ = writeln!(o, "  end");
+    for i in 0..n as usize {
+        let _ = writeln!(o, "  logic {}r0_{i};", sv_w(32));
+    }
+    // scale bytes shifted through the pipeline to reach the two scale muls
+    for k in 1..=scale_stages {
+        let _ = writeln!(o, "  logic {}sda{k}; logic {}sdb{k};", sv_w(sw), sv_w(sw));
+    }
+    let _ = writeln!(o, "  always_ff @(posedge clk) begin");
+    for i in 0..n as usize {
+        let _ = writeln!(o, "    r0_{i} <= pp{i};");
+    }
+    let _ = writeln!(
+        o,
+        "    sda1 <= a[{}:{}]; sdb1 <= b[{}:{}];",
+        bw - 1,
+        bw - sw,
+        bw - 1,
+        bw - sw
+    );
+    for k in 2..=scale_stages {
+        let _ = writeln!(o, "    sda{k} <= sda{}; sdb{k} <= sdb{};", k - 1, k - 1);
+    }
+    let _ = writeln!(o, "  end");
+    // reduction tree: one stage per level; reg_of maps a value id to its
+    // current register name.
+    let mut reg_of: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+    for i in 0..n as usize {
+        reg_of.insert(i, format!("r0_{i}"));
+    }
+    for (li, level) in levels.iter().enumerate() {
+        let lvl = (li + 1) as u32;
+        for (dst, _, _) in level {
+            let _ = writeln!(o, "  logic {}c{lvl}_{dst};", sv_w(32));
+        }
+        let _ = writeln!(o, "  always_comb begin");
+        for (dst, l, r) in level {
+            let lr = reg_of[l].clone();
+            let rr = reg_of[r].clone();
+            let _ = writeln!(o, "    c{lvl}_{dst} = arch_f32_add({lr}, {rr});");
+        }
+        let _ = writeln!(o, "  end");
+        for (dst, _, _) in level {
+            let _ = writeln!(o, "  logic {}r{lvl}_{dst};", sv_w(32));
+        }
+        let _ = writeln!(o, "  always_ff @(posedge clk) begin");
+        for (dst, _, _) in level {
+            let _ = writeln!(o, "    r{lvl}_{dst} <= c{lvl}_{dst};");
+            reg_of.insert(*dst, format!("r{lvl}_{dst}"));
+        }
+        let _ = writeln!(o, "  end");
+    }
+    let (_, last) = dot_schedule(n);
+    let sum_reg = reg_of[&last].clone();
+    // scale multiply 1 (comb) then register. The tree output `sum_reg` lands
+    // after 1 (products) + tree_depth register edges, so scale-mul-1 must read
+    // the scale byte delayed by exactly that many edges — NOT `scale_stages`
+    // (one too many; that misaligns the block scale by a cycle, arch#955).
+    let sum_stage = 1 + dot_levels(n).len() as u32;
+    let _ = writeln!(o, "  logic {}m1;", sv_w(32));
+    let _ = writeln!(
+        o,
+        "  always_comb m1 = arch_f32_mul({sum_reg}, {widen}(sda{sum_stage}));"
+    );
+    let _ = writeln!(o, "  logic {}m1r;", sv_w(32));
+    let _ = writeln!(o, "  always_ff @(posedge clk) m1r <= m1;");
+    // scale multiply 2 (comb tail) to output
+    let _ = writeln!(
+        o,
+        "  always_comb y = arch_f32_mul(m1r, {widen}(sdb{scale_stages}));"
+    );
+    let _ = writeln!(o, "endmodule");
+    (name, o, binding_latency)
+}
+
 fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
     assert_eq!(
         round,
@@ -839,7 +985,191 @@ fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
     o
 }
 
+/// Staged (pipelined) `scaled_quantize` for an ExactReciprocal (E8M0) scale
+/// (arch#955). Emits an SV **module** (not a function): the 8 per-element
+/// FP32 multiplies — 84% of the block quantize's critical path — run through
+/// instances of the staged multiplier `F32_MUL_S4_SCHEDULE.sv_module`, while
+/// the shallow scale-compute and narrow/pack stay combinational around them.
+///
+/// Structure (validated in iverilog against the comb form, bit-exact, before
+/// this emitter was written):
+///
+/// ```text
+/// stage A (comb): amax → ecode → code → inv, scale_byte, is_special
+///   register {v, inv, scale_byte, is_special}                     [edge 1]
+/// N× ArchF32MulStaged4(clk, v_r[i], inv_r) → prod[i]     [3 internal edges]
+///   meta {scale_byte, is_special} carried through a 3-deep shift to align
+/// stage B (comb): elem[i] = is_special ? 0 : narrow(prod[i]); pack
+/// ```
+///
+/// Latency to the module's comb `y` is 4 (1 + the multiply's 3 register
+/// layers); the binding's `y@5` output register supplies the 5th edge — so
+/// this emits a latency-5 datapath. The multiplies run unconditionally; the
+/// NaN-block / zero-block cases are handled by masking the narrowed elements
+/// and overriding the scale byte, so no conditional datapath is needed.
+///
+/// Returns `(module_name, sv_text, binding_latency)`.
+/// Whether a shape can be staged (pipelined) today (arch#955): only
+/// ExactReciprocal (E8M0) scales, whose reciprocal-multiply datapath the
+/// staged emitter reproduces. BoundaryCompare scales (UE4M3) are a follow-up.
+pub fn staged_quantize_supported(s: BlockShape) -> bool {
+    s.scale.quant_kernel() == QuantKernel::ExactReciprocal
+}
+
+/// The binding latency `scaled_quantize<Fmt, pipelined, N>` requires: one
+/// scale-compute register stage, the staged multiply's register layers, and
+/// the binding's own output register. Fixed by `F32_MUL_S4_SCHEDULE` today.
+pub fn staged_quantize_binding_latency() -> u32 {
+    let mul_reg_layers = crate::pipelined_ops::F32_MUL_S4_SCHEDULE.main_starts.len() as u32 - 2;
+    1 + mul_reg_layers + 1
+}
+
+pub fn sv_staged_quantize(
+    s: BlockShape,
+    policy: ScalePolicy,
+    round: RoundMode,
+) -> (String, String, u32) {
+    assert_eq!(
+        round,
+        RoundMode::Rne,
+        "only RNE narrowing is lowered (arch#890)"
+    );
+    assert_eq!(
+        s.scale.quant_kernel(),
+        QuantKernel::ExactReciprocal,
+        "staged quantize is implemented for ExactReciprocal (E8M0) scales only \
+         today (arch#955); BoundaryCompare scales (UE4M3) are a follow-up"
+    );
+    let mul_module = crate::pipelined_ops::F32_MUL_S4_SCHEDULE.sv_module;
+    // Register layers inside the staged multiply = stages - 1; the meta shift
+    // must match so the scale byte lands with `prod`.
+    let mul_reg_layers = crate::pipelined_ops::F32_MUL_S4_SCHEDULE.main_starts.len() as u32 - 2;
+    let binding_latency = 1 + mul_reg_layers + 1; // stage-A reg + mul + output reg
+
+    let base = BlockHelper::Quantize {
+        shape: s,
+        policy,
+        round,
+    }
+    .sv_name();
+    let name = format!("{base}_staged{binding_latency}");
+    let (bw, ew, sw) = (s.bits(), s.elem_width(), s.scale.width());
+    let (n, emax, tag) = (s.n, s.elem_emax(), s.elem_tag());
+    let vw = s.vec_bits();
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "// {name}: staged (latency-{binding_latency}) `scaled_quantize`. The {n} FP32 \
+         multiplies run through `{mul_module}`; scale-compute and narrow stay comb \
+         (arch#955)."
+    );
+    let _ = writeln!(
+        o,
+        "module {name} (\n  input logic clk,\n  input logic {}v,\n  output logic {}y\n);",
+        sv_w(vw),
+        sv_w(bw)
+    );
+    // ── stage A (comb): scale compute ──
+    let _ = writeln!(o, "  logic {}amax;", sv_w(32));
+    let _ = writeln!(o, "  logic {}mag;", sv_w(32));
+    let _ = writeln!(o, "  logic {}inv;", sv_w(32));
+    let _ = writeln!(o, "  logic {}ecode;", sv_w(8));
+    let _ = writeln!(o, "  logic {}code;", sv_w(8));
+    let _ = writeln!(o, "  logic {}scale_byte;", sv_w(sw));
+    let _ = writeln!(o, "  logic is_special;");
+    let _ = writeln!(o, "  int unsigned i;");
+    let _ = writeln!(o, "  always_comb begin");
+    let _ = writeln!(o, "    amax = 32'h0;");
+    let _ = writeln!(o, "    for (i = 0; i < {n}; i = i + 1) begin");
+    let _ = writeln!(o, "      mag = v[i*32 +: 32] & 32'h7FFFFFFF;");
+    let _ = writeln!(o, "      if (mag > amax) amax = mag;");
+    let _ = writeln!(o, "    end");
+    let _ = writeln!(
+        o,
+        "    is_special = (amax >= 32'h7F800000) || (amax == 32'h0);"
+    );
+    let _ = writeln!(o, "    ecode = {}(amax);", s.scale.narrow_fn());
+    if policy == ScalePolicy::CeilPow2 {
+        let _ = writeln!(
+            o,
+            "    if (amax > {}(ecode) && ecode != 8'h{:02X}) ecode = ecode + 8'h01;",
+            s.scale.widen_fn(),
+            s.scale.max_finite_code()
+        );
+    }
+    let _ = writeln!(
+        o,
+        "    code = (ecode > 8'd{emax}) ? (ecode - 8'd{emax}) : 8'h00;"
+    );
+    let _ = writeln!(
+        o,
+        "    inv = {};",
+        s.scale
+            .sv_reciprocal("code")
+            .expect("ExactReciprocal has a reciprocal")
+    );
+    let _ = writeln!(
+        o,
+        "    if (amax >= 32'h7F800000) scale_byte = 8'h{:02X};",
+        s.scale.nan_code()
+    );
+    let _ = writeln!(
+        o,
+        "    else if (amax == 32'h0) scale_byte = 8'h{:02X};",
+        s.scale.zero_block_code()
+    );
+    let _ = writeln!(o, "    else scale_byte = code;");
+    let _ = writeln!(o, "  end");
+    // register layer A
+    let _ = writeln!(o, "  logic {}v_r;", sv_w(vw));
+    let _ = writeln!(o, "  logic {}inv_r;", sv_w(32));
+    let _ = writeln!(o, "  logic {}sb_r;", sv_w(sw));
+    let _ = writeln!(o, "  logic sp_r;");
+    let _ = writeln!(o, "  always_ff @(posedge clk) begin");
+    let _ = writeln!(
+        o,
+        "    v_r <= v; inv_r <= inv; sb_r <= scale_byte; sp_r <= is_special;"
+    );
+    let _ = writeln!(o, "  end");
+    // ── staged multiplies ──
+    let _ = writeln!(o, "  logic {}prod [0:{}];", sv_w(32), n - 1);
+    let _ = writeln!(o, "  genvar g;");
+    let _ = writeln!(o, "  generate for (g = 0; g < {n}; g = g + 1) begin : muls");
+    let _ = writeln!(
+        o,
+        "    {mul_module} m (.clk(clk), .a(v_r[g*32 +: 32]), .b(inv_r), .y(prod[g]));"
+    );
+    let _ = writeln!(o, "  end endgenerate");
+    // ── meta carry: match the multiply's register-layer count ──
+    for k in 1..=mul_reg_layers {
+        let _ = writeln!(o, "  logic {}sb{k}; logic sp{k};", sv_w(sw));
+    }
+    let _ = writeln!(o, "  always_ff @(posedge clk) begin");
+    let _ = writeln!(o, "    sb1 <= sb_r; sp1 <= sp_r;");
+    for k in 2..=mul_reg_layers {
+        let _ = writeln!(o, "    sb{k} <= sb{}; sp{k} <= sp{};", k - 1, k - 1);
+    }
+    let _ = writeln!(o, "  end");
+    // ── stage B (comb): narrow + mask + pack ──
+    let _ = writeln!(o, "  logic {}r;", sv_w(bw));
+    let _ = writeln!(o, "  int unsigned j;");
+    let _ = writeln!(o, "  always_comb begin");
+    let _ = writeln!(o, "    r = {bw}'h0;");
+    let _ = writeln!(o, "    r[{}:{}] = sb{mul_reg_layers};", bw - 1, bw - sw);
+    let _ = writeln!(o, "    for (j = 0; j < {n}; j = j + 1) begin");
+    let _ = writeln!(
+        o,
+        "      r[j*{ew} +: {ew}] = sp{mul_reg_layers} ? {ew}'h0 : arch_f32_to_{tag}(prod[j]);"
+    );
+    let _ = writeln!(o, "    end");
+    let _ = writeln!(o, "  end");
+    let _ = writeln!(o, "  assign y = r;");
+    let _ = writeln!(o, "endmodule");
+    (name, o, binding_latency)
+}
+
 /// `scaled_quantize` for a scale with no exact reciprocal — see
+
 /// [`QuantKernel::BoundaryCompare`].
 ///
 /// Two constant-threshold ladders and not one division. Both compare FP32 bit

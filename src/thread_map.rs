@@ -205,7 +205,7 @@ pub fn expr_label(expr: &Expr) -> String {
             let args = args.iter().map(expr_label).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args)
         }
-        ExprKind::ScaledQuantize(v, _, _, _) => {
+        ExprKind::ScaledQuantize(v, _, _, _, _) => {
             format!("scaled_quantize({})", expr_label(v))
         }
         ExprKind::PipelinedCall(name, args, stages) => {

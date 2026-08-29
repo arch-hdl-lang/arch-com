@@ -144,6 +144,23 @@ pub const FMA_F32_S6_SCHEDULE: StagedSchedule = StagedSchedule {
     callee_starts: &[0, 82, 103, 162, 175, 175, 175],
 };
 
+/// The builtin 4-stage `f32_mul` schedule (arch#955). Unlike the FMA
+/// schedule this was NOT hand-derived: `fp_ir::derive_leaf_schedule` produces
+/// it by gate-delay-weighted cut, and `f32_mul_s4_schedule_matches_derivation`
+/// pins that the committed cut points still match the derivation (re-run it if
+/// `fp_ops::f32_mul` changes). `f32_mul` is a zero-call leaf, so `callee` is
+/// empty and `callee_starts` is all-zero. Characterized at 652 MHz (Nangate45,
+/// the optimum — fmax regresses at N=5 because the 48-bit multiply is an
+/// atomic node that cannot be split further).
+pub const F32_MUL_S4_SCHEDULE: StagedSchedule = StagedSchedule {
+    main_fn: "arch_f32_mul",
+    callee: "",
+    sv_module: "ArchF32MulStaged4",
+    width: 32,
+    main_starts: &[0, 39, 80, 110, 143],
+    callee_starts: &[0, 0, 0, 0, 0],
+};
+
 /// Verification status of a registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VerifyStatus {
@@ -492,7 +509,7 @@ fn scan_stmts(stmts: &[crate::ast::Stmt], out: &mut Vec<FoundPipelinedCall>) {
 fn scan_expr(expr: &crate::ast::Expr, out: &mut Vec<FoundPipelinedCall>) {
     use crate::ast::ExprKind::*;
     match &expr.kind {
-        ScaledQuantize(v, _, _, _) => scan_expr(v, out),
+        ScaledQuantize(v, _, _, _, _) => scan_expr(v, out),
         PipelinedCall(name, args, stages) => {
             out.push(FoundPipelinedCall {
                 operator: name.clone(),
@@ -593,6 +610,13 @@ fn scan_expr(expr: &crate::ast::Expr, out: &mut Vec<FoundPipelinedCall>) {
 ///   must fail loudly rather than silently falling back to an un-retimed
 ///   comb cone.
 fn resolve_codegen_impl(operator: &str, stages: u32) -> Result<&'static str, ()> {
+    // `scaled_dot` is a block builtin, not an FpFn registry row: its cascade
+    // (non-staged) form is just the comb `scaled_dot` call wrapped in the
+    // pipe_reg cascade (arch#955). Staged emission is handled separately by
+    // `lower_staged_dot_sites`; anything it leaves standing collapses here.
+    if operator == "scaled_dot" {
+        return Ok("scaled_dot");
+    }
     BUILTIN_REGISTRY
         .iter()
         .filter(|e| e.operator == operator && e.stages == stages)
@@ -670,6 +694,11 @@ pub struct StagedSite {
     pub ports: Vec<String>,
     /// Typechecked argument expressions, connected positionally to `ports`.
     pub args: Vec<crate::ast::Expr>,
+    /// The staged module references the shared fp-helper library
+    /// (`arch_f32_to_e8m0`, …) rather than being self-contained, so codegen
+    /// must emit that library even when no comb site pulled it in. True for
+    /// the block quantize; false for the inlined FMA / multiply modules.
+    pub needs_fp_lib: bool,
 }
 
 /// A `--staged-ops` site that fell back to the cascade emission, with the
@@ -706,6 +735,8 @@ pub fn lower_pipelined_calls_mode(
         for item in &mut source.items {
             if let Item::Module(m) = item {
                 lower_staged_sites(m, profile, &mut out);
+                lower_staged_quantize_sites(m, profile, &mut out);
+                lower_staged_dot_sites(m, &mut out);
             }
         }
     }
@@ -996,6 +1027,456 @@ fn lower_staged_sites(
             clk,
             ports: main_fn.params.iter().map(|(n, _)| n.clone()).collect(),
             args,
+            needs_fp_lib: false,
+        });
+    }
+}
+
+/// Staged lowering for `X_stg1 <= scaled_quantize<Fmt, pipelined, N>(v)`
+/// (arch#955) — the block-operator analogue of [`lower_staged_sites`], which
+/// is scalar-FpFn-only and cannot handle a Vec-in/ScaledVec-out block op.
+///
+/// Mirrors the FMA rewrite: the pipe_reg cascade `X_stg1..X_stg{N-1}` (emitted
+/// by elaborate, RHS-agnostic) collapses to a 1-bit validity chain, and the
+/// staged quantize module drives the output register through `X <= valid ?
+/// wire : reset`. Two SV modules are recorded: the per-shape staged quantize
+/// and the shared `ArchF32MulStaged4` dependency (empty-instance site → emitted
+/// once, no instance).
+fn lower_staged_quantize_sites(
+    m: &mut crate::ast::ModuleDecl,
+    profile: crate::FpCompat,
+    out: &mut PipelinedLowering,
+) {
+    use crate::ast::{ClockEdge, Expr, ExprKind, ModuleBodyItem, RegReset, Stmt, TypeExpr};
+
+    struct QCand {
+        base: String,
+        n: u32,
+        span: crate::lexer::Span,
+    }
+    let mut cands: Vec<QCand> = Vec::new();
+    for bi in &m.body {
+        let ModuleBodyItem::RegBlock(rb) = bi else {
+            continue;
+        };
+        for s in &rb.stmts {
+            let Stmt::Assign(a) = s else { continue };
+            let ExprKind::ScaledQuantize(v, fmt, _, _, Some(n)) = &a.value.kind else {
+                continue;
+            };
+            let ExprKind::Ident(t) = &a.target.kind else {
+                continue;
+            };
+            let Some(base) = t.strip_suffix("_stg1") else {
+                continue;
+            };
+            // Only eligible sites are claimed; the rest fall back to the comb
+            // cascade via `lower_expr`'s stage-strip.
+            let Some(shape) = crate::fp_block::shape_of_type(fmt) else {
+                continue;
+            };
+            if !crate::fp_block::staged_quantize_supported(shape) {
+                continue;
+            }
+            if *n != crate::fp_block::staged_quantize_binding_latency() {
+                continue;
+            }
+            if rb.clock_edge == ClockEdge::Falling {
+                continue;
+            }
+            if crate::fp_ir::render_sv_staged(
+                &crate::fp_ops::fp_functions(profile)
+                    .into_iter()
+                    .find(|f| f.name == "arch_f32_mul")
+                    .unwrap(),
+                None,
+                &F32_MUL_S4_SCHEDULE,
+                F32_MUL_S4_SCHEDULE.sv_module,
+            )
+            .is_err()
+            {
+                continue;
+            }
+            let _ = v;
+            cands.push(QCand {
+                base: base.to_owned(),
+                n: *n,
+                span: a.span,
+            });
+        }
+    }
+
+    for cand in cands {
+        // Re-fetch the site's fmt/policy/round/operand from the AST (the
+        // collect loop borrowed immutably).
+        let mut shape_pol: Option<(
+            crate::fp_block::BlockShape,
+            crate::ast::ScalePolicy,
+            crate::ast::RoundMode,
+            Expr,
+        )> = None;
+        for bi in &m.body {
+            let ModuleBodyItem::RegBlock(rb) = bi else {
+                continue;
+            };
+            for s in &rb.stmts {
+                let Stmt::Assign(a) = s else { continue };
+                if let ExprKind::ScaledQuantize(v, fmt, pol, rnd, Some(_)) = &a.value.kind {
+                    if let ExprKind::Ident(t) = &a.target.kind {
+                        if t.strip_suffix("_stg1") == Some(cand.base.as_str()) {
+                            let shape = crate::fp_block::shape_of_type(fmt).unwrap();
+                            let policy = pol.unwrap_or_else(|| shape.scale.default_policy());
+                            shape_pol = Some((shape, policy, *rnd, (**v).clone()));
+                        }
+                    }
+                }
+            }
+        }
+        let Some((shape, policy, round, v_expr)) = shape_pol else {
+            continue;
+        };
+
+        let (qname, qsv, _blat) = crate::fp_block::sv_staged_quantize(shape, policy, round);
+        let mul_sv = crate::fp_ir::render_sv_staged(
+            &crate::fp_ops::fp_functions(profile)
+                .into_iter()
+                .find(|f| f.name == "arch_f32_mul")
+                .unwrap(),
+            None,
+            &F32_MUL_S4_SCHEDULE,
+            F32_MUL_S4_SCHEDULE.sv_module,
+        )
+        .unwrap();
+
+        let port_reset_val: Option<Expr> = m
+            .ports
+            .iter()
+            .find(|p| p.name.name == cand.base)
+            .and_then(|p| p.reg_info.as_ref())
+            .and_then(|ri| match &ri.reset {
+                RegReset::None => None,
+                RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) => Some(val.clone()),
+            });
+
+        let idx = out
+            .staged_sites
+            .iter()
+            .filter(|s| s.module_name == m.name.name)
+            .count();
+        let instance = format!("__staged_sq_{idx}");
+        let wire = format!("{instance}_y");
+        let span = cand.span;
+        let mk = |kind: ExprKind| Expr {
+            kind,
+            span,
+            parenthesized: false,
+        };
+
+        let last_stg = format!("{}_stg{}", cand.base, cand.n - 1);
+        let mut clk: Option<String> = None;
+        let mut rewrote_last = false;
+        for bi in &mut m.body {
+            match bi {
+                ModuleBodyItem::RegDecl(r)
+                    if r.name
+                        .name
+                        .strip_prefix(&format!("{}_stg", cand.base))
+                        .is_some_and(|k| k.parse::<u32>().is_ok_and(|k| k >= 1 && k < cand.n)) =>
+                {
+                    r.ty = TypeExpr::Bool;
+                    match &mut r.reset {
+                        RegReset::None => {}
+                        RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) => {
+                            *val = mk(ExprKind::Bool(false));
+                        }
+                    }
+                    if r.init.is_some() {
+                        r.init = Some(mk(ExprKind::Bool(false)));
+                    }
+                }
+                ModuleBodyItem::RegBlock(rb) => {
+                    for s in &mut rb.stmts {
+                        let Stmt::Assign(a) = s else { continue };
+                        let ExprKind::Ident(t) = &a.target.kind else {
+                            continue;
+                        };
+                        if *t == format!("{}_stg1", cand.base)
+                            && matches!(a.value.kind, ExprKind::ScaledQuantize(_, _, _, _, Some(_)))
+                        {
+                            a.value = mk(ExprKind::Bool(true));
+                            clk = Some(rb.clock.name.clone());
+                        } else if *t == cand.base {
+                            if let ExprKind::Ident(src) = &a.value.kind {
+                                if *src == last_stg {
+                                    let fallback = port_reset_val
+                                        .clone()
+                                        .unwrap_or_else(|| mk(ExprKind::Bool(false)));
+                                    a.value = mk(ExprKind::Ternary(
+                                        Box::new(mk(ExprKind::Ident(src.clone()))),
+                                        Box::new(mk(ExprKind::Ident(wire.clone()))),
+                                        Box::new(fallback),
+                                    ));
+                                    rewrote_last = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (Some(clk), true) = (clk, rewrote_last) else {
+            out.fallbacks.push(StagedFallback {
+                operator: "scaled_quantize".to_string(),
+                stages: cand.n,
+                reason: "quantize cascade shape not recognized (rewrite incomplete)".to_string(),
+                span: cand.span,
+            });
+            continue;
+        };
+        // Shared multiply dependency: empty instance → emitted once, no instance.
+        out.staged_sites.push(StagedSite {
+            module_name: m.name.name.clone(),
+            sv_module: F32_MUL_S4_SCHEDULE.sv_module,
+            sv_text: mul_sv,
+            instance: String::new(),
+            wire: String::new(),
+            width: 32,
+            clk: clk.clone(),
+            ports: Vec::new(),
+            args: Vec::new(),
+            needs_fp_lib: false,
+        });
+        // The staged quantize module + its instance.
+        let qname_static: &'static str = Box::leak(qname.into_boxed_str());
+        out.staged_sites.push(StagedSite {
+            module_name: m.name.name.clone(),
+            sv_module: qname_static,
+            sv_text: qsv,
+            instance,
+            wire,
+            width: shape.bits(),
+            clk,
+            ports: vec!["v".to_string()],
+            args: vec![v_expr],
+            needs_fp_lib: true,
+        });
+    }
+}
+
+/// Resolve the `BlockShape` of a `scaled_dot` operand by looking its declared
+/// type up in the module (port / wire / reg / let). The staged-dot lowering
+/// needs the shape, which — unlike `scaled_quantize`'s explicit format — lives
+/// on the operand's type, not the call node.
+fn ident_block_shape(
+    m: &crate::ast::ModuleDecl,
+    e: &crate::ast::Expr,
+) -> Option<crate::fp_block::BlockShape> {
+    use crate::ast::{ExprKind, ModuleBodyItem};
+    let ExprKind::Ident(nm) = &e.kind else {
+        return None;
+    };
+    for p in &m.ports {
+        if p.name.name == *nm {
+            return crate::fp_block::shape_of_type(&p.ty);
+        }
+    }
+    for bi in &m.body {
+        match bi {
+            ModuleBodyItem::WireDecl(w) if w.name.name == *nm => {
+                return crate::fp_block::shape_of_type(&w.ty);
+            }
+            ModuleBodyItem::RegDecl(r) if r.name.name == *nm => {
+                return crate::fp_block::shape_of_type(&r.ty);
+            }
+            ModuleBodyItem::LetBinding(l) if l.name.name == *nm => {
+                return l.ty.as_ref().and_then(crate::fp_block::shape_of_type);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Staged lowering for `X_stg1 <= scaled_dot<pipelined, N>(a, b)` (arch#955),
+/// the block-dot analogue of [`lower_staged_quantize_sites`]. The RHS is a
+/// generic `PipelinedCall("scaled_dot", [a, b], N)` (no dedicated AST node —
+/// the surface reuses the `Name<pipelined, N>` parse). Same cascade->validity
+/// rewrite as the FMA/quantize; the staged dot module needs the shared fp
+/// helper library (needs_fp_lib) and has no `ArchF32MulStaged4` dependency
+/// (coarse pipelining uses comb f32 ops per stage).
+fn lower_staged_dot_sites(m: &mut crate::ast::ModuleDecl, out: &mut PipelinedLowering) {
+    use crate::ast::{ClockEdge, Expr, ExprKind, ModuleBodyItem, RegReset, Stmt, TypeExpr};
+
+    struct DCand {
+        base: String,
+        n: u32,
+        span: crate::lexer::Span,
+    }
+    let mut cands: Vec<DCand> = Vec::new();
+    for bi in &m.body {
+        let ModuleBodyItem::RegBlock(rb) = bi else {
+            continue;
+        };
+        for s in &rb.stmts {
+            let Stmt::Assign(a) = s else { continue };
+            let ExprKind::PipelinedCall(op, args, n) = &a.value.kind else {
+                continue;
+            };
+            if op != "scaled_dot" || args.len() != 2 {
+                continue;
+            }
+            let ExprKind::Ident(t) = &a.target.kind else {
+                continue;
+            };
+            let Some(base) = t.strip_suffix("_stg1") else {
+                continue;
+            };
+            let Some(shape) = ident_block_shape(m, &args[0]) else {
+                continue;
+            };
+            if !crate::fp_block::staged_quantize_supported(shape) {
+                continue;
+            }
+            if *n != crate::fp_block::staged_dot_binding_latency(shape.n) {
+                continue;
+            }
+            if rb.clock_edge == ClockEdge::Falling {
+                continue;
+            }
+            cands.push(DCand {
+                base: base.to_owned(),
+                n: *n,
+                span: a.span,
+            });
+        }
+    }
+
+    for cand in cands {
+        // Re-fetch shape + operand exprs.
+        let mut found: Option<(crate::fp_block::BlockShape, Expr, Expr)> = None;
+        for bi in &m.body {
+            let ModuleBodyItem::RegBlock(rb) = bi else {
+                continue;
+            };
+            for s in &rb.stmts {
+                let Stmt::Assign(a) = s else { continue };
+                if let ExprKind::PipelinedCall(op, args, _) = &a.value.kind {
+                    if op == "scaled_dot" && args.len() == 2 {
+                        if let ExprKind::Ident(t) = &a.target.kind {
+                            if t.strip_suffix("_stg1") == Some(cand.base.as_str()) {
+                                if let Some(shape) = ident_block_shape(m, &args[0]) {
+                                    found = Some((shape, args[0].clone(), args[1].clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let Some((shape, a_expr, b_expr)) = found else {
+            continue;
+        };
+        let (dname, dsv, _lat) = crate::fp_block::sv_staged_dot(shape);
+
+        let port_reset_val: Option<Expr> = m
+            .ports
+            .iter()
+            .find(|p| p.name.name == cand.base)
+            .and_then(|p| p.reg_info.as_ref())
+            .and_then(|ri| match &ri.reset {
+                RegReset::None => None,
+                RegReset::Inherit(_, v) | RegReset::Explicit(_, _, _, v) => Some(v.clone()),
+            });
+
+        let idx = out
+            .staged_sites
+            .iter()
+            .filter(|s| s.module_name == m.name.name)
+            .count();
+        let instance = format!("__staged_dot_{idx}");
+        let wire = format!("{instance}_y");
+        let span = cand.span;
+        let mk = |kind: ExprKind| Expr {
+            kind,
+            span,
+            parenthesized: false,
+        };
+
+        let last_stg = format!("{}_stg{}", cand.base, cand.n - 1);
+        let mut clk: Option<String> = None;
+        let mut rewrote_last = false;
+        for bi in &mut m.body {
+            match bi {
+                ModuleBodyItem::RegDecl(r)
+                    if r.name
+                        .name
+                        .strip_prefix(&format!("{}_stg", cand.base))
+                        .is_some_and(|k| k.parse::<u32>().is_ok_and(|k| k >= 1 && k < cand.n)) =>
+                {
+                    r.ty = TypeExpr::Bool;
+                    match &mut r.reset {
+                        RegReset::None => {}
+                        RegReset::Inherit(_, v) | RegReset::Explicit(_, _, _, v) => {
+                            *v = mk(ExprKind::Bool(false));
+                        }
+                    }
+                    if r.init.is_some() {
+                        r.init = Some(mk(ExprKind::Bool(false)));
+                    }
+                }
+                ModuleBodyItem::RegBlock(rb) => {
+                    for s in &mut rb.stmts {
+                        let Stmt::Assign(a) = s else { continue };
+                        let ExprKind::Ident(t) = &a.target.kind else {
+                            continue;
+                        };
+                        if *t == format!("{}_stg1", cand.base)
+                            && matches!(&a.value.kind, ExprKind::PipelinedCall(op, _, _) if op == "scaled_dot")
+                        {
+                            a.value = mk(ExprKind::Bool(true));
+                            clk = Some(rb.clock.name.clone());
+                        } else if *t == cand.base {
+                            if let ExprKind::Ident(src) = &a.value.kind {
+                                if *src == last_stg {
+                                    let fallback = port_reset_val
+                                        .clone()
+                                        .unwrap_or_else(|| mk(ExprKind::Bool(false)));
+                                    a.value = mk(ExprKind::Ternary(
+                                        Box::new(mk(ExprKind::Ident(src.clone()))),
+                                        Box::new(mk(ExprKind::Ident(wire.clone()))),
+                                        Box::new(fallback),
+                                    ));
+                                    rewrote_last = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (Some(clk), true) = (clk, rewrote_last) else {
+            out.fallbacks.push(StagedFallback {
+                operator: "scaled_dot".to_string(),
+                stages: cand.n,
+                reason: "dot cascade shape not recognized (rewrite incomplete)".to_string(),
+                span: cand.span,
+            });
+            continue;
+        };
+        let dname_static: &'static str = Box::leak(dname.into_boxed_str());
+        out.staged_sites.push(StagedSite {
+            module_name: m.name.name.clone(),
+            sv_module: dname_static,
+            sv_text: dsv,
+            instance,
+            wire,
+            width: 32,
+            clk,
+            ports: vec!["a".to_string(), "b".to_string()],
+            args: vec![a_expr, b_expr],
+            needs_fp_lib: true,
         });
     }
 }
@@ -1050,7 +1531,14 @@ fn lower_expr(expr: &mut crate::ast::Expr) -> Result<(), FoundPipelinedCall> {
     // larger expression (not just the direct RHS of a cascade stage) is
     // also lowered — matches `scan_expr`'s traversal shape.
     match &mut expr.kind {
-        ScaledQuantize(v, _, _, _) => lower_expr(v)?,
+        ScaledQuantize(v, _, _, _, stages) => {
+            // Any pipelined quantize still standing here was NOT claimed by
+            // `lower_staged_quantize_sites` (falling clock, conditional, …):
+            // drop the staging so it lowers as the comb value inside the
+            // ordinary pipe_reg cascade (correct latency, just un-retimed).
+            *stages = None;
+            lower_expr(v)?
+        }
         Binary(_, a, b) => {
             lower_expr(a)?;
             lower_expr(b)?;
@@ -1160,6 +1648,22 @@ fn lower_expr(expr: &mut crate::ast::Expr) -> Result<(), FoundPipelinedCall> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn f32_mul_s4_schedule_matches_derivation() {
+        // The committed const must equal what the gate-weighted scheduler
+        // derives from the current `fp_ops::f32_mul` (arch#955). If `f32_mul`
+        // changes and this fails, re-derive: paste `derive_leaf_schedule`'s
+        // output into `F32_MUL_S4_SCHEDULE.main_starts`.
+        let funcs = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let mul = funcs.iter().find(|f| f.name == "arch_f32_mul").unwrap();
+        let derived = crate::fp_ir::derive_leaf_schedule(mul, 4).unwrap();
+        assert_eq!(
+            derived.as_slice(),
+            super::F32_MUL_S4_SCHEDULE.main_starts,
+            "f32_mul S4 schedule drifted; re-derive and update the const"
+        );
+    }
+
     use super::*;
 
     #[test]

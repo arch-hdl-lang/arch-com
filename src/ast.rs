@@ -1316,7 +1316,17 @@ pub enum ExprKind {
     /// block's *scale type*, which the parser cannot resolve because `Fmt`
     /// may be a type alias. `BlockScale::default_policy` settles it once the
     /// type is known.
-    ScaledQuantize(Box<Expr>, Box<TypeExpr>, Option<ScalePolicy>, RoundMode),
+    /// The trailing `Option<u32>` is the pipeline depth from
+    /// `scaled_quantize<Fmt, pipelined, N>(v)` — `Some(N)` requests a
+    /// latency-N staged datapath (the multiplies pipelined, arch#955);
+    /// `None` is the ordinary single-cycle comb form.
+    ScaledQuantize(
+        Box<Expr>,
+        Box<TypeExpr>,
+        Option<ScalePolicy>,
+        RoundMode,
+        Option<u32>,
+    ),
     /// SVA delay-shift: `##N expr`. Inside an `assert`/`cover` body, shifts
     /// the cycle of `expr` forward by `N` (i.e. evaluates `expr` at cycle
     /// `t + N` when the surrounding property is checked at cycle `t`).
