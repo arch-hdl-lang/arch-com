@@ -329,20 +329,36 @@ passes A and fails B).
   latency for the balanced one; sampling at the wrong depth (L=4 or L=6) is `sat`.
 
 The staged block operators (`scaled_dot`, `scaled_quantize`, arch#955 / PR #960)
-now have rows too, in `balance-only` mode: Lemma B (balance) runs, Lemma A
-(arithmetic) is **deferred as SAT-hard**. Mitering the two independently
-bit-blasted `f32_add` reduction trees has no single collapsing split the way
-fma's one alignment gap does — it times out even at N=2. For the block ops the
-equivalence instead rests on the composition of (a) Lemma B here — which is
-exactly the check that catches the non-power-of-two skew of arch#960, and skew
-generally; (b) the *combinational* schedule miter (`scaled_dot_miter.sh`,
-Theorem A); and (c) the by-construction identity — the staged emitter cuts that
-comb IR into stages without changing operations — formalized generally by the
-Lean retiming lemma. `scaled_dot` is emittable only for power-of-two block sizes
-(the type checker rejects the rest, arch#960); `scaled_quantize`'s per-element
-multiplies are parallel at uniform depth, so any N balances.
+have rows too. Both run Lemma B (balance) — the check that catches the
+non-power-of-two skew of arch#960, and skew generally.
 
-A bounded slice (fma Lemma B + a Lemma-A smoke, and both block-op balance
-checks) runs under `cargo test` (`tests/staged_fma_equivalence_miter_test.rs`)
-when yosys/z3 are present; the full 510-case fma proof is the manual
-long-verification.
+**`scaled_dot` also gets a full Lemma A (arithmetic), via uninterpreted-function
+abstraction** (mode `uf-dot`). Bit-blasting the register-shorted staged dot
+against the comb dot times out even at N=2: the reduction tree is seven
+`arch_f32_add`s with independent alignment gaps and no single collapsing split
+(unlike fma's one gap). But the tree is a *straight line* of `arch_f32_add` /
+`arch_f32_mul` / `arch_*_to_f32` calls, so `tests/fp_v1/synth/uf_datapath.py`
+translates both datapaths to SMT with those primitives **declared uninterpreted**
+— the miter then reduces to congruence over the wiring, `unsat` in milliseconds
+for all inputs. That soundly proves the staged datapath applies the *identical
+composition* of primitives as the comb operator; the primitives' own correctness
+(that `arch_f32_add`/`arch_f32_mul` implement IEEE at full FP32) is discharged
+separately by the renderer miters above, at native 32-bit width. Non-vacuity is
+self-checked: corrupting one tree add flips the verdict to `sat`.
+
+**`scaled_quantize` stays `balance-only`** (Lemma A deferred): its per-element
+multiplies are done by staged-multiply *instances* (`ArchF32MulStaged4`), a
+two-level structure the straight-line UF extractor doesn't cover, and its
+parallel-uniform-depth datapath is well covered by balance + the throughput
+lockstep. `scaled_dot` is emittable only for power-of-two block sizes (the type
+checker rejects the rest, arch#960).
+
+Composing the pieces, the staged `scaled_dot` equivalence is now machine-checked
+end to end: Lemma A (UF — same composition) ∘ leaf primitive correctness
+(renderer miters) ∘ Lemma B (balanced latency) ∘ the Lean retiming lemma
+(balanced feed-forward ⟹ `L`-delayed comb function).
+
+A bounded slice — fma Lemma B + a Lemma-A smoke, both block-op balance checks,
+and the `scaled_dot` UF Lemma A (with its mutation) — runs under `cargo test`
+(`tests/staged_fma_equivalence_miter_test.rs`) when yosys/z3/python are present;
+the full 510-case fma proof is the manual long-verification.

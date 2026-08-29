@@ -264,3 +264,84 @@ fn staged_fma_arithmetic_miter_smoke() {
         "unexpected miter output:\n{stdout}"
     );
 }
+
+/// Lemma A for the staged `scaled_dot` block operator, via UNINTERPRETED-function
+/// abstraction. The register-shorted staged datapath and the combinational
+/// `scaled_dot` are translated to SMT with every fp primitive
+/// (`arch_f32_add`/`arch_f32_mul`/`arch_*_to_f32`) declared uninterpreted, so
+/// the miter reduces to congruence over the wiring — no bit-blasting the fp
+/// adders/multipliers (which times out; see the operator table in
+/// staged_ops_miter.sh). `unsat` proves the two apply the identical composition
+/// for all inputs; the primitives' own correctness is discharged separately by
+/// renderer_miter.sh. Requires z3 + python3.
+#[test]
+fn staged_scaled_dot_uf_arithmetic_equivalence() {
+    if !tool_ok("z3") || !tool_ok("python3") {
+        eprintln!("skipping: z3/python3 not available");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    // staged design
+    let staged_src = "package DF\n  type B8 = ScaledVec<FP4E2M1, 8, E8M0>;\nend package DF\n\
+        module Dot\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync, High>;\n\
+        \x20 port a: in B8;\n  port b: in B8;\n\
+        \x20 port o: out pipe_reg<FP32, 6> reset rst => 0.0;\n\
+        \x20 seq on clk rising\n    o@6 <= scaled_dot<pipelined, 6>(a, b);\n  end seq\n\
+        end module Dot\n";
+    // combinational reference (emits the `arch_scaled_dot_e2m1_8_e8m0` function)
+    let comb_src = "package DF\n  type B8 = ScaledVec<FP4E2M1, 8, E8M0>;\nend package DF\n\
+        module DotC\n  port a: in B8;\n  port b: in B8;\n  port o: out FP32;\n\
+        \x20 comb o = scaled_dot(a, b); end comb\nend module DotC\n";
+    let sa = td.path().join("dot.arch");
+    let ca = td.path().join("dotc.arch");
+    std::fs::write(&sa, staged_src).unwrap();
+    std::fs::write(&ca, comb_src).unwrap();
+    let ssv = td.path().join("staged.sv");
+    let csv = td.path().join("comb.sv");
+    assert!(arch()
+        .args(["build", "--staged-ops"])
+        .arg(&sa)
+        .arg("-o")
+        .arg(&ssv)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(arch()
+        .arg("build")
+        .arg(&ca)
+        .arg("-o")
+        .arg(&csv)
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let driver = repo_root().join("tests/fp_v1/synth/uf_datapath.py");
+    let run = |extra: &[&str]| -> String {
+        let mut c = Command::new("python3");
+        c.arg(&driver)
+            .arg(&csv)
+            .arg("arch_scaled_dot_e2m1_8_e8m0")
+            .arg(&ssv)
+            .arg("arch_scaled_dot_e2m1_8_e8m0_staged6");
+        for e in extra {
+            c.arg(e);
+        }
+        String::from_utf8_lossy(&c.output().expect("run uf_datapath.py").stdout)
+            .trim()
+            .to_string()
+    };
+
+    assert_eq!(
+        run(&[]),
+        "unsat",
+        "staged scaled_dot must apply the same fp composition as the comb operator"
+    );
+    // non-vacuity: a real wiring change must flip the verdict.
+    assert_eq!(
+        run(&["--mutate", "add-operand"]),
+        "sat",
+        "UF miter is vacuous — a corrupted tree add did not change the verdict"
+    );
+}
