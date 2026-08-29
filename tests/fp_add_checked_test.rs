@@ -99,3 +99,58 @@ fn flag_cases() {
         "invalid case: only invalid, got {ovf} {unf} {inv} {inx}"
     );
 }
+
+/// Subnormal / min-normal boundary flag behavior. The delivered fact these cases
+/// pin down is that for f32 ADD, a result in (or reached at) the subnormal range
+/// is always EXACT — so no add produces an inexact tiny result, and the
+/// underflow flag never fires (see `underflow_flag_is_unreachable_for_add` below
+/// for the all-inputs machine proof). Every f32 finite value is an integer
+/// multiple of 2^-149, so the exact sum of two of them is too; in the subnormal
+/// range the representable grid is also 2^-149, hence the exact sum lands
+/// exactly on a grid point. This is the Hauser/Sterbenz "subnormal add is exact"
+/// property.
+#[test]
+fn flag_subnormal_cases() {
+    // (A) exact subnormal + exact subnormal that STAYS an exact subnormal:
+    //     2^-149 + 2^-149 = 2^-148.
+    //     0x0000_0001 = 1 * 2^-149,  sum = 2 * 2^-149 = 2^-148 = 0x0000_0002.
+    //     Result is subnormal but exact -> NO underflow, NO inexact. This is the
+    //     doc's "benign subnormal" claim in its purest form (a subnormal RESULT,
+    //     not merely a flushed addend), and it holds.
+    let (v, ovf, unf, inv, inx) = checked(0x0000_0001, 0x0000_0001);
+    assert_eq!(v, 0x0000_0002, "2^-149 + 2^-149 should be 2^-148");
+    assert!(
+        !ovf && !unf && !inv && !inx,
+        "exact subnormal sum must raise NO flags, got {ovf} {unf} {inv} {inx}"
+    );
+
+    // (B) min-normal boundary: the largest subnormal plus the smallest subnormal
+    //     carries EXACTLY to the smallest normal.
+    //       0x007F_FFFF = (2^23 - 1) * 2^-149  (largest subnormal)
+    //     + 0x0000_0001 =          1 * 2^-149
+    //     = 2^23 * 2^-149 = 2^-126 = 0x0080_0000  (smallest normal), EXACT.
+    //     The reviewer's imagined case — a subnormal that *rounds up* to the min
+    //     normal and is INEXACT, which under tininess-before-rounding would set
+    //     underflow — cannot occur for add: reaching the min normal happens by an
+    //     exact carry, never by rounding (there is no representable value strictly
+    //     between the largest subnormal and 2^-126 for the exact sum to round
+    //     from). So the delivered flag set here is empty: no underflow, no
+    //     inexact.
+    let (v, ovf, unf, inv, inx) = checked(0x007F_FFFF, 0x0000_0001);
+    assert_eq!(v, 0x0080_0000, "largest subnormal + 2^-149 = min normal");
+    assert!(
+        !ovf && !unf && !inv && !inx,
+        "exact carry to min normal must raise NO flags, got {ovf} {unf} {inv} {inx}"
+    );
+
+    // (C) smallest normal + smallest subnormal is exactly the next normal up
+    //     (min-normal ULP is 2^-149): 0x0080_0000 + 0x0000_0001 = 0x0080_0001,
+    //     exact -> no flags. A normal (non-tiny) result, so even if it had been
+    //     inexact it would be inexact-only, never underflow.
+    let (v, ovf, unf, inv, inx) = checked(0x0080_0000, 0x0000_0001);
+    assert_eq!(v, 0x0080_0001, "min normal + 2^-149 = next normal");
+    assert!(
+        !ovf && !unf && !inv && !inx,
+        "exact normal result must raise NO flags, got {ovf} {unf} {inv} {inx}"
+    );
+}

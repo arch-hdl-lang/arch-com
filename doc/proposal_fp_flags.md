@@ -42,22 +42,38 @@ The four flags are computed from signals **already present** in `normround`
 |---|---|---|
 | `inexact` | `guard \| sticky` (the existing rounding bits) | result was rounded — lost information |
 | `overflow` | `¬biased_le0 ∧ sig≠0 ∧ overflow` (the existing `overflow = biased_n ≥ 255`) | result rounded to `±Inf` |
-| `underflow` | `biased_le0 ∧ sig≠0 ∧ inexact` | result is subnormal **and** inexact |
+| `underflow` | `biased_le0 ∧ sig≠0 ∧ inexact` | tininess is detected before rounding (pre-rounding exponent) **and** inexact |
 | `invalid` | op-level: a non-NaN input produced NaN (`∞+(−∞)`, `0·∞`) | invalid operation |
 
-**Underflow = subnormal-result ∧ inexact is exactly the non-benign case.** With
-this definition, the benign situations produce **no flag** — verified against the
-proof's own cases:
+`biased_le0` is the sign of the **pre-rounding** exponent (`biased = ev + 127 ≤
+0`), so underflow uses **tininess before rounding**, not the tininess of the
+delivered result — both are IEEE-754-conformant (the choice is
+implementation-defined), and this is the one the code computes. A value that is
+tiny before rounding but rounds up to the smallest normal therefore still counts
+as underflow (when inexact).
+
+**Underflow = tininess-before-rounding ∧ inexact is exactly the non-benign
+case.** With this definition, the benign situations produce **no flag** —
+verified against the proof's own cases:
 
 - `big + tiny = big` (the `add_negligible` case): result is `big` (normal),
   `biased_le0` false → **no underflow** ✓.
 - `2⁻¹⁴⁹ + 2⁻¹⁴⁹ = 2⁻¹⁴⁸` (subnormal but *exact*): `inexact` false → **no
   underflow** ✓.
-- `a + (−a·(1+ε)) = tiny_subnormal` (catastrophic cancellation): subnormal **and**
-  inexact → **underflow fires** ✓ — precisely the `SummationSafe`-violating case.
 
-No heuristics: "avoid benign" falls out of using *result*-tininess+inexactness,
-the standard IEEE underflow definition, rather than flagging tiny operands.
+For **addition** the underflow bit is in fact never set: a subnormal add/sub
+result is always exact (every finite f32 is a multiple of `2⁻¹⁴⁹`, and the
+subnormal grid is `2⁻¹⁴⁹`, so an exact sum landing in the subnormal range is
+exactly representable — Hauser/Sterbenz), so `inexact` is false whenever
+`biased_le0` holds. This is machine-checked over all inputs
+(`tests/fp_v1/smt_proof/add_checked_miter.sh` with `MITER_UNDERFLOW_UNREACHABLE`,
+and `underflow_flag_is_unreachable_for_add`). Underflow only becomes reachable
+for the multiplicative ops (`mul`/`fma`) that share `normround`, where a tiny
+result can be inexact.
+
+No heuristics: "avoid benign" falls out of using tininess-before-rounding + the
+inexactness bit, an IEEE-conformant underflow definition, rather than flagging
+tiny operands.
 
 ## Lowering
 
