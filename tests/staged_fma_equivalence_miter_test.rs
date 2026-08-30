@@ -188,9 +188,8 @@ fn assert_staged_balanced(src: &str, module: &str, expect: u32) {
 
 /// Lemma B for the staged `scaled_dot` block operator (arch#955): the N products
 /// → `f32_add` reduction tree → scale multiplies must form a balanced pipeline.
-/// This is the exact check that catches the non-power-of-two skew of arch#960
-/// (there the type checker now rejects non-power-of-two sizes; a power-of-two
-/// block must stay balanced).
+/// Formerly this caught the non-power-of-two skew of arch#960; after #980 the
+/// emitter delay-balances carried odd elements so every N is balanced.
 #[test]
 fn staged_scaled_dot_is_balanced() {
     assert_staged_balanced(
@@ -202,6 +201,48 @@ fn staged_scaled_dot_is_balanced() {
          end module Dot\n",
         "arch_scaled_dot_e2m1_8_e8m0_staged6",
         5,
+    );
+}
+
+#[test]
+fn staged_scaled_dot_is_balanced_n5() {
+    assert_staged_balanced(
+        "package DF\n  type B5 = ScaledVec<FP4E2M1, 5, E8M0>;\nend package DF\n\
+         module Dot5\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync, High>;\n\
+         \x20 port a: in B5;\n  port b: in B5;\n\
+         \x20 port o: out pipe_reg<FP32, 6> reset rst => 0.0;\n\
+         \x20 seq on clk rising\n    o@6 <= scaled_dot<pipelined, 6>(a, b);\n  end seq\n\
+         end module Dot5\n",
+        "arch_scaled_dot_e2m1_5_e8m0_staged6",
+        5,
+    );
+}
+
+#[test]
+fn staged_scaled_dot_is_balanced_n6() {
+    assert_staged_balanced(
+        "package DF\n  type B6 = ScaledVec<FP4E2M1, 6, E8M0>;\nend package DF\n\
+         module Dot6\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync, High>;\n\
+         \x20 port a: in B6;\n  port b: in B6;\n\
+         \x20 port o: out pipe_reg<FP32, 6> reset rst => 0.0;\n\
+         \x20 seq on clk rising\n    o@6 <= scaled_dot<pipelined, 6>(a, b);\n  end seq\n\
+         end module Dot6\n",
+        "arch_scaled_dot_e2m1_6_e8m0_staged6",
+        5,
+    );
+}
+
+#[test]
+fn staged_scaled_dot_is_balanced_n12() {
+    assert_staged_balanced(
+        "package DF\n  type B12 = ScaledVec<FP4E2M1, 12, E8M0>;\nend package DF\n\
+         module Dot12\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync, High>;\n\
+         \x20 port a: in B12;\n  port b: in B12;\n\
+         \x20 port o: out pipe_reg<FP32, 7> reset rst => 0.0;\n\
+         \x20 seq on clk rising\n    o@7 <= scaled_dot<pipelined, 7>(a, b);\n  end seq\n\
+         end module Dot12\n",
+        "arch_scaled_dot_e2m1_12_e8m0_staged7",
+        6,
     );
 }
 
@@ -343,6 +384,76 @@ fn staged_scaled_dot_uf_arithmetic_equivalence() {
         run(&["--mutate", "add-operand"]),
         "sat",
         "UF miter is vacuous — a corrupted tree add did not change the verdict"
+    );
+}
+
+#[test]
+fn staged_scaled_dot_n6_uf_arithmetic_equivalence() {
+    if !tool_ok("z3") || !tool_ok("python3") {
+        eprintln!("skipping: z3/python3 not available");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    // N=6 staged design — the non-pow2 shape that previously skewed
+    let staged_src = "package DF\n  type B6 = ScaledVec<FP4E2M1, 6, E8M0>;\nend package DF\n\
+        module Dot6\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync, High>;\n\
+        \x20 port a: in B6;\n  port b: in B6;\n\
+        \x20 port o: out pipe_reg<FP32, 6> reset rst => 0.0;\n\
+        \x20 seq on clk rising\n    o@6 <= scaled_dot<pipelined, 6>(a, b);\n  end seq\n\
+        end module Dot6\n";
+    let comb_src = "package DF\n  type B6 = ScaledVec<FP4E2M1, 6, E8M0>;\nend package DF\n\
+        module DotC6\n  port a: in B6;\n  port b: in B6;\n  port o: out FP32;\n\
+        \x20 comb o = scaled_dot(a, b); end comb\nend module DotC6\n";
+    let sa = td.path().join("dot6.arch");
+    let ca = td.path().join("dotc6.arch");
+    std::fs::write(&sa, staged_src).unwrap();
+    std::fs::write(&ca, comb_src).unwrap();
+    let ssv = td.path().join("staged6.sv");
+    let csv = td.path().join("comb6.sv");
+    assert!(arch()
+        .args(["build", "--staged-ops"])
+        .arg(&sa)
+        .arg("-o")
+        .arg(&ssv)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(arch()
+        .arg("build")
+        .arg(&ca)
+        .arg("-o")
+        .arg(&csv)
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let driver = repo_root().join("tests/fp_v1/synth/uf_datapath.py");
+    let run = |extra: &[&str]| -> String {
+        let mut c = Command::new("python3");
+        c.arg(&driver)
+            .arg(&csv)
+            .arg("arch_scaled_dot_e2m1_6_e8m0")
+            .arg(&ssv)
+            .arg("arch_scaled_dot_e2m1_6_e8m0_staged6");
+        for e in extra {
+            c.arg(e);
+        }
+        String::from_utf8_lossy(&c.output().expect("run uf_datapath.py").stdout)
+            .trim()
+            .to_string()
+    };
+
+    assert_eq!(
+        run(&[]),
+        "unsat",
+        "staged N=6 scaled_dot must match comb operator (delay-balanced)"
+    );
+    assert_eq!(
+        run(&["--mutate", "add-operand"]),
+        "sat",
+        "UF miter vacuous for N=6"
     );
 }
 

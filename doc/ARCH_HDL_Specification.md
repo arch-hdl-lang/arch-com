@@ -978,17 +978,15 @@ type checker reports the required `N` if a different one is written. As with
 otherwise the call lowers to the combinational operator inside the pipe_reg
 cascade (correct latency, un-retimed).
 
-`scaled_dot<pipelined, N>` additionally requires a **power-of-two block size**.
-Its coarse per-level staging pipelines the `f32_add` reduction tree one level
-per stage, which stays latency-balanced only when the tree is perfect — i.e.
-the element count is a power of two. For a non-power-of-two count the tree
-carries an odd element across a round rather than padding with zero (padding
-would turn `-0.0` into `+0.0`, a real value change), so that element crosses
-fewer register edges than its siblings and would reach the scale multiply a
-cycle early. The type checker rejects a non-power-of-two block rather than emit
-a skewed pipeline; the combinational `scaled_dot` (drop `pipelined`) handles any
-`N`. `scaled_quantize` has no such restriction — its per-element multiplies run
-in parallel at a uniform depth.
+`scaled_dot<pipelined, N>` is available for any block size `N`: the coarse
+per-level staging pipelines the `f32_add` reduction tree one level per stage,
+and for a non-power-of-two count the tree carries an odd element across a
+round. The emitter inserts delay-balancing pass-through registers on carried
+paths so every element crosses the same number of stages (registers delay,
+they do not add — unlike zero-padding, which would turn `-0.0` into `+0.0`, a
+real value change). The combinational `scaled_dot` (drop `pipelined`) likewise
+handles any `N`. `scaled_quantize` has no such restriction — its per-element
+multiplies run in parallel at a uniform depth.
 
 **The call's depth is authoritative; the tap is a consistency check.** A
 `<pipelined, N>` call produces a value with latency `N` — it must be bound
