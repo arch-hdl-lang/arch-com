@@ -846,9 +846,10 @@ pub fn sv_staged_dot(s: BlockShape) -> (String, String, u32) {
             }
         }
         // Deduplicate by value id (a carried value may be used once, but
-        // be safe) and sort for determinism.
+        // be safe) and sort for determinism. BTreeSet makes iteration
+        // order deterministic without relying on HashSet's randomized hash.
         {
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = std::collections::BTreeSet::new();
             to_delay.retain(|(id, _, _)| seen.insert(*id));
             to_delay.sort_by_key(|(id, _, _)| *id);
         }
