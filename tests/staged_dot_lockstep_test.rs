@@ -206,12 +206,6 @@ fn staged_dot_accepts_non_power_of_two_block() {
     assert!(ok12, "non-power-of-two block size (12) must be accepted after #980:\n{out12}");
 }
 
-#[test]
-fn staged_dot_rejects_non_power_of_two_block() {
-    // Back-compat shim: old name now aliases the acceptance test.
-    staged_dot_accepts_non_power_of_two_block()
-}
-
 // N=6 throughput lockstep — the non-pow2 shape that previously skewed
 // (arch#960). Mirrors staged_dot_throughput_lockstep_verilator but for
 // B6 = ScaledVec<FP4E2M1, 6, E8M0> (bits = 8 + 6*4 = 32, latency 6).
