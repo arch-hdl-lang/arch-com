@@ -845,6 +845,26 @@ pub fn sv_staged_dot(s: BlockShape) -> (String, String, u32) {
                 }
             }
         }
+        // Carried values are consumed exactly once in a tree; double-
+        // consumption at different levels would double-declare the same
+        // `_d` chain. Guard for future schedule generalizations.
+        debug_assert!(
+            {
+                let mut seen: std::collections::HashMap<usize, (u32, u32)> =
+                    std::collections::HashMap::new();
+                let mut ok = true;
+                for (id, j, k) in &to_delay {
+                    if let Some((pj, pk)) = seen.insert(*id, (*j, *k)) {
+                        if pj != *j || pk != *k {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                ok
+            },
+            "double-consumption of carried value at different levels would double-declare _d registers"
+        );
         // Deduplicate by value id (a carried value may be used once, but
         // be safe) and sort for determinism. BTreeSet makes iteration
         // order deterministic without relying on HashSet's randomized hash.
