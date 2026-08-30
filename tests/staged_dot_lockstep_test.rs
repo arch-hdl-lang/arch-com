@@ -201,9 +201,15 @@ fn staged_dot_accepts_non_power_of_two_block() {
     let (ok8, _) = check_dot(8, 6);
     assert!(ok8, "power-of-two block size (8) must be accepted");
     let (ok6, out6) = check_dot(6, 6);
-    assert!(ok6, "non-power-of-two block size (6) must be accepted after #980:\n{out6}");
+    assert!(
+        ok6,
+        "non-power-of-two block size (6) must be accepted after #980:\n{out6}"
+    );
     let (ok12, out12) = check_dot(12, 7);
-    assert!(ok12, "non-power-of-two block size (12) must be accepted after #980:\n{out12}");
+    assert!(
+        ok12,
+        "non-power-of-two block size (12) must be accepted after #980:\n{out12}"
+    );
 }
 
 // N=6 throughput lockstep — the non-pow2 shape that previously skewed
