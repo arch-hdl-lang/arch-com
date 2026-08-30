@@ -830,6 +830,15 @@ pub fn sv_staged_dot(s: BlockShape) -> (String, String, u32) {
         reg_of.insert(i, format!("r0_{i}"));
         prod_level.insert(i, 0);
     }
+    // Values that have already had a `_d` delay chain emitted, across ALL
+    // levels. `dot_schedule` builds a tree (each value consumed exactly once),
+    // so a second chain for the same id is unreachable today — but if a future
+    // schedule ever consumed a carried value at two different levels, the
+    // second chain would re-declare the same `r{d}_{id}_d` registers (an SV
+    // compile error at best, a silent stale read at worst, since `prod_level`
+    // is not advanced after delaying). Guard it loudly here, at emission,
+    // where the hazard actually lives.
+    let mut delayed_ids: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     for (li, level) in levels.iter().enumerate() {
         let lvl = (li + 1) as u32;
         // Delay-balance carried inputs before the comb for this level.
@@ -845,26 +854,6 @@ pub fn sv_staged_dot(s: BlockShape) -> (String, String, u32) {
                 }
             }
         }
-        // Carried values are consumed exactly once in a tree; double-
-        // consumption at different levels would double-declare the same
-        // `_d` chain. Guard for future schedule generalizations.
-        debug_assert!(
-            {
-                let mut seen: std::collections::HashMap<usize, (u32, u32)> =
-                    std::collections::HashMap::new();
-                let mut ok = true;
-                for (id, j, k) in &to_delay {
-                    if let Some((pj, pk)) = seen.insert(*id, (*j, *k)) {
-                        if pj != *j || pk != *k {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                ok
-            },
-            "double-consumption of carried value at different levels would double-declare _d registers"
-        );
         // Deduplicate by value id (a carried value may be used once, but
         // be safe) and sort for determinism. BTreeSet makes iteration
         // order deterministic without relying on HashSet's randomized hash.
@@ -875,6 +864,12 @@ pub fn sv_staged_dot(s: BlockShape) -> (String, String, u32) {
         }
         if !to_delay.is_empty() {
             for (vid, j, k) in &to_delay {
+                let _fresh = delayed_ids.insert(*vid);
+                debug_assert!(
+                    _fresh,
+                    "value {vid} needs a second delay chain (consumed at two \
+                     different levels) — would re-declare its `_d` registers"
+                );
                 for d in (*j + 1)..*k {
                     let _ = writeln!(o, "  logic {}r{d}_{vid}_d;", sv_w(32));
                 }
