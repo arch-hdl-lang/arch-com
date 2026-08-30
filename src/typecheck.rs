@@ -4221,30 +4221,13 @@ impl<'a> TypeChecker<'a> {
                 return Ty::Error;
             }
             // The coarse per-level staging pipelines the `f32_add` reduction
-            // tree one level per stage. That is latency-uniform only when the
-            // tree is perfectly balanced — i.e. a power-of-two block size. For a
-            // non-power-of-two count, `dot_schedule` carries an odd element
-            // across a round rather than padding with zero (padding would turn
-            // -0.0 into +0.0), so that element crosses fewer register edges than
-            // its siblings and reaches the scale multiply a cycle early — a
-            // silent miscompile invisible to stable-input testing (the
-            // structural balance check in tests/fp_v1/synth/pipeline_balance.py
-            // reports it as UNBALANCED [k-1, k]). Reject it rather than emit a
-            // skewed pipeline; the combinational `scaled_dot` handles any N.
-            if !(*an).is_power_of_two() {
-                self.errors.push(CompileError::general(
-                    &format!(
-                        "`scaled_dot<pipelined, N>` requires a power-of-two block size, got \
-                         {an}. The staged reduction tree only stays latency-balanced when every \
-                         element crosses the same number of adder stages; a non-power-of-two \
-                         block carries an odd element across levels and skews the pipeline. Use a \
-                         power-of-two block size, or the combinational `scaled_dot` (drop \
-                         `pipelined`), which handles any N."
-                    ),
-                    span,
-                ));
-                return Ty::Error;
-            }
+            // tree one level per stage. Formerly this was latency-uniform only
+            // for power-of-two block sizes — a non-power-of-two count carries
+            // an odd element across levels. The emitter now inserts
+            // delay-balancing pass-through registers on carried paths (registers
+            // delay, they do not add — unlike zero-padding, which would flip
+            // `-0.0` to `+0.0`), so every element crosses the same number of
+            // stages. See `fp_block::sv_staged_dot` and issue #980.
             let want = crate::fp_block::staged_dot_binding_latency(*an);
             if stages != want {
                 self.errors.push(CompileError::general(

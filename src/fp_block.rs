@@ -818,13 +818,58 @@ pub fn sv_staged_dot(s: BlockShape) -> (String, String, u32) {
     }
     let _ = writeln!(o, "  end");
     // reduction tree: one stage per level; reg_of maps a value id to its
-    // current register name.
+    // current register name. Production levels track when each value is
+    // available: products at 0, each add at its level. A value produced at
+    // level j consumed at level k passes through k - j - 1 dummy registers
+    // so every path has equal depth (delay-balancing, #980). Scale bytes
+    // already do this via sda/sdb shift; here we do it for carried dot
+    // elements (odd N) where zero-padding would flip -0.0.
     let mut reg_of: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+    let mut prod_level: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
     for i in 0..n as usize {
         reg_of.insert(i, format!("r0_{i}"));
+        prod_level.insert(i, 0);
     }
     for (li, level) in levels.iter().enumerate() {
         let lvl = (li + 1) as u32;
+        // Delay-balance carried inputs before the comb for this level.
+        // Collect the set of values consumed at this level that need
+        // padding, then emit their delay chains in one always_ff.
+        let mut to_delay: Vec<(usize, u32, u32)> = Vec::new(); // (id, from_lvl, to_lvl)
+        for (_, l, r) in level {
+            for &v in &[*l, *r] {
+                if let Some(&j) = prod_level.get(&v) {
+                    if lvl > j + 1 {
+                        to_delay.push((v, j, lvl));
+                    }
+                }
+            }
+        }
+        // Deduplicate by value id (a carried value may be used once, but
+        // be safe) and sort for determinism.
+        {
+            let mut seen = std::collections::HashSet::new();
+            to_delay.retain(|(id, _, _)| seen.insert(*id));
+            to_delay.sort_by_key(|(id, _, _)| *id);
+        }
+        if !to_delay.is_empty() {
+            for (vid, j, k) in &to_delay {
+                for d in (*j + 1)..*k {
+                    let _ = writeln!(o, "  logic {}r{d}_{vid}_d;", sv_w(32));
+                }
+            }
+            let _ = writeln!(o, "  always_ff @(posedge clk) begin");
+            for (vid, j, k) in &to_delay {
+                let mut cur = reg_of[vid].clone();
+                for d in (*j + 1)..*k {
+                    let nxt = format!("r{d}_{vid}_d");
+                    let _ = writeln!(o, "    {nxt} <= {cur};");
+                    cur = nxt;
+                }
+                reg_of.insert(*vid, cur);
+            }
+            let _ = writeln!(o, "  end");
+        }
         for (dst, _, _) in level {
             let _ = writeln!(o, "  logic {}c{lvl}_{dst};", sv_w(32));
         }
@@ -842,6 +887,7 @@ pub fn sv_staged_dot(s: BlockShape) -> (String, String, u32) {
         for (dst, _, _) in level {
             let _ = writeln!(o, "    r{lvl}_{dst} <= c{lvl}_{dst};");
             reg_of.insert(*dst, format!("r{lvl}_{dst}"));
+            prod_level.insert(*dst, lvl);
         }
         let _ = writeln!(o, "  end");
     }
