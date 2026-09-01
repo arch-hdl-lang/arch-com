@@ -40029,3 +40029,122 @@ fn test_auto_connect_noop_warns() {
         "{warnings:?}"
     );
 }
+
+/// A sibling port whose name merely *starts with* the bus port's name plus
+/// `_` must not be mistaken for a per-field binding of that bus.
+///
+/// `BpLeaf` has a bus port `m` (flattening to `m_req_valid`, ...) and an
+/// ordinary port `m_extra`. Connecting `m_extra` explicitly used to make a
+/// `p_`-prefix test believe bus port `m` was already bound, so `auto;`
+/// skipped it and `m` came out dangling — a silent wrong answer rather than
+/// a diagnostic. The fill must be driven by the bus's real field names.
+#[test]
+fn test_auto_connect_bus_not_confused_by_prefix_sibling_port() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+bus BpBus
+  param DATA_W: const = 32;
+  req_valid: out Bool;
+  req_ready: in Bool;
+  req_data:  out UInt<DATA_W>;
+end bus BpBus
+
+module BpLeaf
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator BpBus<DATA_W=32>;
+  port m_extra: in Bool;
+
+  reg d: UInt<32> reset rst => 0;
+  comb
+    m.req_valid = m_extra;
+    m.req_data = d;
+  end comb
+end module BpLeaf
+
+module BpTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port flag: in Bool;
+  port m: initiator BpBus<DATA_W=32>;
+
+  inst u0: BpLeaf
+    m_extra <- flag;
+    auto;
+  end inst u0
+end module BpTop
+";
+    // The bus port must still be filled despite `m_extra` being connected.
+    let notes = auto_connect_notes(src);
+    let (_inst, conns) = notes.first().expect("one auto-connected inst");
+    assert!(
+        conns.iter().any(|c| c == "m -> m"),
+        "bus port `m` must be auto-filled even though sibling `m_extra` is \
+         explicitly connected; got {conns:?}"
+    );
+
+    // And it must reach the emitted SV as the full flattened bundle.
+    let sv = compile_to_sv(src);
+    for sig in [
+        ".m_req_valid(m_req_valid)",
+        ".m_req_ready(m_req_ready)",
+        ".m_req_data(m_req_data)",
+    ] {
+        assert!(sv.contains(sig), "missing {sig} in:\n{sv}");
+    }
+    assert!(sv.contains(".m_extra(flag)"), "{sv}");
+}
+
+/// The converse: a genuine per-field binding still counts as connected, so
+/// `auto;` must NOT also emit a whole-bus connection for the same port
+/// (that would double-drive it).
+#[test]
+fn test_auto_connect_bus_per_field_binding_suppresses_whole_fill() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+bus BpBus2
+  req_valid: out Bool;
+  req_ready: in Bool;
+end bus BpBus2
+
+module BpLeaf2
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator BpBus2;
+
+  comb
+    m.req_valid = 1;
+  end comb
+end module BpLeaf2
+
+module BpTop2
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port v: out Bool;
+  port r: in Bool;
+
+  inst u0: BpLeaf2
+    m.req_valid -> v;
+    m.req_ready <- r;
+    auto;
+  end inst u0
+end module BpTop2
+";
+    let notes = auto_connect_notes(src);
+    // clk/rst get filled; `m` must not, because it is already bound per-field.
+    if let Some((_inst, conns)) = notes.first() {
+        assert!(
+            !conns.iter().any(|c| c.starts_with("m ")),
+            "per-field-bound bus port must not also be filled whole: {conns:?}"
+        );
+    }
+    let sv = compile_to_sv(src);
+    assert!(sv.contains(".m_req_valid(v)"), "{sv}");
+    assert!(sv.contains(".m_req_ready(r)"), "{sv}");
+}

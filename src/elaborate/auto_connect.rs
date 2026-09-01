@@ -386,6 +386,60 @@ impl Cx {
         }
     }
 
+    /// Is this bus port already bound by an explicit connection?
+    ///
+    /// A bus port binds either whole (`p -> w;`) or field-by-field
+    /// (`p.cmd_valid <- x;`, which the parser flattens to `p_cmd_valid`).
+    /// Deciding that from a bare `p_` **prefix** would be wrong: a sibling
+    /// port literally named `p_extra` also starts with `p_`, so connecting
+    /// *it* would suppress the auto-fill of bus port `p` and leave `p`
+    /// dangling — a silent wrong answer, which is exactly what `auto;` must
+    /// never produce. So match against the precise set of names this port
+    /// can flatten to, derived from the bus declaration.
+    fn bus_port_connected(
+        &self,
+        connected: &HashSet<String>,
+        port_name: &str,
+        bi: &BusPortInfo,
+        child_params: &HashMap<String, i64>,
+    ) -> bool {
+        // Whole-bus binding.
+        if connected.contains(port_name) {
+            return true;
+        }
+        let Some(info) = self.buses.get(&bi.bus_name.name) else {
+            // The bus declaration isn't in this compilation unit, so the
+            // field names are unknowable here. The design won't elaborate
+            // anyway; fall back to the prefix test rather than assume the
+            // port is unconnected and double-drive it.
+            let prefix = format!("{port_name}_");
+            return connected.iter().any(|c| c.starts_with(&prefix));
+        };
+        let mut pm = info.default_param_map();
+        for pa in &bi.params {
+            pm.insert(pa.name.name.clone(), &pa.value);
+        }
+        let signals = info.effective_signals(&pm);
+        // `Vec<Bus, N>` flattens per element (`p_0_<sig>`); a scalar bus
+        // flattens directly (`p_<sig>`). An unresolvable count falls back to
+        // the scalar spelling.
+        let prefixes: Vec<String> = match bi.count.as_ref() {
+            None => vec![port_name.to_string()],
+            Some(count) => match try_eval_i64(count, child_params) {
+                Some(n) if n > 0 => (0..n).map(|i| format!("{port_name}_{i}")).collect(),
+                _ => vec![port_name.to_string()],
+            },
+        };
+        prefixes.iter().any(|p| {
+            // `p` alone covers a per-element whole-bus binding (`mm[0] <- w`
+            // flattens to `mm_0`).
+            connected.contains(p)
+                || signals
+                    .iter()
+                    .any(|(sig, _, _)| connected.contains(&format!("{p}_{sig}")))
+        })
+    }
+
     fn expand_inst(
         &mut self,
         inst: &mut InstDecl,
@@ -422,7 +476,7 @@ impl Cx {
 
         for port in &ports {
             if let Some(bi) = &port.bus_info {
-                if is_bus_connected(&connected, &port.name.name) {
+                if self.bus_port_connected(&connected, &port.name.name, bi, &child_params) {
                     continue;
                 }
                 self.fill_bus_port(
@@ -709,13 +763,6 @@ fn render_conn(c: &Connection) -> String {
         ConnectDir::Output => "->",
     };
     format!("{} {} {}", c.port_name.name, arrow, c.port_name.name)
-}
-
-/// A bus port is connected either whole (`p -> w;`) or field-by-field
-/// (`p.cmd_valid <- x;`, flattened to `p_cmd_valid`).
-fn is_bus_connected(connected: &HashSet<String>, name: &str) -> bool {
-    let prefix = format!("{name}_");
-    connected.contains(name) || connected.iter().any(|c| c.starts_with(&prefix))
 }
 
 /// Recognize a bus-typed `wire`: `wire w: BusName;` or `wire w: Vec<BusName, N>;`.
