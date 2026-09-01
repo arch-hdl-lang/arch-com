@@ -77,6 +77,11 @@ enum Command {
         /// `// arch-lint-naming: off` source-line pragma.
         #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         lint_naming: Option<String>,
+        /// Print the connections each `auto;` directive expanded to, one
+        /// note per `inst`. Diagnostic only — the expansion itself always
+        /// runs (`auto;` is a front-end desugar into ordinary connections).
+        #[arg(long)]
+        explain_auto: bool,
     },
     /// Rebuild the learning retrieval index over ~/.arch/learn/events.jsonl
     LearnIndex,
@@ -244,6 +249,11 @@ enum Command {
         /// `--assert` to get free spec-derived coverage.
         #[arg(long)]
         auto_thread_asserts: bool,
+        /// Print the connections each `auto;` directive expanded to, one
+        /// note per `inst`. Diagnostic only — the expansion itself always
+        /// runs (`auto;` is a front-end desugar into ordinary connections).
+        #[arg(long)]
+        explain_auto: bool,
         /// Opt-in naming-convention lint (issue #648) — see `arch check
         /// --help` for the full rule set. Warning-only; never fails the
         /// build.
@@ -363,6 +373,11 @@ enum Command {
         /// help for the property set. Picked up by Verilator `--assert`.
         #[arg(long)]
         auto_thread_asserts: bool,
+        /// Print the connections each `auto;` directive expanded to, one
+        /// note per `inst`. Diagnostic only — the expansion itself always
+        /// runs (`auto;` is a front-end desugar into ordinary connections).
+        #[arg(long)]
+        explain_auto: bool,
         /// Override a module param default: --param NAME=VALUE (repeatable).
         /// Value must be an integer literal. The override is applied before
         /// sim codegen and also passed to the C++ compiler as -DNAME=VALUE
@@ -422,6 +437,11 @@ enum Command {
         /// by construction). See `arch build` help for the property set.
         #[arg(long)]
         auto_thread_asserts: bool,
+        /// Print the connections each `auto;` directive expanded to, one
+        /// note per `inst`. Diagnostic only — the expansion itself always
+        /// runs (`auto;` is a front-end desugar into ordinary connections).
+        #[arg(long)]
+        explain_auto: bool,
         /// Floating-point special-value compatibility profile (doc/archive/plan_fp_types.md
         /// §6.2): `riscv` (default) or `cuda`. Accepted for parity with `build`/`sim`.
         #[arg(long = "fp-compat", default_value = "riscv")]
@@ -1020,7 +1040,11 @@ fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { files, lint_naming } => {
+        Command::Check {
+            files,
+            lint_naming,
+            explain_auto,
+        } => {
             let lint_naming = resolve_lint_naming_flag(lint_naming)?;
             learn_wrap(&files, || {
                 let all_files = resolve_use_imports(&files)?;
@@ -1029,6 +1053,7 @@ fn main() -> miette::Result<()> {
                     &ms,
                     /*skip_lower_threads=*/ false,
                     /*auto_thread_asserts=*/ false,
+                    explain_auto,
                     lint_naming,
                 )?;
                 eprintln!("OK: no errors");
@@ -1218,6 +1243,7 @@ fn main() -> miette::Result<()> {
             test,
             pybind_module_name,
             auto_thread_asserts,
+            explain_auto,
             param_overrides,
             fp_compat,
         } => {
@@ -1272,6 +1298,7 @@ fn main() -> miette::Result<()> {
                         pybind,
                         test.as_deref(),
                         pybind_module_name.as_deref(),
+                        explain_auto,
                         &param_overrides_map,
                         fp_compat,
                     )
@@ -1296,6 +1323,7 @@ fn main() -> miette::Result<()> {
                         pybind,
                         test.as_deref(),
                         pybind_module_name.as_deref(),
+                        explain_auto,
                         &param_overrides_map,
                         fp_compat,
                     )
@@ -1329,6 +1357,7 @@ fn main() -> miette::Result<()> {
             check_construct_proof_smt,
             construct_proof_smt_solver,
             auto_thread_asserts,
+            explain_auto,
             lint_naming,
             no_inline_deps,
             no_auto_asserts,
@@ -1413,6 +1442,7 @@ fn main() -> miette::Result<()> {
                     &ms,
                     false,
                     effective_auto_thread_asserts,
+                    explain_auto,
                     lint_naming,
                     thread_map_store.clone(),
                 )?;
@@ -1978,6 +2008,7 @@ fn main() -> miette::Result<()> {
             thread_proof_only,
             timeout,
             auto_thread_asserts,
+            explain_auto,
             fp_compat,
             error_engine,
         } => {
@@ -2008,6 +2039,7 @@ fn main() -> miette::Result<()> {
                     &ms,
                     false,
                     auto_thread_asserts,
+                    explain_auto,
                     /*lint_naming=*/ false,
                     thread_map_store.clone(),
                 )?;
@@ -2180,6 +2212,7 @@ fn build_and_capture(
         /*test_file*/ None,
         /*pybind_module_name_override*/ None,
         /*no_exit*/ true,
+        /*explain_auto*/ false,
         &std::collections::HashMap::new(),
         fp_compat,
     )?;
@@ -2214,6 +2247,7 @@ fn run_sim(
     pybind: bool,
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
+    explain_auto: bool,
     param_overrides: &std::collections::HashMap<String, u64>,
     fp_compat: arch::FpCompat,
 ) -> miette::Result<()> {
@@ -2237,6 +2271,7 @@ fn run_sim(
         test_file,
         pybind_module_name_override,
         /*no_exit=*/ false,
+        explain_auto,
         param_overrides,
         fp_compat,
     )
@@ -2276,6 +2311,7 @@ fn run_sim_opts(
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
     no_exit: bool,
+    explain_auto: bool,
     param_overrides: &std::collections::HashMap<String, u64>,
     fp_compat: arch::FpCompat,
 ) -> miette::Result<()> {
@@ -2287,6 +2323,7 @@ fn run_sim_opts(
             &ms,
             thread_sim_parallel,
             /*auto_thread_asserts=*/ false,
+            explain_auto,
             /*lint_naming=*/ false,
         )?
     } else {
@@ -2294,6 +2331,7 @@ fn run_sim_opts(
             &ms,
             thread_sim_parallel,
             /*auto_thread_asserts=*/ false,
+            explain_auto,
             /*lint_naming=*/ false,
             param_overrides,
         )?
@@ -2882,34 +2920,6 @@ fn resolve_stdlib_dir() -> Option<PathBuf> {
 /// items that carry no ports (struct, enum, function, bus, package, …).
 /// Used by the dep-discovery scan to find `initiator`/`target` bus-port
 /// type references the `inst` scan cannot see.
-fn item_ports(item: &Item) -> &[arch::ast::PortDecl] {
-    match item {
-        // Own `ports` field.
-        Item::Module(m) => &m.ports,
-        Item::Synchronizer(s) => &s.ports,
-        Item::Clkgate(c) => &c.ports,
-        Item::Template(t) => &t.ports,
-        // `ports` via `Deref<Target = ConstructCommon>`.
-        Item::Fsm(f) => &f.ports,
-        Item::Fifo(f) => &f.ports,
-        Item::Ram(r) => &r.ports,
-        Item::Cam(c) => &c.ports,
-        Item::Counter(c) => &c.ports,
-        Item::Arbiter(a) => &a.ports,
-        Item::Regfile(r) => &r.ports,
-        Item::Pipeline(p) => &p.ports,
-        Item::Linklist(l) => &l.ports,
-        Item::Domain(_)
-        | Item::Struct(_)
-        | Item::Enum(_)
-        | Item::Function(_)
-        | Item::Bus(_)
-        | Item::Package(_)
-        | Item::Use(_)
-        | Item::ExternPackage(_) => &[],
-    }
-}
-
 fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
     use std::collections::HashSet;
 
@@ -3129,7 +3139,7 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
         // bus's `.arch`/`.archi` sits right next to it.
         let mut bus_refs: Vec<String> = Vec::new();
         for item in &parsed.items {
-            for port in item_ports(item) {
+            for port in item.ports() {
                 if let Some(bus) = &port.bus_info {
                     bus_refs.push(bus.bus_name.name.clone());
                 }
@@ -3728,6 +3738,14 @@ fn parse_graph_source_ast(ms: &MultiSource) -> miette::Result<arch::ast::SourceF
             item.set_is_interface(true);
         }
     }
+    // Expand `auto;` so the graph shows the same edges the compiler sees.
+    // Best-effort: this AST is *not* elaborated (no generate expansion, no
+    // monomorphization), so ports whose shape depends on a param may not
+    // resolve here. Those are silently skipped rather than failing the
+    // command — `arch check` is where auto-connect errors get reported.
+    let parsed_ast = arch::elaborate::expand_auto_connect(parsed_ast, /*best_effort=*/ true)
+        .map(|(ast, _, _)| ast)
+        .unwrap_or_else(|_| unreachable!("best-effort auto-connect never errors"));
     Ok(parsed_ast)
 }
 
@@ -3899,7 +3917,7 @@ fn run_check_multi(
 )> {
     run_check_multi_opts(
         ms, /*skip_lower_threads=*/ false, /*auto_thread_asserts=*/ false,
-        /*lint_naming=*/ false,
+        /*explain_auto=*/ false, /*lint_naming=*/ false,
     )
 }
 
@@ -3907,6 +3925,7 @@ fn run_check_multi_opts(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    explain_auto: bool,
     lint_naming: bool,
 ) -> miette::Result<(
     arch::ast::SourceFile,
@@ -3917,6 +3936,7 @@ fn run_check_multi_opts(
         ms,
         skip_lower_threads,
         auto_thread_asserts,
+        explain_auto,
         lint_naming,
         None,
         None,
@@ -3927,6 +3947,7 @@ fn run_check_multi_opts_with_thread_map(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    explain_auto: bool,
     lint_naming: bool,
     thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
 ) -> miette::Result<(
@@ -3938,6 +3959,7 @@ fn run_check_multi_opts_with_thread_map(
         ms,
         skip_lower_threads,
         auto_thread_asserts,
+        explain_auto,
         lint_naming,
         thread_map,
         None,
@@ -3948,6 +3970,7 @@ fn run_check_multi_opts_with_param_overrides(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    explain_auto: bool,
     lint_naming: bool,
     param_overrides: &std::collections::HashMap<String, u64>,
 ) -> miette::Result<(
@@ -3959,6 +3982,7 @@ fn run_check_multi_opts_with_param_overrides(
         ms,
         skip_lower_threads,
         auto_thread_asserts,
+        explain_auto,
         lint_naming,
         None,
         Some(param_overrides),
@@ -3969,6 +3993,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    explain_auto: bool,
     lint_naming: bool,
     thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
     param_overrides: Option<&std::collections::HashMap<String, u64>>,
@@ -4094,6 +4119,30 @@ fn run_check_multi_opts_with_thread_map_and_params(
     // Elaborate (expand generate blocks)
     let ast = elaborate::elaborate(parsed_ast).map_err(|errs| ms.report_errors(errs))?;
 
+    // Expand `auto;` inside inst bodies into ordinary connections. Runs
+    // here — after elaboration, before every lowering — because at this
+    // point inst-body `for` loops are flattened, generate blocks expanded,
+    // `connect` sugar appended, and module variants monomorphized (so child
+    // port widths resolve). Everything downstream sees a fully explicit
+    // connection set.
+    let (ast, auto_notes, auto_warnings) =
+        elaborate::expand_auto_connect(ast, /*best_effort=*/ false)
+            .map_err(|errs| ms.report_errors(errs))?;
+    if explain_auto {
+        for note in &auto_notes {
+            eprintln!(
+                "note: inst `{}` of `{}`: auto-connect filled {}",
+                note.inst_name,
+                note.module_name,
+                note.conns
+                    .iter()
+                    .map(|c| format!("{c};"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+    }
+
     // Rewrite TLM target threads (`thread port.method(args) ...`) into
     // regular threads that drive the req/rsp handshake. Must run before
     // the generic lower_threads, which rejects TLM-bound threads.
@@ -4193,6 +4242,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
     let (mut warnings, overload_map) = checker.check().map_err(|errs| ms.report_errors(errs))?;
     warnings.extend(pipe_reg_warnings);
     warnings.extend(naming_warnings);
+    warnings.extend(auto_warnings);
 
     for w in &warnings {
         let (filename, _, local_offset) = ms.locate(w.span.start);

@@ -1,0 +1,92 @@
+//! ---
+//! tags: [inst, auto-connect, hierarchy, tutorial]
+//! ---
+//!
+//! `auto;` — auto-connect by name inside an `inst` body.
+//!
+//! A single `auto;` line wires every child port the explicit connections
+//! left unconnected to the identically-named signal in scope. Explicit
+//! connections always win, wherever they sit relative to the directive.
+//!
+//! This is the shape `auto;` exists for: two sub-instances whose `clk`,
+//! `rst` and `en` plumbing is pure boilerplate, and exactly one connection
+//! per instance that actually carries design intent (`din <- ...`). Without
+//! the directive, `Top` would spell out 8 connections instead of 2.
+//!
+//! `auto;` is a front-end desugar — the emitted SystemVerilog is identical
+//! to writing every connection by hand. Run `arch build --explain-auto` to
+//! print what each directive expanded to.
+
+/// 100 MHz system clock domain (single-clock design).
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+/// Running 8-bit accumulator: `sum += din` while `en` is high.
+module Accum
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port din: in UInt<8>;
+  port sum: out UInt<8>;
+
+  reg acc: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    if en
+      acc <= acc +% din;
+    end if
+  end seq
+
+  comb
+    sum = acc;
+  end comb
+end module Accum
+
+/// Registers `din` doubled (wrapping), one cycle behind, while `en` is high.
+module Doubler
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port din: in UInt<8>;
+  port dbl: out UInt<8>;
+
+  reg r: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    if en
+      r <= din +% din;
+    end if
+  end seq
+
+  comb
+    dbl = r;
+  end comb
+end module Doubler
+
+/// Feeds one input to both leaves and exposes both results.
+///
+/// Every connection below is either name-identical (filled by `auto;`) or
+/// written out because the names genuinely differ.
+module AutoConnectTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port sample: in UInt<8>;
+  port sum: out UInt<8>;
+  port dbl: out UInt<8>;
+
+  // `din` differs from the parent's `sample`, so it stays explicit; `clk`,
+  // `rst`, `en` and `sum` are name-identical and `auto;` fills them.
+  inst acc0: Accum
+    din <- sample;
+    auto;
+  end inst acc0
+
+  // Same shape for the second leaf — the directive is order-independent, so
+  // it can sit before the explicit line just as well.
+  inst dbl0: Doubler
+    auto;
+    din <- sample;
+  end inst dbl0
+end module AutoConnectTop

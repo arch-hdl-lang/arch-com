@@ -150,6 +150,27 @@ pub struct BusInfo {
 }
 
 impl BusInfo {
+    /// Build a `BusInfo` straight from its AST declaration.
+    ///
+    /// `resolve()` uses this when populating the global symbol table, and
+    /// pre-resolve passes (`elaborate::auto_connect`) use it to reach
+    /// `effective_signals` without a `SymbolTable` in hand.
+    pub fn from_decl(b: &crate::ast::BusDecl) -> Self {
+        BusInfo {
+            name: b.name.name.clone(),
+            params: b.params.clone(),
+            signals: b
+                .signals
+                .iter()
+                .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
+                .collect(),
+            generates: b.generates.clone(),
+            handshakes: b.handshakes.clone(),
+            credit_channels: b.credit_channels.clone(),
+            tlm_methods: b.tlm_methods.clone(),
+        }
+    }
+
     /// Build a param map from this bus's default param values.
     pub fn default_param_map(&self) -> HashMap<String, &Expr> {
         self.params
@@ -823,19 +844,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                 if table.globals.contains_key(&b.name.name) {
                     errors.push(CompileError::duplicate(&b.name.name, b.name.span));
                 } else {
-                    let info = BusInfo {
-                        name: b.name.name.clone(),
-                        params: b.params.clone(),
-                        signals: b
-                            .signals
-                            .iter()
-                            .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
-                            .collect(),
-                        generates: b.generates.clone(),
-                        handshakes: b.handshakes.clone(),
-                        credit_channels: b.credit_channels.clone(),
-                        tlm_methods: b.tlm_methods.clone(),
-                    };
+                    let info = BusInfo::from_decl(b);
                     table
                         .globals
                         .insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));

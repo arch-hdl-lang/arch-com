@@ -5591,6 +5591,7 @@ fn lower_indexed_tlm_target_group(
         name: mk_ident(format!("{arb_prefix}_inst")),
         module_name: mk_ident(arb_module_name),
         param_assigns: Vec::new(),
+        auto_connect: None,
         connections: vec![
             Connection {
                 port_name: mk_ident("clk".to_string()),

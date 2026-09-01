@@ -2049,6 +2049,26 @@ The compiler validates that the default value fits within the declared range. Co
 >
 > ◈ **Port group member syntax.** For constructs with named port groups (e.g. `regfile` with `ports[N] read`), connections use dot notation: `write.en <- wr_en;` (flattened to `write_en`). For indexed port groups, use bracket-dot notation: `read[0].addr <- sel;` (flattened to `read0_addr`). The index must be an integer literal. Both forms are resolved at parse time --- the rest of the compiler sees only the flattened name.
 >
+> ◈ **`auto;` --- auto-connect by name.** A single `auto;` line inside an `inst` body connects every child port that the explicit connections left unconnected to the **identically-named** signal in the enclosing scope. Explicit connections always win, wherever they appear relative to the directive:
+>
+> ```
+> inst alu0: Alu
+>   a <- Decode.rs1_fwd;    // explicit where the names differ
+>   b <- Decode.rs2_val;
+>   auto;                   // clk <- clk, rst <- rst, en <- en, result -> result, ...
+> end inst alu0
+> ```
+>
+> `auto;` is a **front-end desugar**: elaboration rewrites it into ordinary connections before every later pass, so emitted SystemVerilog, simulation, and formal output are byte-identical to the hand-written connection list. Run `arch check --explain-auto` (also on `build` / `sim` / `formal`) to print exactly what each directive expanded to.
+>
+> **What it fills:** ordinary ports (including `Clock`, `Reset`, `Vec`, struct and enum types), whole `bus` ports (`initiator` / `target`, including `Vec<Bus, N>`), and `ports[N]` groups by their flattened names (`read0_addr`, and `write_en` for a literal count-1 group).
+>
+> **In scope** are the enclosing construct's ports, its `reg` / `wire` / `let` / `pipe_reg` declarations, the flattened fields of its bus ports and bus wires, and the targets of *explicit* inst output connections. Names created by another inst's `auto;` are deliberately **not** in scope, so expansion never depends on inst order.
+>
+> **Both safety invariants are preserved, not weakened.** A port with no identically-named signal in scope is a compile error (*"auto-connect: no signal \`a\` in scope for input port \`a\` of \`Alu\` in inst \`u0\`"*) --- `auto;` never leaves a port dangling, and never silently declares a new net. And before each fill the port type is compared against the declared signal type: a definite mismatch --- differing width, signedness, `Vec` length, reset kind or polarity, clock domain, or named type --- is an error naming both sides, with the `rst <- rst as Reset<Async, Low>` override suggested for the reset case. The comparison is deliberately conservative: when a width stays param-dependent, or the name comes from an inst-output wire with no declaration, `auto;` defers to the ordinary connection checks rather than inventing a type rule.
+>
+> `auto` is a **contextual** keyword recognized only as a complete `auto;` statement inside an inst body --- it remains a legal identifier everywhere else, so a port genuinely named `auto` still connects as `auto <- en;`. Two `auto;` lines in one inst body, or an `auto;` inside an inst-body `for` loop, are compile errors.
+>
 > ◈ **Whole-bus connections.** When an inst's bus port connects to a parent bus port (or wire), a single connection expands to all signals in the bus definition: `axi_rd -> m_axi_mm2s;` expands to `axi_rd_ar_valid -> m_axi_mm2s_ar_valid`, etc. Signal directions are derived from the bus definition and the port's perspective (`initiator` or `target`). This works for both `module` and `fsm` constructs.
 >
 > ◈ **Prototype TLM connect sugar.** For early design-phase TLM binding, a module may write `connect cpu.mem -> ram.mem;` after both instances are declared. The left endpoint must be an instantiated `initiator` bus port and each right endpoint an instantiated `target` bus port of the same bus type. Elaboration creates private bus wires and appends ordinary whole-bus inst connections, so generated SV remains the same flattened req/rsp signal protocol. `connect` is legal at module scope and inside `generate_for` / `generate_if`; generated suffix names are expanded first (`connect src_i.m -> dst_i.s;` becomes independent `src_0.m -> dst_0.s`, `src_1.m -> dst_1.s`, ... links). Blocking TLM buses also support one-initiator-to-many-target address decode by repeating ordinary connect statements and overriding each target instance's address-map params:
