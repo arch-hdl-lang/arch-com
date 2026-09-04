@@ -3905,6 +3905,70 @@ end arbiter HsArbSvaVOnly
     );
 }
 
+/// A `valid_only` *request* channel on an arbiter has no ready port at
+/// all, yet the grant emitters drive `<req>_ready` (the per-requester
+/// grant one-hot). The emitted SV referenced an undeclared
+/// `request_ready` and failed to elaborate ("Can't find definition of
+/// variable"). The ready one-hot must be kept as an internal wire; no
+/// ready port and no Tier-2 property may appear.
+#[test]
+fn test_arbiter_valid_only_request_channel_keeps_internal_ready() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter VOnlyReqArb
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  handshake_channel request[NUM_REQ]: receive kind: valid_only
+  end handshake_channel request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter VOnlyReqArb
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("input logic [NUM_REQ-1:0] request_valid"),
+        "request_valid port expected:\n{sv}"
+    );
+    assert!(
+        !sv.contains("output logic [NUM_REQ-1:0] request_ready"),
+        "valid_only must not expose a ready port:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [NUM_REQ-1:0] request_ready;"),
+        "ready one-hot must be declared as an internal wire:\n{sv}"
+    );
+    assert!(
+        !sv.contains("_auto_hs_request"),
+        "valid_only request channel must not emit Tier-2 SVA:\n{sv}"
+    );
+    // The SV must elaborate: every reference to request_ready is now declared.
+    if let Ok(vl) = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+    {
+        if vl.status.success() {
+            let td = tempfile::tempdir().unwrap();
+            let f = td.path().join("VOnlyReqArb.sv");
+            std::fs::write(&f, &sv).unwrap();
+            let out = std::process::Command::new("verilator")
+                .args(["--lint-only", "-Wno-fatal", "--top-module", "VOnlyReqArb"])
+                .arg(&f)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "verilator lint failed:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+}
+
 /// A `valid_ready` `handshake_channel` declared *without* any payload
 /// fields must still emit the control-signal `valid_stable` property
 /// (the protocol invariant binds on valid/ready alone). This mirrors
