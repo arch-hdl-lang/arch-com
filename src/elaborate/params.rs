@@ -153,6 +153,18 @@ pub(crate) fn compute_all_variants(
                 .cloned()
                 .unwrap_or_default();
 
+            // Interface stubs (`.archi`, body-less) describe an externally
+            // defined module — typically hand-written SV such as a vendor RAM
+            // cell. There is nothing to specialise per parameter set and no
+            // definition is ever emitted for them, so a mangled variant name
+            // (`prim_ram_1p__Width_22`) would reference a module that exists
+            // nowhere. Keep a single variant under the original name; each
+            // inst still carries its own `#(...)` overrides to the SV.
+            if m.is_interface {
+                result.insert(m.name.name.clone(), vec![(defaults, m.name.name.clone())]);
+                continue;
+            }
+
             // Compute effective params for each inst site (deduped)
             let mut effective_sets: Vec<HashMap<String, i64>> = Vec::new();
 

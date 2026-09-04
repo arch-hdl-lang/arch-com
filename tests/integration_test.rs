@@ -2760,6 +2760,92 @@ end module Top
     );
 }
 
+/// An interface stub (`.archi`, body-less — e.g. a hand-written stub for a
+/// vendor SV RAM cell) instantiated with two different parameter sets must
+/// keep its original module name at every inst site. Variant discovery used
+/// to mangle it (`Ext__Width_16` / `Ext__Width_32`) exactly like a real
+/// module, but no definition is ever emitted for a stub, so the mangled
+/// names referenced modules that exist nowhere and the SV failed to
+/// elaborate ("Can't resolve module reference"). Seen on arch-ibex's
+/// `prim_ram_1p` stub (tag banks Width=22, data banks Width=64).
+#[test]
+fn test_interface_stub_not_variant_mangled() {
+    use std::fs;
+    let td = tempfile::tempdir().expect("tempdir");
+    let dir = td.path();
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    fs::write(
+        dir.join("Ext.archi"),
+        "\
+module Ext
+  param Width: const = 8;
+  port clk: in Clock<SysDomain>;
+  port d: in UInt<Width>;
+  port q: out UInt<Width>;
+end module Ext
+",
+    )
+    .unwrap();
+    let top_path = dir.join("Top.arch");
+    fs::write(
+        &top_path,
+        "\
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port a: in UInt<16>;
+  port b: in UInt<32>;
+  port qa: out UInt<16>;
+  port qb: out UInt<32>;
+  inst ea: Ext
+    param Width = 16;
+    clk <- clk;
+    d <- a;
+    q -> qa;
+  end inst ea
+  inst eb: Ext
+    param Width = 32;
+    clk <- clk;
+    d <- b;
+    q -> qb;
+  end inst eb
+end module Top
+",
+    )
+    .unwrap();
+    let sv_out = dir.join("Top.sv");
+    let out = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(&top_path)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build Top");
+    assert!(
+        out.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = fs::read_to_string(&sv_out).unwrap();
+    assert!(
+        !sv.contains("Ext__"),
+        "interface stub must not be variant-mangled:\n{sv}"
+    );
+    assert_eq!(
+        sv.matches("Ext #(").count(),
+        2,
+        "both inst sites must instantiate the stub by its original name with \
+         their own parameter overrides:\n{sv}"
+    );
+    assert!(
+        sv.contains(".Width(16)") && sv.contains(".Width(32)"),
+        "{sv}"
+    );
+}
+
 /// round-robin (each idx wins exactly 1/3 of cycles).
 ///
 /// Pre-fix grant pattern was `0,1,2,0,0,1,2,0,...` (idx 0 at 50%).
