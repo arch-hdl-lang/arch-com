@@ -143,6 +143,24 @@ impl<'a> Codegen<'a> {
             ("request_valid".to_string(), "request_ready".to_string())
         };
 
+        // A `valid_only` request channel has no ready port, but every
+        // grant emitter below still drives the per-requester ready
+        // one-hot (`<req>_ready = grant_onehot;` etc.). Keep that name
+        // alive as an internal wire so the emitters stay uniform and the
+        // SV elaborates; nothing outside the module can observe it.
+        let has_ready_port = a
+            .port_arrays
+            .first()
+            .map(|pa| pa.signals.iter().any(|s| s.direction == Direction::Out))
+            .unwrap_or(true);
+        if !has_ready_port {
+            self.line(&format!(
+                "logic [{}] {req_ready_sig};",
+                Self::fold_width_str(&num_req_default)
+            ));
+            self.line("");
+        }
+
         let latency = a.latency;
         let policy = a.policy.clone();
 
