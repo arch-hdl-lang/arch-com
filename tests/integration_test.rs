@@ -40399,3 +40399,47 @@ fn test_pybind_vec_port_elements_bind_through_accessors_issue_996() {
         "std::decay_t needs <type_traits>:\n{cpp}"
     );
 }
+
+#[test]
+fn test_sim_let_reading_comb_wire_emitted_after_comb_blocks_issue_1003() {
+    // Issue #1003: a module-scope `let` whose value reads a signal assigned in
+    // a `comb` block was emitted at the top of eval_comb(), before the comb
+    // block ran, so it carried the previous pass's value. With inputs only that
+    // is hidden by eval()'s second comb pass, but across a clock edge the
+    // previous pass is the pre-edge state: `let y_o = d;` lagged the register
+    // by one cycle under the native simulator while Verilator was right.
+    let source = r"
+        domain Sys
+          freq_mhz: 100
+        end domain Sys
+
+        module let_after_comb
+          port clk_i: in Clock<Sys>;
+          port rst_ni: in Reset<Async, Low>;
+          port a_i: in UInt<8>;
+          port y_o: out UInt<8>;
+          reg s_q: UInt<8> reset rst_ni => 0;
+          wire d: UInt<8>;
+          comb
+            d = s_q ^ a_i;
+          end comb
+          let y_o = d;
+          seq on clk_i rising
+            s_q <= d;
+          end seq
+        end module let_after_comb
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    let comb = cpp.split("::eval_comb() {").nth(1).expect("eval_comb body");
+    let wire_at = comb
+        .find("_let_d  = ")
+        .or_else(|| comb.find("_let_d = "))
+        .expect("comb assigns d");
+    let out_at = comb
+        .find("y_o = _let_d;")
+        .expect("output let assigned from d");
+    assert!(
+        wire_at < out_at,
+        "`let y_o = d` must be evaluated after the comb block that assigns d (#1003):\n{comb}"
+    );
+}
