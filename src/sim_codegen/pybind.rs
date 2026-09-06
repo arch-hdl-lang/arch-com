@@ -411,14 +411,21 @@ impl<'a> SimCodegen<'a> {
             port_info.push((field.clone(), width, is_signed, is_input, false, false));
         }
 
-        // Vec port flattened fields
+        // Vec port flattened fields. `{base}_{i}` is a *reference* member
+        // aliasing `{base}[i]` in the model struct; a pointer-to-member cannot
+        // be formed for a reference (issue #996: "cannot form a pointer-to-member
+        // to member of reference type"), so bind through accessor lambdas
+        // instead of `def_readwrite`. Elements wider than 64 bits use the
+        // VlWide lambdas like scalar wide ports.
         for (base_name, _elem_ty, count, is_input) in &vec_port_infos {
             let width = self.vec_elem_width(&m.ports, base_name);
             for i in 0..*count {
                 let field = format!("{base_name}_{i}");
-                bindings.push(format!(
-                    "        .def_readwrite(\"{field}\", &{class}::{field})"
-                ));
+                if width > 64 {
+                    bindings.push(self.emit_wide_binding(&class, &field, width));
+                } else {
+                    bindings.push(self.emit_ref_binding(&class, &field));
+                }
                 port_info.push((field, width, false, *is_input, false, false));
             }
         }
@@ -628,6 +635,7 @@ auto {helper_name}(const T& self) {{
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <cstdint>
+#include <type_traits>
 #include "{class}.h"
 namespace py = pybind11;
 
@@ -756,6 +764,17 @@ PYBIND11_MODULE({pybind_module}, m) {{
     }
 
     /// Emit a lambda-based pybind11 binding for a VlWide field.
+    /// Bind a reference member (a flat Vec element aliasing `base[i]`) through
+    /// accessor lambdas; `def_readwrite` needs a pointer-to-member, which does
+    /// not exist for references (issue #996).
+    fn emit_ref_binding(&self, class: &str, field: &str) -> String {
+        format!(
+            r#"        .def_property("{field}",
+            []({class}& self) {{ return self.{field}; }},
+            []({class}& self, std::decay_t<decltype(self.{field})> value) {{ self.{field} = value; }})"#,
+        )
+    }
+
     fn emit_wide_binding(&self, class: &str, field: &str, width: u32) -> String {
         format!(
             r#"        .def_property("{field}",

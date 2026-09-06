@@ -40355,3 +40355,47 @@ end module thread_procassinit
         "thread block must be reset by rst:\n{sv}"
     );
 }
+
+#[test]
+fn test_pybind_vec_port_elements_bind_through_accessors_issue_996() {
+    // Issue #996: flat Vec-port elements are reference members
+    // (`uint32_t& v_i_0`), for which `def_readwrite` cannot form a
+    // pointer-to-member; they must be bound through accessor lambdas.
+    let source = r"
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        module VecPorts
+          port clk: in Clock<SysDomain>;
+          port v_i: in Vec<UInt<32>, 2>;
+          port w_i: in Vec<UInt<34>, 2>;
+          port v_o: out Vec<UInt<32>, 2>;
+          comb
+            v_o[0] = v_i[1];
+            v_o[1] = v_i[0] + w_i[0].trunc<32>();
+          end comb
+        end module VecPorts
+    ";
+    let pybinds = compile_to_pybind_cpps(source);
+    let cpp = pybinds
+        .iter()
+        .find(|(n, _)| n.contains("VecPorts"))
+        .expect("VecPorts pybind wrapper")
+        .1
+        .clone();
+    for field in ["v_i_0", "v_i_1", "w_i_0", "w_i_1", "v_o_0", "v_o_1"] {
+        assert!(
+            !cpp.contains(&format!(".def_readwrite(\"{field}\"")),
+            "{field} must not use def_readwrite on a reference member (#996):\n{cpp}"
+        );
+        assert!(
+            cpp.contains(&format!(".def_property(\"{field}\"")),
+            "{field} must be bound through def_property accessors:\n{cpp}"
+        );
+    }
+    assert!(
+        cpp.contains("#include <type_traits>"),
+        "std::decay_t needs <type_traits>:\n{cpp}"
+    );
+}
