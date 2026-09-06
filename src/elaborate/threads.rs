@@ -619,7 +619,7 @@ fn lower_module_threads(
             merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
                 name: Ident::new(format!("_{}_release_{}", res_name, ti), sp),
                 ty: TypeExpr::Bool,
-                init: Some(make_zero_expr(sp)),
+                init: None, // reset-initialised; no declaration initializer (issue #995)
                 reset: RegReset::Inherit(Ident::new(rst_name.clone(), sp), make_zero_expr(sp)),
                 guard: None,
                 multicycle: None,
@@ -673,7 +673,7 @@ fn lower_module_threads(
                 merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
                     name: Ident::new(format!("_{}_held_{}", res_name, ti), sp),
                     ty: TypeExpr::Bool,
-                    init: Some(make_zero_expr(sp)),
+                    init: None, // reset-initialised; no declaration initializer (issue #995)
                     reset: RegReset::Inherit(Ident::new(rst_name.clone(), sp), make_zero_expr(sp)),
                     guard: None,
                     multicycle: None,
@@ -1528,7 +1528,7 @@ fn lower_module_threads(
                 ExprKind::Literal(LitKind::Dec(state_bits.max(1))),
                 sp,
             ))),
-            init: Some(make_zero_expr(sp)),
+            init: None, // reset-initialised; no declaration initializer (issue #995)
             reset: RegReset::Inherit(Ident::new(rst_name.clone(), sp), make_zero_expr(sp)),
             guard: None,
             multicycle: None,
@@ -2205,8 +2205,10 @@ fn lower_module_threads(
             merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
                 name: Ident::new(format!("_t{}_cnt", ti), sp),
                 ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
-                init: Some(make_zero_expr(sp)),
-                reset: RegReset::None,
+                // Reset with the thread (issue #995): the counter lives in the thread's
+                // reset branch; the lowering adds no declaration initializer.
+                init: None,
+                reset: RegReset::Inherit(Ident::new(t.reset.name.clone(), sp), make_zero_expr(sp)),
                 guard: None,
                 multicycle: None,
                 span: sp,
@@ -2227,8 +2229,11 @@ fn lower_module_threads(
                         ExprKind::Literal(LitKind::Dec(for_cnt_width as u64)),
                         sp,
                     ))),
-                    init: Some(make_zero_expr(sp)),
-                    reset: RegReset::None,
+                    init: None, // reset-initialised; no declaration initializer (issue #995)
+                    reset: RegReset::Inherit(
+                        Ident::new(t.reset.name.clone(), sp),
+                        make_zero_expr(sp),
+                    ),
                     guard: None,
                     multicycle: None,
                     span: sp,
