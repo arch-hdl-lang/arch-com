@@ -1,7 +1,10 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-09-05
-> Compiler version: 0.72.1
+> Compiler version: 0.72.2
+>
+> **0.72.2 release highlights:**
+> - **Native simulator: module-scope `let`s that read comb-assigned signals are evaluated after the `comb` blocks** (#1003, PR #1005) — `eval_comb()` emitted every module-scope `let` before the comb blocks, so a `let` such as `let instr_o = instr_d;` carried the previous pass's value; with input-only changes `eval()`'s second comb pass hid it, but across a clock edge the output lagged the state register by one cycle while Verilator on the same SV was right. Lets that (transitively) read a comb-assigned signal are now emitted after the comb blocks; other modules' C++ is byte-identical. Found on arch-ibex's compressed decoder (Zcmp `cm.push` walk, now 29 / 29 under `arch sim --pybind`).
 >
 > **0.72.1 release highlights:**
 > - **No compiler-introduced declaration initializers** (#995, PR #1001) — the lowered `thread` state register, the lock `release`/`held` flags, the TLM initiator state and the thread/TLM cycle and loop counters no longer carry a `= 0` declaration initializer alongside their procedural driver; the reset-owned registers rely on the reset branch and the counters now inherit the thread's reset. Verilator `-Wall` no longer reports `PROCASSINIT` on any `thread` design. User-written `init` keeps its documented meaning (the SV declaration initializer).
