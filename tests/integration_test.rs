@@ -21436,9 +21436,11 @@ fn test_tight_relock_release_event_is_registered_709() {
         end module SemaphoreRelock709
     "#;
     let sv = compile_to_sv(source);
+    // The release flag is a reset register: declared without an initializer
+    // (issue #995, PROCASSINIT) and cleared in the reset branch.
     assert!(
-        sv.contains("logic _pool_release_0 = 0"),
-        "lock release must be a registered signal with an initializer:\n{sv}"
+        sv.contains("logic _pool_release_0;") && sv.contains("_pool_release_0 <= 0;"),
+        "lock release must be a registered signal cleared by reset:\n{sv}"
     );
     assert!(
         sv.contains("_pool_release_0 <= 1")
@@ -40297,4 +40299,59 @@ end module BpTop2
     let sv = compile_to_sv(src);
     assert!(sv.contains(".m_req_valid(v)"), "{sv}");
     assert!(sv.contains(".m_req_ready(r)"), "{sv}");
+}
+
+#[test]
+fn test_thread_regs_have_no_declaration_initializer_issue_995() {
+    // Issue #995: the lowered thread state register and its cycle / loop
+    // counters were declared with an initializer *and* driven procedurally,
+    // which Verilator -Wall reports as PROCASSINIT. They all have the
+    // thread's reset, so the reset branch must be their only initialisation.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module thread_procassinit
+  port clk:   in  Clock<SysDomain>;
+  port rst:   in  Reset<Async, Low>;
+  port go_i:  in  Bool;
+  port ack_i: in  Bool;
+  port v_o:   out Bool;
+  thread T on clk rising, rst low
+    default comb
+      v_o = false;
+    end default
+    if not go_i
+      wait until go_i;
+    end if
+    wait 2 cycle;
+    for i in 0..3
+      wait 1 cycle;
+    end for
+    do
+      v_o = true;
+    until ack_i;
+  end thread T
+end module thread_procassinit
+"#;
+    let sv = compile_to_sv(source);
+    for reg in ["_t0_state", "_t0_cnt", "_t0_loop_cnt_0"] {
+        let decl_with_init = sv
+            .lines()
+            .any(|l| l.contains(&format!(" {reg} = ")) && l.trim_start().starts_with("logic"));
+        assert!(
+            !decl_with_init,
+            "{reg} must not carry a declaration initializer (PROCASSINIT, #995):\n{sv}"
+        );
+        assert!(
+            sv.contains(&format!("{reg} <= ")),
+            "{reg} must be driven in the always_ff:\n{sv}"
+        );
+    }
+    // The counters now sit in the thread's reset branch.
+    assert!(
+        sv.contains("negedge rst"),
+        "thread block must be reset by rst:\n{sv}"
+    );
 }

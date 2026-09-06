@@ -3557,8 +3557,8 @@ fn inline_lower_tlm_initiator_group(
             items.push(ModuleBodyItem::RegDecl(RegDecl {
                 name: mk_ident(counter.clone()),
                 ty: TypeExpr::UInt(Box::new(dec(32))),
-                init: Some(dec(0)),
-                reset: RegReset::None,
+                init: None, // reset-initialised, no declaration initializer (issue #995)
+                reset: RegReset::Inherit(rst.clone(), dec(0)),
                 guard: None,
                 multicycle: None,
                 span,
@@ -6543,8 +6543,11 @@ fn inline_lower_tlm_target_with_io(
                 ExprKind::Literal(LitKind::Dec(cnt_width as u64)),
                 span,
             ))),
-            init: Some(Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
-            reset: RegReset::None,
+            init: None, // reset-initialised, no declaration initializer (issue #995)
+            reset: RegReset::Inherit(
+                t.reset.clone(),
+                Expr::new(ExprKind::Literal(LitKind::Dec(0)), span),
+            ),
             guard: None,
             multicycle: None,
             span,
