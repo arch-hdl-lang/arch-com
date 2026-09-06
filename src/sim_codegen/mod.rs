@@ -3336,127 +3336,172 @@ impl<'a> SimCodegen<'a> {
         }
 
         // Let bindings → private fields (assign before inst eval so instances see current values)
-        for item in &m.body {
-            if let ModuleBodyItem::LetBinding(l) = item {
-                // Destructuring: emit one assignment per bound field.
-                if !l.destructure_fields.is_empty() {
-                    // Special case: RHS is `vec.find_first(pred)`. Emit the
-                    // raw OR + priority encoder directly; avoids the
-                    // non-existent `.find_first()` member access on C++
-                    // vector fields.
-                    if let ExprKind::MethodCall(recv, mname, margs) = &l.value.kind {
-                        if mname.name == "find_first" {
-                            let recv_cpp = cpp_expr(recv, &ctx_comb);
-                            let n = match &recv.kind {
-                                ExprKind::Ident(nm) => {
-                                    ctx_comb.vec_sizes.and_then(|s| s.get(nm)).copied()
-                                }
-                                _ => None,
-                            };
-                            if let Some(n) = n {
-                                // Build per-iteration predicate strings.
-                                let mut hits: Vec<String> = Vec::with_capacity(n as usize);
-                                for i in 0..n {
-                                    let mut sub: HashMap<String, String> = HashMap::new();
-                                    sub.insert("item".to_string(), format!("{recv_cpp}[{i}]"));
-                                    sub.insert("index".to_string(), format!("{i}"));
-                                    let sub_ctx = Ctx {
-                                        reg_names: ctx_comb.reg_names,
-                                        port_names: ctx_comb.port_names,
-                                        let_names: ctx_comb.let_names,
-                                        let_values: ctx_comb.let_values,
-                                        inst_names: ctx_comb.inst_names,
-                                        wide_names: ctx_comb.wide_names,
-                                        widths: ctx_comb.widths,
-                                        signed_names: ctx_comb.signed_names,
-                                        float_names: ctx_comb.float_names,
-                                        posedge_lhs: ctx_comb.posedge_lhs,
-                                        fsm_mode: ctx_comb.fsm_mode,
-                                        enum_map: ctx_comb.enum_map,
-                                        bus_ports: ctx_comb.bus_ports,
-                                        reset_levels: ctx_comb.reset_levels,
-                                        vec_names: ctx_comb.vec_names,
-                                        vec_2d_names: ctx_comb.vec_2d_names,
-                                        vec_sizes: ctx_comb.vec_sizes,
-                                        fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
-                                        ident_subst: Some(&sub),
-                                        loop_var_subst: ctx_comb.loop_var_subst,
-                                        vec_of_bus_port_count: ctx_comb.vec_of_bus_port_count,
-                                        vec_of_bus_wire_count: ctx_comb.vec_of_bus_wire_count,
-                                        coverage: ctx_comb.coverage,
-                                        params: ctx_comb.params,
-                                        vinit_regs: ctx_comb.vinit_regs,
-                                        decl_types: ctx_comb.decl_types,
-                                        struct_defs: ctx_comb.struct_defs,
-                                        block_helpers: ctx_comb.block_helpers,
-                                    };
-                                    hits.push(cpp_expr(&margs[0], &sub_ctx));
-                                }
-                                let found_expr: String = hits
-                                    .iter()
-                                    .map(|h| format!("({h})"))
-                                    .collect::<Vec<_>>()
-                                    .join(" || ");
-                                let mut idx_expr = "0u".to_string();
-                                for i in (0..n as u64).rev() {
-                                    let hit = &hits[i as usize];
-                                    idx_expr = format!("(({hit}) ? (uint32_t){i} : {idx_expr})");
-                                }
-                                for bind in &l.destructure_fields {
-                                    let rhs = match bind.name.as_str() {
-                                        "found" => format!("({found_expr})"),
-                                        "index" => idx_expr.clone(),
-                                        _ => continue,
-                                    };
-                                    cpp.push_str(&format!(
-                                        "  _let_{fn} = {rhs};\n", fn = bind.name
-                                    ));
-                                }
-                                continue;
-                            }
+        // Module-scope `let`s are single-pass C++ assignments. One whose value
+        // (transitively) reads a signal assigned in a `comb` block must run
+        // *after* the comb blocks, or it reads the previous pass's value — and
+        // at a clock edge the previous pass is the pre-edge state, so an output
+        // like `let instr_o = instr_d;` lags the state register by one cycle
+        // (issue #1003). Classify the lets once; the emission itself is shared.
+        let comb_targets = collect_comb_targets(&m.body);
+        let post_comb_lets: HashSet<usize> = {
+            let mut post: HashSet<usize> = HashSet::new();
+            let mut post_names: HashSet<String> = HashSet::new();
+            loop {
+                let mut changed = false;
+                for (idx, item) in m.body.iter().enumerate() {
+                    let ModuleBodyItem::LetBinding(l) = item else {
+                        continue;
+                    };
+                    if post.contains(&idx) {
+                        continue;
+                    }
+                    let mut deps: HashSet<String> = HashSet::new();
+                    comb_graph::collect_expr_idents(&l.value, &mut deps);
+                    if deps
+                        .iter()
+                        .any(|d| comb_targets.contains(d) || post_names.contains(d))
+                    {
+                        post.insert(idx);
+                        post_names.insert(l.name.name.clone());
+                        for bind in &l.destructure_fields {
+                            post_names.insert(bind.name.clone());
                         }
+                        changed = true;
                     }
-                    let val = cpp_expr(&l.value, &ctx_comb);
-                    for bind in &l.destructure_fields {
-                        cpp.push_str(&format!(
-                            "  _let_{fn} = {val}.{fn};\n", fn = bind.name
-                        ));
-                    }
-                    continue;
                 }
-                let val = cpp_expr(&l.value, &ctx_comb);
-                if l.ty.is_none() {
-                    // ty=None: assignment to existing port or wire
-                    let name = &l.name.name;
-                    if port_names.contains(name) {
-                        // Output port — public field, plain name. Wide ports
-                        // need the same 65–128-bit conversion stmt_codegen's
-                        // comb arm applies: expression-context RHS is
-                        // _arch_u128, the port is VlWide<ceil(W/32)>, and a
-                        // bare assignment truncates through uint64_t
-                        // (`let y = {a, b};` with y: out UInt<128> dropped
-                        // the high word pair — found while fixing arch#858).
-                        if wide_names.contains(name.as_str()) {
-                            let bits = widths.get(name.as_str()).copied().unwrap_or(0);
-                            if bits > 128 {
-                                // >128 bits: both sides are VlWide<N> — direct assign.
-                                cpp.push_str(&format!("  {name} = {val};\n"));
-                            } else {
+                if !changed {
+                    break;
+                }
+            }
+            post
+        };
+        let emit_let_binding = |cpp: &mut String, l: &LetBinding| {
+            // Destructuring: emit one assignment per bound field.
+            if !l.destructure_fields.is_empty() {
+                // Special case: RHS is `vec.find_first(pred)`. Emit the
+                // raw OR + priority encoder directly; avoids the
+                // non-existent `.find_first()` member access on C++
+                // vector fields.
+                if let ExprKind::MethodCall(recv, mname, margs) = &l.value.kind {
+                    if mname.name == "find_first" {
+                        let recv_cpp = cpp_expr(recv, &ctx_comb);
+                        let n = match &recv.kind {
+                            ExprKind::Ident(nm) => {
+                                ctx_comb.vec_sizes.and_then(|s| s.get(nm)).copied()
+                            }
+                            _ => None,
+                        };
+                        if let Some(n) = n {
+                            // Build per-iteration predicate strings.
+                            let mut hits: Vec<String> = Vec::with_capacity(n as usize);
+                            for i in 0..n {
+                                let mut sub: HashMap<String, String> = HashMap::new();
+                                sub.insert("item".to_string(), format!("{recv_cpp}[{i}]"));
+                                sub.insert("index".to_string(), format!("{i}"));
+                                let sub_ctx = Ctx {
+                                    reg_names: ctx_comb.reg_names,
+                                    port_names: ctx_comb.port_names,
+                                    let_names: ctx_comb.let_names,
+                                    let_values: ctx_comb.let_values,
+                                    inst_names: ctx_comb.inst_names,
+                                    wide_names: ctx_comb.wide_names,
+                                    widths: ctx_comb.widths,
+                                    signed_names: ctx_comb.signed_names,
+                                    float_names: ctx_comb.float_names,
+                                    posedge_lhs: ctx_comb.posedge_lhs,
+                                    fsm_mode: ctx_comb.fsm_mode,
+                                    enum_map: ctx_comb.enum_map,
+                                    bus_ports: ctx_comb.bus_ports,
+                                    reset_levels: ctx_comb.reset_levels,
+                                    vec_names: ctx_comb.vec_names,
+                                    vec_2d_names: ctx_comb.vec_2d_names,
+                                    vec_sizes: ctx_comb.vec_sizes,
+                                    fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
+                                    ident_subst: Some(&sub),
+                                    loop_var_subst: ctx_comb.loop_var_subst,
+                                    vec_of_bus_port_count: ctx_comb.vec_of_bus_port_count,
+                                    vec_of_bus_wire_count: ctx_comb.vec_of_bus_wire_count,
+                                    coverage: ctx_comb.coverage,
+                                    params: ctx_comb.params,
+                                    vinit_regs: ctx_comb.vinit_regs,
+                                    decl_types: ctx_comb.decl_types,
+                                    struct_defs: ctx_comb.struct_defs,
+                                    block_helpers: ctx_comb.block_helpers,
+                                };
+                                hits.push(cpp_expr(&margs[0], &sub_ctx));
+                            }
+                            let found_expr: String = hits
+                                .iter()
+                                .map(|h| format!("({h})"))
+                                .collect::<Vec<_>>()
+                                .join(" || ");
+                            let mut idx_expr = "0u".to_string();
+                            for i in (0..n as u64).rev() {
+                                let hit = &hits[i as usize];
+                                idx_expr = format!("(({hit}) ? (uint32_t){i} : {idx_expr})");
+                            }
+                            for bind in &l.destructure_fields {
+                                let rhs = match bind.name.as_str() {
+                                    "found" => format!("({found_expr})"),
+                                    "index" => idx_expr.clone(),
+                                    _ => continue,
+                                };
                                 cpp.push_str(&format!(
-                                    "  _arch_u128_to_vl({val}, {name}._data, {});\n",
-                                    wide_words(bits)
+                                    "  _let_{fn} = {rhs};\n", fn = bind.name
                                 ));
                             }
-                        } else {
+                            return;
+                        }
+                    }
+                }
+                let val = cpp_expr(&l.value, &ctx_comb);
+                for bind in &l.destructure_fields {
+                    cpp.push_str(&format!(
+                        "  _let_{fn} = {val}.{fn};\n", fn = bind.name
+                    ));
+                }
+                return;
+            }
+            let val = cpp_expr(&l.value, &ctx_comb);
+            if l.ty.is_none() {
+                // ty=None: assignment to existing port or wire
+                let name = &l.name.name;
+                if port_names.contains(name) {
+                    // Output port — public field, plain name. Wide ports
+                    // need the same 65–128-bit conversion stmt_codegen's
+                    // comb arm applies: expression-context RHS is
+                    // _arch_u128, the port is VlWide<ceil(W/32)>, and a
+                    // bare assignment truncates through uint64_t
+                    // (`let y = {a, b};` with y: out UInt<128> dropped
+                    // the high word pair — found while fixing arch#858).
+                    if wide_names.contains(name.as_str()) {
+                        let bits = widths.get(name.as_str()).copied().unwrap_or(0);
+                        if bits > 128 {
+                            // >128 bits: both sides are VlWide<N> — direct assign.
                             cpp.push_str(&format!("  {name} = {val};\n"));
+                        } else {
+                            cpp.push_str(&format!(
+                                "  _arch_u128_to_vl({val}, {name}._data, {});\n",
+                                wide_words(bits)
+                            ));
                         }
                     } else {
-                        // Wire — private field with _let_ prefix
-                        cpp.push_str(&format!("  _let_{name} = {val};\n"));
+                        cpp.push_str(&format!("  {name} = {val};\n"));
                     }
                 } else {
-                    cpp.push_str(&format!("  _let_{} = {};\n", l.name.name, val));
+                    // Wire — private field with _let_ prefix
+                    cpp.push_str(&format!("  _let_{name} = {val};\n"));
                 }
+            } else {
+                cpp.push_str(&format!("  _let_{} = {};\n", l.name.name, val));
+            }
+        };
+        for (idx, item) in m.body.iter().enumerate() {
+            if let ModuleBodyItem::LetBinding(l) = item {
+                if post_comb_lets.contains(&idx) {
+                    continue;
+                }
+                emit_let_binding(&mut cpp, l);
             }
         }
 
@@ -3938,6 +3983,16 @@ impl<'a> SimCodegen<'a> {
         }
         if comb_settle_depth > 1 {
             cpp.push_str("  } // settle\n");
+        }
+
+        // Module-scope lets that read comb-assigned signals (see above, #1003):
+        // evaluated after the comb blocks so a single pass is already settled.
+        for (idx, item) in m.body.iter().enumerate() {
+            if let ModuleBodyItem::LetBinding(l) = item {
+                if post_comb_lets.contains(&idx) {
+                    emit_let_binding(&mut cpp, l);
+                }
+            }
         }
         cpp.push_str("}\n");
 
