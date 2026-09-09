@@ -40443,3 +40443,93 @@ fn test_sim_let_reading_comb_wire_emitted_after_comb_blocks_issue_1003() {
         "`let y_o = d` must be evaluated after the comb block that assigns d (#1003):\n{comb}"
     );
 }
+
+// ── Learning store: concurrent writers must not corrupt or wipe events.jsonl (#1008) ─
+
+#[test]
+fn test_learn_store_survives_concurrent_checks_issue_1008() {
+    // Before the fix, `harvest_features` rewrote events.jsonl with truncate+write and no
+    // lock; a sibling `arch check` reading mid-rewrite saw an empty file and wrote that
+    // back, wiping every earlier event. Reproduce the pattern: pre-fill a store, then run
+    // many checks of a doc-commented file at once under the same HOME.
+    let home = tempfile::tempdir().expect("tempdir");
+    let src = home.path().join("Doc.arch");
+    std::fs::write(
+        &src,
+        r#"
+        /// A documented module: the harvester records one feature event for it.
+        module Doc
+          port a: in Bool;
+          port y: out Bool;
+          let y = a;
+        end module Doc
+    "#,
+    )
+    .expect("write source");
+    let learn_dir = home.path().join(".arch").join("learn");
+    std::fs::create_dir_all(learn_dir.join("pending")).expect("mkdir learn");
+    let events = learn_dir.join("events.jsonl");
+    let mut prefill = String::new();
+    for i in 0..2000 {
+        prefill.push_str(&format!(
+            "{{\"ts\":\"2026-01-01T00:00:00Z\",\"kind\":\"error_fix\",\"error_code\":\"E{i}\",\"error_message\":\"{}\",\"file_path\":\"/old/{i}.arch\",\"src_before\":\"\",\"src_after\":\"\",\"diff_summary\":\"\"}}\n",
+            "x".repeat(300)
+        ));
+    }
+    std::fs::write(&events, &prefill).expect("prefill");
+
+    for _round in 0..3 {
+        let children: Vec<_> = (0..8)
+            .map(|_| {
+                std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+                    .env("HOME", home.path())
+                    .env_remove("ARCH_NO_LEARN")
+                    .arg("check")
+                    .arg(&src)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("spawn arch check")
+            })
+            .collect();
+        for mut c in children {
+            assert!(c.wait().expect("wait").success(), "arch check failed");
+        }
+    }
+
+    let raw = std::fs::read_to_string(&events).expect("read events");
+    let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+    let kept = lines
+        .iter()
+        .filter(|l| l.contains("\"kind\":\"error_fix\""))
+        .count();
+    assert_eq!(
+        kept, 2000,
+        "pre-existing events were lost: {} of 2000 remain",
+        kept
+    );
+    let features = lines
+        .iter()
+        .filter(|l| l.contains("\"kind\":\"feature\""))
+        .count();
+    assert_eq!(
+        features, 1,
+        "expected exactly one feature event for Doc, found {features}"
+    );
+    for l in &lines {
+        assert!(
+            l.starts_with('{') && l.ends_with('}') && l.matches("\"ts\":").count() == 1,
+            "interleaved or truncated line: {l}"
+        );
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(&learn_dir)
+        .expect("read_dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains(".tmp."))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
+}

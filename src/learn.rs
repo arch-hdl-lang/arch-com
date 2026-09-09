@@ -56,6 +56,38 @@ pub fn learn_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Exclusive advisory lock over the whole store (`<learn_dir>/.lock`), held for the
+/// duration of any append or read-modify-write of `events.jsonl`, `index.json` or
+/// `retrieval_counts.json`. Released when the guard drops (the OS releases it on
+/// process exit too). Blocking, so concurrent `arch check`/`arch build` processes
+/// queue instead of racing: without this, a rewrite done as truncate+write could be
+/// read half-written by a sibling process, which then wrote that empty view back
+/// and wiped the store (issue #1008).
+struct StoreLock(#[allow(dead_code)] fs::File);
+
+fn lock_store(dir: &std::path::Path) -> std::io::Result<StoreLock> {
+    let f = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(dir.join(".lock"))?;
+    f.lock()?;
+    Ok(StoreLock(f))
+}
+
+/// Replace `path` atomically: write a sibling temp file, then rename it over the
+/// target, so a reader never observes a truncated or half-written file.
+fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let tmp = path.with_file_name(format!(
+        ".{}.tmp.{}",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("store"),
+        std::process::id()
+    ));
+    fs::write(&tmp, contents)?;
+    fs::rename(&tmp, path)
+}
+
 /// Is learning capture enabled? Honors `ARCH_NO_LEARN=1` as an opt-out.
 pub fn is_enabled() -> bool {
     match std::env::var("ARCH_NO_LEARN") {
@@ -319,7 +351,7 @@ pub fn record_failure(
         error_message: error_message.to_string(),
         src: src.to_string(),
     };
-    fs::write(&pending_file, pending_to_json(&pending))?;
+    write_atomic(&pending_file, &pending_to_json(&pending))?;
     Ok(())
 }
 
@@ -380,6 +412,12 @@ pub fn record_success_if_pending(
 
 fn append_event(e: &Event) -> std::io::Result<()> {
     let dir = learn_dir()?;
+    let _lock = lock_store(&dir)?;
+    append_event_unlocked(&dir, e)
+}
+
+/// Append with the store lock already held by the caller.
+fn append_event_unlocked(dir: &std::path::Path, e: &Event) -> std::io::Result<()> {
     let path = dir.join("events.jsonl");
     let mut f = fs::OpenOptions::new()
         .create(true)
@@ -471,14 +509,18 @@ where
         return Ok(0);
     }
 
-    // Replace any existing feature events for the files we're harvesting.
+    // Replace any existing feature events for the files we're harvesting. Purge and
+    // re-append under one store lock so a sibling process can neither interleave its
+    // events between the two steps nor read the file mid-rewrite (#1008).
     let touched_files: std::collections::HashSet<String> =
         new_events.iter().map(|e| e.file_path.clone()).collect();
-    purge_features_for_files(&touched_files)?;
+    let dir = learn_dir()?;
+    let _lock = lock_store(&dir)?;
+    purge_features_for_files(&dir, &touched_files)?;
 
     let mut count = 0;
     for e in &new_events {
-        append_event(e)?;
+        append_event_unlocked(&dir, e)?;
         count += 1;
     }
     Ok(count)
@@ -498,9 +540,12 @@ fn extract_doc(item: &crate::ast::Item) -> Option<(&'static str, String, String,
 }
 
 /// Remove all feature events whose `file_path` matches any of `files`.
-/// Rewrites `events.jsonl` by line-filtering. O(N) per call.
-fn purge_features_for_files(files: &std::collections::HashSet<String>) -> std::io::Result<()> {
-    let dir = learn_dir()?;
+/// Rewrites `events.jsonl` by line-filtering. O(N) per call. The caller must
+/// hold the store lock; the rewrite itself is atomic (temp file + rename).
+fn purge_features_for_files(
+    dir: &std::path::Path,
+    files: &std::collections::HashSet<String>,
+) -> std::io::Result<()> {
     let path = dir.join("events.jsonl");
     if !path.exists() {
         return Ok(());
@@ -524,12 +569,13 @@ fn purge_features_for_files(files: &std::collections::HashSet<String>) -> std::i
     if !out.is_empty() {
         out.push('\n');
     }
-    fs::write(&path, out)
+    write_atomic(&path, &out)
 }
 
 /// Build / rebuild the BM25 index over events.jsonl. Writes index.json.
 pub fn build_index() -> std::io::Result<usize> {
     let dir = learn_dir()?;
+    let _lock = lock_store(&dir)?;
     let events_path = dir.join("events.jsonl");
     if !events_path.exists() {
         eprintln!(
@@ -579,7 +625,7 @@ pub fn build_index() -> std::io::Result<usize> {
         out.push_str(&format!("\"{}\":{}", escape_json_string(term), count));
     }
     out.push_str("}}");
-    fs::write(&index_path, out)?;
+    write_atomic(&index_path, &out)?;
     Ok(n_docs)
 }
 
@@ -650,13 +696,14 @@ fn save_counts(counts: &std::collections::HashMap<String, u32>) -> std::io::Resu
         s.push_str(&format!("\"{}\":{}", k, v));
     }
     s.push('}');
-    fs::write(&path, s)
+    write_atomic(&path, &s)
 }
 
 fn bump_counts(ids: &[String]) -> std::io::Result<()> {
     if ids.is_empty() {
         return Ok(());
     }
+    let _lock = lock_store(&learn_dir()?)?;
     let mut counts = load_counts()?;
     for id in ids {
         *counts.entry(id.clone()).or_insert(0) += 1;
@@ -804,6 +851,7 @@ pub fn prune(
     dry_run: bool,
 ) -> std::io::Result<(usize, usize)> {
     let dir = learn_dir()?;
+    let _lock = lock_store(&dir)?;
     let events_path = dir.join("events.jsonl");
     if !events_path.exists() {
         return Ok((0, 0));
@@ -867,7 +915,7 @@ pub fn prune(
         if !out.is_empty() {
             out.push('\n');
         }
-        fs::write(&events_path, out)?;
+        write_atomic(&events_path, &out)?;
         // Index is now stale; remove so `advise` rebuilds / warns.
         let _ = fs::remove_file(dir.join("index.json"));
     }
@@ -1277,6 +1325,46 @@ mod tests {
         // Skipping it would silently disable capture for that project.
         assert!(!is_unmatchable_path("/home/dev/temp/myproj/Foo.arch"));
         assert!(!is_unmatchable_path("/Users/dev/Documents/tempo/Foo.arch"));
+    }
+
+    #[test]
+    fn write_atomic_replaces_without_leaving_temp_files() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let p = td.path().join("events.jsonl");
+        write_atomic(&p, "a\n").expect("first write");
+        write_atomic(&p, "b\nc\n").expect("second write");
+        assert_eq!(fs::read_to_string(&p).expect("read"), "b\nc\n");
+        let leftovers: Vec<_> = fs::read_dir(td.path())
+            .expect("read_dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn store_lock_is_exclusive_across_handles() {
+        // A second lock on the same store must wait for the first guard to drop.
+        let td = tempfile::tempdir().expect("tempdir");
+        let dir = td.path().to_path_buf();
+        let guard = lock_store(&dir).expect("lock");
+        let dir2 = dir.clone();
+        let t = std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let _g = lock_store(&dir2).expect("second lock");
+            start.elapsed()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        drop(guard);
+        let waited = t.join().expect("join");
+        assert!(
+            waited >= std::time::Duration::from_millis(200),
+            "second lock did not wait for the first: {waited:?}"
+        );
     }
 
     #[test]
