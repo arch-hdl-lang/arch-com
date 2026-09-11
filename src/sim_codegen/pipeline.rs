@@ -1645,7 +1645,7 @@ impl<'a> SimCodegen<'a> {
                             let dst_bits = eval_const_expr_with_params(width, params) as u32;
                             let src_bits =
                                 self.pipeline_sim_expr_width(base, prefix, si, srn, w, pn, params);
-                            if src_bits >= dst_bits || src_bits == 0 {
+                            let value = if src_bits >= dst_bits || src_bits == 0 {
                                 format!("({})({b})", cpp_uint(dst_bits))
                             } else {
                                 let dst_ty = cpp_uint(dst_bits);
@@ -1653,6 +1653,15 @@ impl<'a> SimCodegen<'a> {
                                     "((({b} >> {}) & 1) ? ({dst_ty})({b}) | ({dst_ty})(~(({dst_ty})0) << {src_bits}) : ({dst_ty})({b}))",
                                     src_bits - 1,
                                 )
+                            };
+                            // arch#1010: `.sext<N>()` is `SInt<N>`; reinterpret
+                            // the sign-extended bit pattern as signed so a
+                            // downstream compare / arithmetic `>>` in the same
+                            // stage evaluates signed. Scalar widths only.
+                            if dst_bits > 0 && dst_bits <= 64 {
+                                cast_to_signed_bits(&value, dst_bits)
+                            } else {
+                                value
                             }
                         } else {
                             b
