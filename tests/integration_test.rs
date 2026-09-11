@@ -36659,6 +36659,138 @@ end module SextOfSignedCast
     );
 }
 
+/// arch#1010: `.sext<N>()` is typed `SInt<N>`, but a bare SV concatenation is
+/// unsigned (IEEE 1800 §11.8.1) and the sim emitted an unsigned C++ value — so
+/// a signedness-sensitive operator fed by the result (relational compare,
+/// arithmetic `>>`) evaluated unsigned in BOTH backends and both agreed on the
+/// wrong answer. Shape check: SV wraps the concat in `$signed(...)`, and the
+/// sim reinterprets the pattern as a signed C++ scalar. `.resize<N>()` on a
+/// signed source gets the same signed reinterpret in sim (the SV size cast
+/// `N'(x)` already preserved signedness — the backends only diverged in sim).
+#[test]
+fn test_sext_result_carries_signedness_both_backends() {
+    let source = r#"
+module QSext
+  port a: in SInt<16>;
+  port b: in SInt<16>;
+  port lt_sext:  out Bool;
+  port shr_sext: out SInt<32>;
+  let wa: SInt<32> = a.sext<32>();
+  let lt_sext  = wa < b.sext<32>();
+  let shr_sext = a.sext<32>() >> 4;
+end module QSext
+"#;
+    let sv = compile_to_sv(source);
+    // The concat is wrapped in $signed so the compare / >>> are signed.
+    assert!(
+        sv.contains("$signed({{(32-16){a[16-1]}}, a})"),
+        "sext should emit a $signed-wrapped concat, got:\n{sv}"
+    );
+    // No bare unsigned concat left as a comparison / shift operand.
+    assert!(
+        !sv.contains("wa < {{") && !sv.contains("}, a} >>>"),
+        "no bare unsigned concat should feed a signed operator, got:\n{sv}"
+    );
+    let sim = compile_to_sim_h(source, false);
+    // The sim reinterprets the sign-extended pattern as int32_t so the compare
+    // and the arithmetic right shift are signed in C++.
+    assert!(
+        sim.contains("(int32_t)") && !sim.contains("lt_sext = (_let_wa < ((a >> 15)"),
+        "sim sext should reinterpret to a signed C++ scalar, got:\n{sim}"
+    );
+}
+
+/// arch#1010 behavioral: build the SV and run Verilator, asserting the
+/// spec-correct signed answers. A pre-fix run returns the exact opposite for
+/// the compares and a logical (zero-filled) shift. Skips if Verilator is
+/// absent, matching this file's Verilator-smoke convention.
+#[test]
+fn test_sext_signed_semantics_behavioral_verilator() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_verilator {
+        eprintln!("skipping arch#1010 sext signed-semantics behavioral check: verilator not found");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_src = td.path().join("QSextB.arch");
+    std::fs::write(
+        &arch_src,
+        r#"module QSextB
+  port a: in SInt<16>;
+  port b: in SInt<16>;
+  port lt_sext:  out Bool;
+  port shr_sext: out SInt<32>;
+  let lt_sext  = a.sext<32>() < b.sext<32>();
+  let shr_sext = a.sext<32>() >> 4;
+end module QSextB
+"#,
+    )
+    .expect("write arch");
+    let sv_out = td.path().join("QSextB.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(&arch_src)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build QSextB SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let tb = td.path().join("tb.cpp");
+    std::fs::write(
+        &tb,
+        r#"#include "VQSextB.h"
+#include "verilated.h"
+#include <cstdio>
+int main() {
+  { VQSextB* d = new VQSextB; d->a = (-1) & 0xFFFF; d->b = 1 & 0xFFFF; d->eval();
+    printf("A %d %d\n", (int)d->lt_sext, (int)d->shr_sext); delete d; }
+  { VQSextB* d = new VQSextB; d->a = 1 & 0xFFFF; d->b = (-1) & 0xFFFF; d->eval();
+    printf("B %d\n", (int)d->lt_sext); delete d; }
+  { VQSextB* d = new VQSextB; d->a = (-256) & 0xFFFF; d->eval();
+    printf("C %d\n", (int)d->shr_sext); delete d; }
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+    let out = std::process::Command::new("verilator")
+        .args(["--cc", "--exe", "--build", "-Wno-fatal"])
+        .arg(&sv_out)
+        .arg(&tb)
+        .args(["--top-module", "QSextB", "-o", "vrun"])
+        .current_dir(td.path())
+        .output()
+        .expect("verilator build");
+    assert!(
+        out.status.success(),
+        "verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run = std::process::Command::new(td.path().join("obj_dir").join("vrun"))
+        .output()
+        .expect("run vrun");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    // -1 < 1 signed => 1 ; -1 >> 4 arithmetic => -1
+    assert!(
+        stdout.contains("A 1 -1"),
+        "expected `A 1 -1`, got:\n{stdout}"
+    );
+    // 1 < -1 signed => 0
+    assert!(stdout.contains("B 0"), "expected `B 0`, got:\n{stdout}");
+    // -256 >> 4 arithmetic => -16
+    assert!(stdout.contains("C -16"), "expected `C -16`, got:\n{stdout}");
+}
+
 /// Dual-simulator behavioral check for the arithmetic-index hoist
 /// (arch#650): the miscompiled pre-fix shape (`a - b[i]`) and the fixed
 /// shape (`(a - b)[i]` via a hoisted temp) both *compile* under Verilator

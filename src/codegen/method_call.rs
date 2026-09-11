@@ -141,7 +141,17 @@ impl<'a> Codegen<'a> {
                         self.push_hoist_temp_in_loop(sw.clone(), tmp.clone(), rb, in_loop);
                         tmp
                     };
-                    format!("{{{{({w}-{sw}){{{rb}[{sw}-1]}}}}, {rb}}}")
+                    // arch#1010: `.sext<N>()` is typed `SInt<N>` by the type
+                    // checker, but a bare SV concatenation is *unsigned*
+                    // (IEEE 1800 §11.8.1) regardless of operand signedness —
+                    // so a signedness-sensitive operator fed by this result
+                    // (relational compare, arithmetic `>>>`, `/`, `%`)
+                    // evaluates unsigned and gives the wrong answer. Wrap the
+                    // concat in `$signed(...)` so the result carries the
+                    // signedness the front end already committed to. The bits
+                    // are unchanged, so `+`/`-`/`*` and assignment targets are
+                    // unaffected; only the SV signedness attribute is restored.
+                    format!("$signed({{{{({w}-{sw}){{{rb}[{sw}-1]}}}}, {rb}}})")
                 } else {
                     b
                 }

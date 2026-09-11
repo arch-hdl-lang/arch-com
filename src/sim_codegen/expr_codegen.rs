@@ -809,11 +809,12 @@ pub(super) fn infer_expr_signed(expr: &Expr, ctx: &Ctx) -> bool {
         ExprKind::Cast(_, ty) => matches!(ty.as_ref(), TypeExpr::SInt(_)),
         ExprKind::Signed(_) => true,
         ExprKind::Unsigned(_) => false,
+        // `.sext<N>()` is typed `SInt<N>` unconditionally by the type checker
+        // (typecheck.rs), regardless of the receiver's signedness — so its
+        // result is always signed (arch#1010).
+        ExprKind::MethodCall(_, method, _) if method.name == "sext" => true,
         ExprKind::MethodCall(base, method, _)
-            if matches!(
-                method.name.as_str(),
-                "trunc" | "sext" | "resize" | "reverse"
-            ) =>
+            if matches!(method.name.as_str(), "trunc" | "resize" | "reverse") =>
         {
             infer_expr_signed(base, ctx)
         }
@@ -1874,7 +1875,7 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
             if let Some(w_expr) = args.first() {
                 let dst_bits = eval_width_in(w_expr, ctx);
                 let src_bits = infer_expr_width(base, ctx);
-                if src_bits >= dst_bits || src_bits == 0 {
+                let value = if src_bits >= dst_bits || src_bits == 0 {
                     // No extension needed or unknown source width
                     format!("({})({})", cpp_uint(dst_bits), b)
                 } else {
@@ -1882,22 +1883,49 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
                     let dst_t = cpp_uint(dst_bits);
                     format!("(({b} >> {}) & 1 ? ({dst_t})({b}) | ({dst_t})(~(({dst_t})0) << {src_bits}) : ({dst_t})({b}))",
                         src_bits - 1)
+                };
+                // arch#1010: `.sext<N>()` is typed `SInt<N>` (typecheck.rs),
+                // but the value above is an unsigned C++ type, so a downstream
+                // comparison or arithmetic right shift evaluates unsigned (C++
+                // usual-arithmetic-conversions) and gives the wrong answer —
+                // matching the SV concat defect. Reinterpret the (correct)
+                // sign-extended bit pattern as a signed C++ value so the
+                // signedness the front end committed to is preserved. Scalar
+                // widths only; wide (>64b) sext keeps its existing form.
+                if dst_bits > 0 && dst_bits <= 64 {
+                    cast_to_signed_bits(&value, dst_bits)
+                } else {
+                    value
                 }
             } else {
                 b
             }
         }
         "resize" => {
-            // Direction-agnostic: sign-extend if narrowing to signed, zero-pad if widening unsigned
+            // Direction-agnostic: preserves the source's signedness (matching
+            // the SV `N'(expr)` size cast).
             if let Some(w_expr) = args.first() {
                 let dst_bits = eval_width_in(w_expr, ctx);
                 let src_bits = infer_expr_width(base, ctx);
-                if src_bits >= dst_bits || src_bits == 0 {
+                let signed = infer_expr_signed(base, ctx);
+                let value = if src_bits >= dst_bits || src_bits == 0 {
                     // Narrowing or equal: just cast (C++ truncates)
                     cast_to_bits(&b, dst_bits)
                 } else {
-                    // Widening: zero-extend (same as zext for sim purposes)
+                    // Widening: zero-extend (same as zext for sim purposes).
+                    // For a signed source the C++ signed-wrap below restores
+                    // the sign, and integer promotion of a signed base already
+                    // sign-extends the value bits.
                     format!("({})({})", cpp_uint(dst_bits), b)
+                };
+                // arch#1010: when the HDL result is signed, reinterpret as a
+                // signed C++ value so downstream comparisons / right shifts are
+                // signed — the SV backend already sign-preserves via `N'(x)`,
+                // and `arch sim` diverged here. Scalar widths only.
+                if signed && dst_bits > 0 && dst_bits <= 64 {
+                    cast_to_signed_bits(&value, dst_bits)
+                } else {
+                    value
                 }
             } else {
                 b
