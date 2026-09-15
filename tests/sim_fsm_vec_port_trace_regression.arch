@@ -1,0 +1,40 @@
+// Regression fixture for arch#1019.
+//
+// `add_trace_to_simple_construct` (src/sim_codegen/trace.rs) built the VCD
+// signal list from the port list but did not skip `Vec<T,N>` ports, unlike
+// the module-path collector `collect_trace_signals`. A Vec port is stored as
+// N decomposed scalars (din_0..din_{N-1}); the trace dump emitted a reference
+// to the aggregate name `din`, which has no C++ declaration, so `arch sim`
+// produced non-compiling C++ for every fsm/ram/cam/counter/linklist/
+// synchronizer/regfile with a Vec port. This fixture sims cleanly only with
+// the fix in place.
+fsm FsmVecPortTrace
+  port clk:   in Clock<SysDomain>;
+  port rst:   in Reset<Sync>;
+  port start: in Bool;
+  port din:   in Vec<UInt<64>, 4>;
+  port dout:  out UInt<64>;
+
+  reg acc: UInt<64> init 0 reset rst=>0;
+
+  state [Idle, Run]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      dout = acc;
+    end comb
+  end default
+
+  state Idle
+    -> Run when start;
+  end state Idle
+
+  state Run
+    seq
+      acc <= din[0];
+    end seq
+    -> Idle when true;
+  end state Run
+end fsm FsmVecPortTrace

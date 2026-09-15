@@ -293,6 +293,12 @@ pub(super) fn add_trace_to_simple_construct(
         if ty_references_named(&p.ty) {
             continue;
         } // handled elsewhere or intentionally untraced when struct-typed
+        if matches!(p.ty, TypeExpr::Vec(..)) {
+            continue;
+        } // Vec ports are decomposed into per-element scalars (din_0..din_{N-1})
+          // and passed by the caller via extra_signals; the aggregate name `din`
+          // has no C++ declaration. Mirrors collect_trace_signals (see above).
+          // arch-com#1019.
         if p.bus_info.is_some() {
             continue;
         } // bus ports flattened via extra_signals
