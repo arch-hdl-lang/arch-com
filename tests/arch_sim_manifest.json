@@ -128,6 +128,15 @@
       ]
     },
     {
+      "name": "sim_fsm_vec_port_trace_regression",
+      "arch_files": [
+        "tests/sim_fsm_vec_port_trace_regression.arch"
+      ],
+      "tb_files": [
+        "tests/sim_fsm_vec_port_trace_regression_tb.cpp"
+      ]
+    },
+    {
       "name": "thread__basic_thread",
       "arch_files": [
         "tests/thread/basic_thread.arch"
