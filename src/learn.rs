@@ -715,15 +715,33 @@ fn bump_counts(ids: &[String]) -> std::io::Result<()> {
 /// compile-failure hint in `arch check` to avoid inflating counts on
 /// suggestions the user never actually looked at.
 pub fn peek(query: &str, k: usize) -> std::io::Result<Vec<Match>> {
-    advise_impl(query, k, false)
+    advise_impl(query, k, false, AdviceFilter::All)
 }
 
 /// Load events, tokenize the query, score each event via BM25, return top-K.
 pub fn advise(query: &str, k: usize) -> std::io::Result<Vec<Match>> {
-    advise_impl(query, k, true)
+    advise_filtered(query, k, AdviceFilter::All)
 }
 
-fn advise_impl(query: &str, k: usize, bump: bool) -> std::io::Result<Vec<Match>> {
+/// Event eligibility is applied before top-K selection and retrieval accounting.
+#[derive(Debug, Clone, Copy)]
+pub enum AdviceFilter {
+    All,
+    NonFeatures,
+    Features,
+}
+
+/// Retrieve top-K eligible events, counting only the returned matches.
+pub fn advise_filtered(query: &str, k: usize, filter: AdviceFilter) -> std::io::Result<Vec<Match>> {
+    advise_impl(query, k, true, filter)
+}
+
+fn advise_impl(
+    query: &str,
+    k: usize,
+    bump: bool,
+    filter: AdviceFilter,
+) -> std::io::Result<Vec<Match>> {
     let dir = learn_dir()?;
     let events_path = dir.join("events.jsonl");
     if !events_path.exists() {
@@ -750,6 +768,14 @@ fn advise_impl(query: &str, k: usize, bump: bool) -> std::io::Result<Vec<Match>>
     let b = 0.75_f64;
     let mut scored: Vec<(f64, Event)> = Vec::with_capacity(events.len());
     for e in events {
+        let eligible = match filter {
+            AdviceFilter::All => true,
+            AdviceFilter::NonFeatures => e.kind != "feature",
+            AdviceFilter::Features => e.kind == "feature",
+        };
+        if !eligible {
+            continue;
+        }
         let text = format!("{} {} {}", e.error_code, e.error_message, e.diff_summary);
         let d_terms = tokenize(&text);
         let dl = d_terms.len() as f64;
