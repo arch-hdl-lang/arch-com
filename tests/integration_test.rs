@@ -40874,3 +40874,79 @@ fn test_learn_store_survives_concurrent_checks_issue_1008() {
         "temp files left behind: {leftovers:?}"
     );
 }
+
+/// Unsized ARCH literals have minimum-value widths, including within concat
+/// and replication. SV requires these operand widths to be explicit.
+#[test]
+fn test_concat_numeric_literals_preserve_widths() {
+    let sv = compile_to_sv(
+        r#"
+module ConcatLiterals
+  port x: in UInt<3>;
+  port q: out UInt<4>;
+  port mixed: out UInt<10>;
+  port repeated: out UInt<4>;
+  comb
+    q = {x, 1};
+    mixed = {0, 0xf, 0b101, {1, 0}};
+    repeated = {4{1}};
+  end comb
+end module ConcatLiterals
+"#,
+    );
+    assert!(sv.contains("{x, 1'd1}"), "{sv}");
+    assert!(sv.contains("{1'd0, 4'd15, 3'd5, {1'd1, 1'd0}}"), "{sv}");
+    assert!(sv.contains("{4{1'd1}}"), "{sv}");
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("test.sv");
+    std::fs::write(&src, format!("{sv}\nmodule tb; reg [2:0] x; wire [3:0] q, repeated; wire [9:0] mixed; ConcatLiterals dut(.*); initial begin x=3; #1; if(q !== 7 || mixed !== 10'd502 || repeated !== 15) $fatal(1, \"concat width/value mismatch\"); $finish; end endmodule\n")).unwrap();
+    let out = dir.path().join("sim");
+    let build = std::process::Command::new("iverilog")
+        .args(["-g2012", "-s", "tb", "-o"])
+        .arg(&out)
+        .arg(src)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sim = std::process::Command::new("vvp").arg(out).output().unwrap();
+    assert!(
+        sim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sim.stdout)
+    );
+}
+
+#[test]
+fn test_concat_numeric_literals_in_pipeline() {
+    let sv = compile_to_sv(
+        r#"
+pipeline ConcatPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port din: in UInt<3>;
+  port dout: out UInt<4>;
+  stage S1
+    reg value: UInt<4> reset rst => 0;
+    seq on clk rising
+      value <= {din, 1};
+    end seq
+    comb
+      dout = value;
+    end comb
+  end stage S1
+end pipeline ConcatPipe
+"#,
+    );
+    assert!(sv.contains("{din, 1'd1}"), "{sv}");
+}
