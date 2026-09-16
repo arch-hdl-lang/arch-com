@@ -6632,6 +6632,23 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// SV concatenation operands must have an explicit width. ARCH gives
+    /// unsized numeric literals their minimum value width (including one bit
+    /// for zero); preserve that type instead of emitting an illegal SV operand.
+    fn sized_concat_literal(value: &Expr) -> Option<String> {
+        match &value.kind {
+            ExprKind::Literal(LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n)) => {
+                let width = (64 - n.leading_zeros()).max(1);
+                Some(format!("{width}'d{n}"))
+            }
+            _ => None,
+        }
+    }
+
+    fn emit_concat_operand(&self, value: &Expr) -> String {
+        Self::sized_concat_literal(value).unwrap_or_else(|| self.emit_expr_str(value))
+    }
+
     /// Emit a struct-field value sized to the field's declared width.
     ///
     /// Inside an SV positional concatenation `{a, b, c}`, IEEE 1800
@@ -8485,12 +8502,12 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::Todo => "'0 /* TODO: todo! placeholder */".to_string(),
             ExprKind::Concat(parts) => {
-                let strs: Vec<String> = parts.iter().map(|p| self.emit_expr_str(p)).collect();
+                let strs: Vec<String> = parts.iter().map(|p| self.emit_concat_operand(p)).collect();
                 format!("{{{}}}", strs.join(", "))
             }
             ExprKind::Repeat(count, value) => {
                 let c = self.emit_expr_str(count);
-                let v = self.emit_expr_str(value);
+                let v = self.emit_concat_operand(value);
                 format!("{{{c}{{{v}}}}}")
             }
             ExprKind::Clog2(arg) => {
