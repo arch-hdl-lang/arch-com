@@ -277,7 +277,7 @@ def get_construct_syntax(construct: str) -> str:
     """Get the ARCH syntax for a specific construct. Call this BEFORE writing
     any .arch code to avoid common mistakes.
 
-    Available constructs: module, function, pipeline, fsm, fifo, synchronizer,
+    Available constructs: module, seq, function, pipeline, fsm, fifo, synchronizer,
     ram, counter, arbiter, regfile, linklist, generate, bus, template, package,
     types, expressions, doc_comments
 
