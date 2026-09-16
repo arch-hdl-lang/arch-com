@@ -262,6 +262,63 @@ pub(super) fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize,
                     }
                 }
             }
+            // Scalar LHS ← whole-Vec RHS: pack the decomposed per-element array
+            // back into a single scalar. `arch build` treats `Vec<T,N>` and the
+            // equivalent packed `UInt<N*W>` as assignment-compatible (a packed
+            // vector in SV — e.g. `y_index = wi;` where `wi: Vec<Bool,4>` and
+            // `y_index: UInt<4>`), but the C++ sim stores the Vec as a `T[N]`
+            // array, so a direct `scalar = array` is ill-typed and the host
+            // compiler rejects it (`assigning to 'uint8_t' from 'uint8_t[4]'`).
+            // Pack element-by-element, little-endian (element 0 in the low bits)
+            // to match SV packed-vector layout. Only the ≤64-bit total case is
+            // handled here (mirrors the bit-slice LHS arm's width limit); a wider
+            // pack would need a VlWide destination and is left to the generic
+            // path. arch-com#1019 defect #3.
+            if let ExprKind::Ident(dst_ident) = &a.target.kind {
+                let dst_is_vec = ctx
+                    .vec_names
+                    .map_or(false, |s| s.contains(dst_ident.as_str()));
+                if !dst_is_vec {
+                    if let ExprKind::Ident(rhs_ident) = &a.value.kind {
+                        let rhs_is_vec = ctx
+                            .vec_names
+                            .map_or(false, |s| s.contains(rhs_ident.as_str()));
+                        if rhs_is_vec {
+                            let count = ctx
+                                .vec_sizes
+                                .and_then(|m| m.get(rhs_ident.as_str()).copied())
+                                .unwrap_or(0);
+                            let elem_bits = match sim_expr_decl_type(&a.value, ctx) {
+                                Some(TypeExpr::Vec(elem, _)) => {
+                                    scalar_type_bits_with_params(&elem, ctx.params).unwrap_or(0)
+                                }
+                                _ => 0,
+                            };
+                            if count > 0 && elem_bits > 0 && (count as u32) * elem_bits <= 64 {
+                                let lhs = ctx.resolve_name(dst_ident, is_seq);
+                                let rhs = cpp_expr(&a.value, ctx);
+                                let mask = if elem_bits >= 64 {
+                                    u64::MAX
+                                } else {
+                                    (1u64 << elem_bits) - 1
+                                };
+                                out.push_str(&format!("{}{{\n", ind(indent)));
+                                out.push_str(&format!("{}uint64_t _pk = 0;\n", ind(indent + 1)));
+                                out.push_str(&format!(
+                                    "{}for (size_t _i = 0; _i < {count}; ++_i) {{ _pk |= ((uint64_t)({rhs}[_i]) & {mask}ULL) << (_i * {elem_bits}); }}\n",
+                                    ind(indent + 1)
+                                ));
+                                out.push_str(&format!("{}{lhs} = _pk;\n", ind(indent + 1)));
+                                out.push_str(&format!("{}}}\n", ind(indent)));
+                                if is_seq {
+                                    emit_vinit_mark_for_target(&a.target, ctx, out, indent);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
             // Scalar bit-indexed LHS: name[idx] = val where name is NOT a Vec.
             // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx).
             // resolve_name's is_lhs flag = is_seq → seq writes hit the shadow.
