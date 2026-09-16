@@ -1280,9 +1280,17 @@ impl Parser {
             }
         }
 
-        self.expect(TokenKind::End)?;
-        self.expect(TokenKind::Module)?;
-        let closing_name = self.expect_ident()?;
+        let closing_start = self.expect(TokenKind::End)?.span;
+        let closing_keyword = self.expect(TokenKind::Module)?.span;
+        let closing_name = self.expect_ident().map_err(|_| {
+            CompileError::general(
+                &format!(
+                    "missing closing module name; expected `end module {}`. Syntax: module <name> ... end module <name>",
+                    name.name
+                ),
+                closing_start.merge(closing_keyword),
+            )
+        })?;
         if closing_name.name != name.name {
             return Err(CompileError::mismatched_closing(
                 &name.name,
@@ -8130,6 +8138,34 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut parser = Parser::new(tokens, src);
         parser.parse_source_file().unwrap()
+    }
+
+    #[test]
+    fn missing_module_closing_name_points_to_ending_with_exact_syntax() {
+        for suffix in [
+            "",
+            "\n",
+            " // closing comment\n",
+            "\nmodule Next\nend module Next",
+        ] {
+            let src = format!("module morse_encoder\nend module{suffix}");
+            let mut parser = Parser::new(tokenize(&src).unwrap(), &src);
+            let error = parser.parse_source_file().unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("expected `end module morse_encoder`"));
+            assert!(error
+                .to_string()
+                .contains("Syntax: module <name> ... end module <name>"));
+            assert_eq!(error.span_offset(), src.find("end module").unwrap());
+        }
+        parse("module morse_encoder\nend module morse_encoder");
+        parse("module counter\nend module counter");
+        let src = "module M\nend module Other";
+        let error = Parser::new(tokenize(src).unwrap(), src)
+            .parse_source_file()
+            .unwrap_err();
+        assert!(matches!(error, CompileError::MismatchedClosingName { .. }));
     }
 
     #[test]
