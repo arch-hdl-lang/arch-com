@@ -659,6 +659,15 @@
       "tb_files": [
         "tests/sim_fp_narrow_mx_regression_tb.cpp"
       ]
+    },
+    {
+      "name": "sim_loop_var_slice_hoist_pack",
+      "arch_files": [
+        "tests/icarus_portability/LoopVarSliceHoist.arch"
+      ],
+      "tb_files": [
+        "tests/sim_loop_var_slice_hoist_pack_tb.cpp"
+      ]
     }
   ]
 }
