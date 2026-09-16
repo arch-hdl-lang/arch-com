@@ -516,6 +516,36 @@ end function AddSat
 
 ---
 
+### seq
+
+Clocked statement block inside a module or FSM state; assigns existing registers with `<=`.
+
+```arch
+module SeqExample
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, High>;
+  port enable: in Bool;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+  reg saved: UInt<8> reset rst => 0;
+  let data_out = saved;
+
+  seq on clk rising
+    if enable
+      saved <= data_in;
+    end if
+  end seq
+end module SeqExample
+```
+
+- Grammar: `seq on <clock> rising <statements> end seq` (or `falling`). A scope-level `default seq on clk rising;` permits the short form `seq ... end seq`.
+- Declare `reg`, `wire`, and signal `let` bindings at enclosing module/FSM scope, outside the sequential body. Use `<=` for register updates; use `comb` and `=` to drive combinational wires/outputs.
+- Conditionals use `if <condition> ... elsif <condition> ... else ... end if`: no `then`, `begin`, or braces. Conditional expressions use `condition ? true_value : false_value`.
+- Reset behavior comes from the reset port type and each register's `reset rst => value` clause; choose mode and polarity from the design specification. The example uses asynchronous active-high reset. The compiler generates its reset guard.
+- Right-hand sides sample pre-update values at the selected clock edge. A combinational expression driven by a register reevaluates when that register changes.
+
+---
+
 ### pipeline
 
 Staged datapath — compiler generates hazard logic.
