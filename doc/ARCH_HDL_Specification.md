@@ -1681,6 +1681,20 @@ The block body may contain assignments, `if/else`, or `for` loops.
 
 **4.2.1 Conditional Statements: if / elsif / else**
 
+A statement condition is followed directly by its body: **no `then` keyword** after `if` or `elsif`. Use `elsif` for a chained branch and close the chain with `end if`.
+
+```text
+if <condition> <statements>
+{ elsif <condition> <statements> }
+[ else <statements> ]
+end if
+```
+
+Here `{ ... }` means zero or more repetitions and `[ ... ]` means optional syntax; these brackets are grammar notation, not source code.
+
+An `if` is a statement, not an expression. For a conditional value, use `<condition> ? <true_expression> : <false_expression>`, for example `let selected: UInt<8> = sel ? a : b;`. Do not write `let selected: UInt<8> = if sel then a else b;`.
+
+
 Arch uses `elsif` (one word) for chained conditionals, not `else if` (two words). In a brace-free language, `else if` is ambiguous — does `else` start a new body block, or does `else if` chain? The `elsif` keyword resolves this unambiguously:
 
 ```
@@ -1845,6 +1859,8 @@ Arch has three kinds of module-scope signal declarations. Each has a distinct sy
 | `let` (assign) | `let x = expr;` | declaration — x must already exist as output port or wire | `assign x = expr;` (no new declaration) |
 | `wire` | `wire x: T;` | `comb` block (`=`) | `logic [W-1:0] x;` (driven in `assign`/`always_comb`) |
 | `reg` | `reg x: T [init V] [reset R=>V];` | `seq` block (`<=`) | `logic [W-1:0] x = V;` (driven in `always_ff`) |
+
+Signal `let` bindings belong at module or FSM scope, outside `comb`, `seq`, and state bodies. They define continuous combinational expressions, not procedural temporary variables. For a conditional intermediate value, declare a `wire` at scope level and assign it with `=` inside `comb`; for stored state, declare a `reg` at scope level and assign it with `<=` inside `seq`. Function-local `let` declarations are a separate supported case.
 
 **`let`** has two forms:
 
@@ -2518,6 +2534,9 @@ The compiler generates clean, separated SystemVerilog:
 
 **7.1 Declaration**
 
+Declare every FSM state in `state [Idle, Running, Done]` (no trailing semicolon). Then select a declared reset state with `default state Idle;` and define behavior with `state Idle ... end state Idle`. The state list, reset-state selection, and state bodies are separate constructs: neither `default state` nor a state body declares a missing state name.
+
+
 +--------------------------------------------------------------------+
 | *fsm.arch*                                                         |
 |                                                                    |
@@ -2537,7 +2556,7 @@ The compiler generates clean, separated SystemVerilog:
 |                                                                    |
 | **port** green:  **out** Bool;                                     |
 |                                                                    |
-| **state** Red, Yellow, Green;                                      |
+| **state** [Red, Yellow, Green]                                      |
 |                                                                    |
 | **default** **state** Red;                                         |
 |                                                                    |
