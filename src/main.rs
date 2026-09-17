@@ -1096,7 +1096,7 @@ fn main() -> miette::Result<()> {
             };
             let matches = arch::learn::advise_filtered(&q, top, filter).into_diagnostic()?;
             if matches.is_empty() {
-                eprintln!("No matches.");
+                eprintln!("No relevant matches.");
                 return Ok(());
             }
             for (i, m) in matches.iter().enumerate() {

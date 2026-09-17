@@ -140,6 +140,17 @@ arch learn-prune --code other --dry-run    # preview removal by error code, subs
 arch learn-clear                    # wipe the store
 ```
 
+Advice abstains with `No relevant matches.` when keyword overlap is too weak.
+After removing common filler words and duplicate query terms, multi-keyword
+error/fix queries require at least two matches and 50% query coverage; feature
+queries require at least two matches and one-third coverage because their docs
+are shorter. Feature matching recognizes underscore-separated name components
+and simple `-ed` forms. Single-keyword lookups remain supported. This is a lexical
+relevance filter, not a guarantee of semantic relevance; use concise diagnostic
+or feature keywords. Rejected entries do not consume top-K slots or retrieval
+counts. CLI and MCP advice share this behavior.
+
+
 Design goals: **local-first** (no telemetry, no network); **capped** (100 MB default via `ARCH_LEARN_MAX_MB`, warns at 90% full); **opt-out** (`ARCH_NO_LEARN=1` disables capture entirely). The long-term roadmap — idiom capture, contributor sharing, promoting stable patterns to compiler lints — lives in [`doc/archive/plan_arch_learning_system.md`](doc/archive/plan_arch_learning_system.md).
 
 ## Code graph tooling

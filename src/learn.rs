@@ -763,7 +763,7 @@ fn advise_impl(
         (events.len(), 0.0, std::collections::HashMap::new())
     };
 
-    let q_terms = tokenize(query);
+    let q_terms = advice_query_terms(query);
     let k1 = 1.5_f64;
     let b = 0.75_f64;
     let mut scored: Vec<(f64, Event)> = Vec::with_capacity(events.len());
@@ -778,6 +778,11 @@ fn advise_impl(
         }
         let text = format!("{} {} {}", e.error_code, e.error_message, e.diff_summary);
         let d_terms = tokenize(&text);
+        // Abstain on weak incidental overlap before ranking or accounting.
+        // BM25 scores depend on corpus size and cannot serve as a stable cutoff.
+        if !has_advice_coverage(&q_terms, &d_terms, e.kind == "feature") {
+            continue;
+        }
         let dl = d_terms.len() as f64;
         let mut score = 0.0_f64;
         for qt in &q_terms {
@@ -1013,6 +1018,70 @@ fn tokenize(s: &str) -> Vec<String> {
         .filter(|w| !w.is_empty() && w.len() >= 2)
         .map(|w| w.to_string())
         .collect()
+}
+
+// Keep the relevance gate independent of corpus size and repeated query words.
+// Natural-language filler must not dilute useful diagnostic/feature keywords.
+fn advice_query_terms(query: &str) -> Vec<String> {
+    let mut terms = tokenize(query);
+    terms.retain(|t| {
+        !matches!(
+            t.as_str(),
+            "a" | "an"
+                | "the"
+                | "is"
+                | "are"
+                | "was"
+                | "were"
+                | "be"
+                | "been"
+                | "to"
+                | "of"
+                | "in"
+                | "on"
+                | "at"
+                | "for"
+                | "from"
+                | "with"
+                | "and"
+                | "or"
+                | "this"
+                | "that"
+                | "it"
+                | "how"
+                | "do"
+                | "does"
+                | "please"
+                | "help"
+                | "fix"
+                | "error"
+        )
+    });
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+fn has_advice_coverage(query: &[String], document: &[String], feature: bool) -> bool {
+    // A single keyword remains a supported lookup (e.g. width_mismatch).
+    // Multi-keyword requests need at least two distinct matches. Error/fix
+    // advice requires half the keywords; terse feature docs require a third.
+    // Feature identifiers also supply word components (palindrome_detect).
+    // Repeating an incidental word cannot make a hit eligible.
+    let matched = query
+        .iter()
+        .filter(|q| {
+            document.contains(q)
+                || (feature
+                    && document.iter().any(|d| {
+                        d.split('_').any(|part| {
+                            part == q.as_str() || part.strip_suffix("ed") == Some(q.as_str())
+                        })
+                    }))
+        })
+        .count();
+    let coverage_factor = if feature { 3 } else { 2 };
+    !query.is_empty() && matched >= query.len().min(2) && matched * coverage_factor >= query.len()
 }
 
 fn short_diff_summary(before: &str, after: &str) -> String {
