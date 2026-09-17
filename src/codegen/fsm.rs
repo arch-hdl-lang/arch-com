@@ -158,11 +158,19 @@ impl<'a> Codegen<'a> {
             self.line("");
         }
 
+        // ── Wire declarations ───────────────────────────────────────────────
+        for w in &f.wires {
+            let (ty, arr_suffix) = self.emit_type_and_array_suffix(&w.ty);
+            self.line(&format!("{ty} {}{arr_suffix};", w.name.name));
+        }
+        if !f.wires.is_empty() {
+            self.line("");
+        }
+
         // ── Let wire declarations ────────────────────────────────────────────
         let port_names_in_fsm: std::collections::HashSet<&str> =
             f.ports.iter().map(|p| p.name.name.as_str()).collect();
         for lb in &f.lets {
-            let val = self.emit_expr_str(&lb.value);
             let aliases_port = lb.ty.is_none() && port_names_in_fsm.contains(lb.name.name.as_str());
             if !aliases_port {
                 let ty = if let Some(t) = &lb.ty {
@@ -172,18 +180,12 @@ impl<'a> Codegen<'a> {
                 };
                 self.line(&format!("{ty} {};", lb.name.name));
             }
+        }
+        for lb in &f.lets {
+            let val = self.emit_expr_str(&lb.value);
             self.line(&format!("assign {} = {};", lb.name.name, val));
         }
         if !f.lets.is_empty() {
-            self.line("");
-        }
-
-        // ── Wire declarations ───────────────────────────────────────────────
-        for w in &f.wires {
-            let (ty, arr_suffix) = self.emit_type_and_array_suffix(&w.ty);
-            self.line(&format!("{ty} {}{arr_suffix};", w.name.name));
-        }
-        if !f.wires.is_empty() {
             self.line("");
         }
 

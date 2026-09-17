@@ -1269,6 +1269,15 @@ impl Parser {
                 {
                     body.push(ModuleBodyItem::Function(self.parse_function()?));
                 }
+                Some(_)
+                    if self.peek_real_kind_at(1) == Some(TokenKind::Colon)
+                        && matches!(self.peek_real_kind_at(2), Some(TokenKind::Ident(ref direction)) if direction == "in" || direction == "out") =>
+                {
+                    return Err(CompileError::general(
+                        "port declaration syntax: `port <name>: in|out <type>;` — repeat `port` for each declaration; preserve the specified port name (including `reset`)",
+                        self.peek_span(),
+                    ));
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
                         "param, port, reg, seq, comb, let, inst, connect, pipe_reg, generate_for, generate_if, thread, default, assert, cover, function, type, or hook",

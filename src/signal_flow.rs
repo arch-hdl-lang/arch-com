@@ -286,11 +286,11 @@ pub fn collect_module_drivers(
                 }
                 t
             }
+            ModuleBodyItem::LetBinding(l) => HashMap::from([(l.name.name.clone(), l.span)]),
             // The items below don't generate drive edges in the parent module.
             ModuleBodyItem::RegDecl(_)
             | ModuleBodyItem::WireDecl(_)
             | ModuleBodyItem::PipeRegDecl(_)
-            | ModuleBodyItem::LetBinding(_)
             | ModuleBodyItem::Generate(_)
             | ModuleBodyItem::Resource(_)
             | ModuleBodyItem::Assert(_)

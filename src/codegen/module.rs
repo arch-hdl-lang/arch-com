@@ -539,6 +539,56 @@ impl<'a> Codegen<'a> {
             (decls.into_iter().chain(rest.into_iter()).collect(), n)
         };
 
+        // Declare implicit instance outputs before any continuous assignments.
+        // Icarus 13 rejects their use before declaration even inside a module.
+        for item in &body_items {
+            if let ModuleBodyItem::Inst(inst) = item {
+                // Auto-declare output wires that aren't already declared.
+                // Track newly-emitted names so a later inst that connects
+                // to the same parent-side bus wire skips re-declaration.
+                let mut just_added: Vec<String> = Vec::new();
+                self.emit_inst_output_wire_decls(inst, &declared_names);
+                // Collect names we added so subsequent insts know.
+                if let Some((Symbol::Module(info), _)) =
+                    self.symbols.globals.get(&inst.module_name.name)
+                {
+                    let module_ports = info.ports.clone();
+                    for conn in &inst.connections {
+                        let Some(port) = module_ports
+                            .iter()
+                            .find(|p| p.name.name == conn.port_name.name)
+                        else {
+                            continue;
+                        };
+                        let Some(bi) = &port.bus_info else {
+                            continue;
+                        };
+                        let ExprKind::Ident(parent_name) = &conn.signal.kind else {
+                            continue;
+                        };
+                        let Some((Symbol::Bus(bus_info), _)) =
+                            self.symbols.globals.get(&bi.bus_name.name)
+                        else {
+                            continue;
+                        };
+                        let mut pm = bus_info.default_param_map();
+                        for pa in &bi.params {
+                            pm.insert(pa.name.name.clone(), &pa.value);
+                        }
+                        for (sname, _sdir, _ty) in bus_info.effective_signals(&pm) {
+                            just_added.push(format!("{parent_name}_{sname}"));
+                        }
+                        // Also mark the whole-bus parent name as "claimed"
+                        // so later code doesn't re-emit a scalar for it.
+                        just_added.push(parent_name.clone());
+                    }
+                }
+                for n in just_added {
+                    declared_names.insert(n);
+                }
+            }
+        }
+
         // Stage 3: LetBinding decl pre-emit. Simple typed `let foo: T = expr;`
         // bindings get split — the `T foo;` declaration is hoisted here
         // (above all `assign` and `inst` lines), and the `assign foo =
@@ -798,49 +848,6 @@ impl<'a> Codegen<'a> {
                 ModuleBodyItem::RegBlock(rb) => self.emit_reg_block(rb, &m_clone),
                 ModuleBodyItem::LatchBlock(lb) => self.emit_latch_block(lb),
                 ModuleBodyItem::Inst(inst) => {
-                    // Auto-declare output wires that aren't already declared.
-                    // Track newly-emitted names so a later inst that connects
-                    // to the same parent-side bus wire skips re-declaration.
-                    let mut just_added: Vec<String> = Vec::new();
-                    self.emit_inst_output_wire_decls(inst, &declared_names);
-                    // Collect names we added so subsequent insts know.
-                    if let Some((Symbol::Module(info), _)) =
-                        self.symbols.globals.get(&inst.module_name.name)
-                    {
-                        let module_ports = info.ports.clone();
-                        for conn in &inst.connections {
-                            let Some(port) = module_ports
-                                .iter()
-                                .find(|p| p.name.name == conn.port_name.name)
-                            else {
-                                continue;
-                            };
-                            let Some(bi) = &port.bus_info else {
-                                continue;
-                            };
-                            let ExprKind::Ident(parent_name) = &conn.signal.kind else {
-                                continue;
-                            };
-                            let Some((Symbol::Bus(bus_info), _)) =
-                                self.symbols.globals.get(&bi.bus_name.name)
-                            else {
-                                continue;
-                            };
-                            let mut pm = bus_info.default_param_map();
-                            for pa in &bi.params {
-                                pm.insert(pa.name.name.clone(), &pa.value);
-                            }
-                            for (sname, _sdir, _ty) in bus_info.effective_signals(&pm) {
-                                just_added.push(format!("{parent_name}_{sname}"));
-                            }
-                            // Also mark the whole-bus parent name as "claimed"
-                            // so later code doesn't re-emit a scalar for it.
-                            just_added.push(parent_name.clone());
-                        }
-                    }
-                    for n in just_added {
-                        declared_names.insert(n);
-                    }
                     self.emit_inst(inst);
                 }
                 ModuleBodyItem::PipeRegDecl(p) => {
