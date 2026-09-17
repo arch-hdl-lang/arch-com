@@ -85,8 +85,24 @@ impl<'a> Codegen<'a> {
                     let w = self.emit_expr_str(width);
                     let wp = Self::paren_width(&w);
                     match host {
-                        // $unsigned prevents context-dependent width expansion before the cast
-                        MethodCallHost::Main => format!("{wp}'($unsigned({b}))"),
+                        // $unsigned creates a self-determined context. SV does
+                        // not infer ARCH's carry/product bits there, so first
+                        // evaluate widening arithmetic at its ARCH width.
+                        // Keep that inner width distinct from the destination:
+                        // zero-extending a negative signed product must preserve
+                        // its original bits, not sign-extend to the destination.
+                        MethodCallHost::Main => {
+                            let value = if matches!(
+                                base.kind,
+                                ExprKind::Binary(BinOp::Add | BinOp::Sub | BinOp::Mul, _, _)
+                            ) {
+                                let bw = Self::paren_width(&self.infer_sv_width_str(base));
+                                format!("{bw}'({b})")
+                            } else {
+                                b.clone()
+                            };
+                            format!("{wp}'($unsigned({value}))")
+                        }
                         // Pipeline hosts have always emitted the bare size
                         // cast here (shared arm with `trunc` pre-dedup).
                         MethodCallHost::Pipeline => format!("{wp}'({b})"),
