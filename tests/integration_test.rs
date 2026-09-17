@@ -40741,3 +40741,79 @@ end pipeline ConcatPipe
     );
     assert!(sv.contains("{din, 1'd1}"), "{sv}");
 }
+
+/// A zero-extension must retain ARCH's widened arithmetic result before
+/// entering SV's self-determined $unsigned context.
+#[test]
+fn test_zext_widening_arithmetic_icarus() {
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let source = r#"
+module ZextArithmetic
+  param W: const = 8;
+  port a: in UInt<W>;
+  port b: in UInt<W>;
+  port s: in SInt<W>;
+  port t: in SInt<W>;
+  port product: out UInt<2 * W + 1>;
+  port sum: out UInt<2 * W + 1>;
+  port difference: out UInt<2 * W + 1>;
+  port signed_product: out SInt<2 * W + 1>;
+  port wrapped: out UInt<2 * W + 1>;
+  comb
+    product = (a * b).zext<2 * W + 1>();
+    sum = (a + b).zext<2 * W + 1>();
+    difference = (a - b).zext<2 * W + 1>();
+    signed_product = (s * t).zext<2 * W + 1>();
+    wrapped = (a *% b).zext<2 * W + 1>();
+  end comb
+end module ZextArithmetic
+"#;
+    let sv = compile_to_sv(source);
+    let td = tempfile::tempdir().unwrap();
+    let dut = td.path().join("dut.sv");
+    let tb = td.path().join("tb.sv");
+    let exe = td.path().join("sim.vvp");
+    std::fs::write(&dut, sv).unwrap();
+    std::fs::write(&tb, r#"
+module tb;
+  logic [3:0] a, b;
+  logic signed [3:0] s, t;
+  wire [8:0] product, sum, difference, wrapped;
+  wire signed [8:0] signed_product;
+  ZextArithmetic #(.W(4)) dut(.*);
+  initial begin
+    a=15; b=15; s=-1; t=1; #1;
+    if (product !== 225 || sum !== 30 || signed_product !== 255 || wrapped !== 1)
+      $fatal(1, "incorrect widened or wrapping arithmetic: %d %d %d %d", product,sum,signed_product,wrapped);
+    a=0; b=15; #1;
+    if (difference !== 17) $fatal(1, "lost widened subtraction bit: %d", difference);
+    $finish;
+  end
+endmodule
+"#).unwrap();
+    let build = std::process::Command::new("iverilog")
+        .args(["-g2012", "-s", "tb", "-o"])
+        .arg(&exe)
+        .arg(&dut)
+        .arg(&tb)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = std::process::Command::new("vvp").arg(exe).output().unwrap();
+    assert!(
+        run.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
