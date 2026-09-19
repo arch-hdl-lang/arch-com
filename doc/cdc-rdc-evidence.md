@@ -172,8 +172,14 @@ FAIL    rdc_n1_rdc_safe_does_not_suppress_cdc_fail   (expected violation, got pa
 e13301217a6389f074494bd6f5d0a5aff5e81b8131bb971cc501a125cd4c3f9b  target/release/arch
 ```
 
-(The binary reports `arch 0.72.2`; the version bump to 0.72.3 lands in
-the release commit, after this evidence run.)
+That binary reports `arch 0.72.2` — it predates the version bump in the
+same PR. Rebuilt after the bump, with the corpus pragma annotations in
+place, the results are unchanged (48 PASS / 0 FAIL / 0 XFAIL, 1291
+tests passed, `cargo fmt -- --check` clean) and the binary is:
+
+```
+21c9fb8a79cfb40f4fbaa04d4ede40efe1b5e4b7e4163ec570b2570d4b511e3b  target/release/arch   (arch 0.72.3)
+```
 
 The `tests/rdc/README.md` "Currently" column and
 `tests/arch_regression_baseline.json` record PASS as of their last

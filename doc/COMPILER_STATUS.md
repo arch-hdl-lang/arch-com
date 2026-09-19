@@ -1,7 +1,12 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-09-18
-> Compiler version: 0.72.2
+> Compiler version: 0.72.3
+>
+> **0.72.3 release highlights:**
+> - **`pragma rdc_safe;` no longer disables CDC checking** (PR #1025) — the two in-module CDC checks, the instantiation-boundary check `check_inst_cdc` and RDC phase 1 shared one gate (`!m.cdc_safe && !m.rdc_safe`), so a module opting out of RDC silently lost every CDC diagnostic. Spec §5.4 has always said `cdc_safe` suppresses CDC + phase 1 while `rdc_safe` suppresses the RDC phases only; the gate is now split to match. No diagnostic text changed and the phase 2a–2d gate is untouched.
+> - **First tests for the in-module CDC checks** (PR #1025) — the checks the defect disabled had none, which is how it survived. Adds `cdc_p1`–`cdc_p4` (seq→seq and comb→seq, positive and negative), `cdc_p5_multibit_ff_synchronizer_warns` (the `kind ff` on multi-bit data warning), and `rdc_n1`/`rdc_n2` pinning the pragma asymmetry — `rdc_n1` fails on a pre-fix binary. `tests/rdc/run_rdc.sh`: 48 PASS / 0 FAIL / 0 XFAIL.
+> - **`tests/cvdp/` pragma audit** — `async_filo` and `apb_dsp_op` carried `pragma cdc_safe;` without needing it (generated SV byte-identical after removal); `glitch_free_mux` and `findfasterclock` are crossings by construction and now carry the reason in the source. Full inventory: `doc/cdc-rdc-evidence.md`.
 >
 > **0.72.2 release highlights:**
 > - **Native simulator: module-scope `let`s that read comb-assigned signals are evaluated after the `comb` blocks** (#1003, PR #1005) — `eval_comb()` emitted every module-scope `let` before the comb blocks, so a `let` such as `let instr_o = instr_d;` carried the previous pass's value; with input-only changes `eval()`'s second comb pass hid it, but across a clock edge the output lagged the state register by one cycle while Verilator on the same SV was right. Lets that (transitively) read a comb-assigned signal are now emitted after the comb blocks; other modules' C++ is byte-identical. Found on arch-ibex's compressed decoder (Zcmp `cm.push` walk, now 29 / 29 under `arch sim --pybind`).

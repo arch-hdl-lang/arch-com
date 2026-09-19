@@ -1,4 +1,12 @@
 module findfasterclock
+  // Comparing two unrelated clocks IS the function of this block: each
+  // domain gates a counter with the other domain's `measure_*` flag and
+  // reads the other domain's count to decide which clock is faster.
+  // Declaring the crossings honestly means synchronising both flags
+  // (`kind ff`), carrying the 32-bit counts across as gray codes or
+  // behind a handshake, and giving each domain its own reset
+  // synchroniser - a redesign of the measurement itself, tracked
+  // separately from this pragma audit. Kept as an explicit opt-out.
   pragma cdc_safe;
 
   port clk_A:           in Clock<ADomain>;
