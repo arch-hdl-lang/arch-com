@@ -5,7 +5,11 @@ is a complete, parseable ARCH source that exercises one specific RDC pattern.
 The expected outcome is encoded in the filename suffix:
 
 - `*_ok.arch` — must type-check cleanly (`arch check` exits 0)
-- `*_fail.arch` — must be rejected with an RDC error (`arch check` exits 1)
+- `*_fail.arch` — must be rejected with an RDC or CDC error (`arch check` exits 1)
+
+The `rdc_*` files exercise the reset-domain checker; the `cdc_*` files cover
+the in-module clock-domain-crossing pass that shares its multi-clock gate.
+The runner globs `*.arch`, so both prefixes are picked up automatically.
 
 ## Run them
 
@@ -87,6 +91,12 @@ violation:
 | `rdc_m4_cdc_let_alias_same_source_fail.arch` | `let alias = src;` indirection — both syncs trace to same port | fail | PASS (phase 2c source-tracing) |
 | `rdc_m5_cdc_distinct_sources_ok.arch` | sanity: two ff-syncs with distinct source ports | ok | PASS |
 | `rdc_m6_cdc_bit_slice_distinct_vecs_ok.arch` | sanity: bit-slices off *different* source vectors | ok | PASS |
+| `rdc_n1_rdc_safe_does_not_suppress_cdc_fail.arch` | `pragma rdc_safe;` must leave CDC checking on | fail | PASS (regression) |
+| `rdc_n2_cdc_safe_suppresses_cdc_ok.arch` | `pragma cdc_safe;` does suppress CDC (intended asymmetry) | ok | PASS |
+| `cdc_p1_seq_reads_foreign_domain_reg_fail.arch` | domain-A register read in a domain-B `seq` | fail | PASS (in-module CDC) |
+| `cdc_p2_seq_reads_via_synchronizer_ok.arch` | same crossing through a `synchronizer kind ff` | ok | PASS |
+| `cdc_p3_comb_fanin_foreign_domain_fail.arch` | comb signal reads domain-A register, feeds a domain-B flop | fail | PASS (in-module CDC) |
+| `cdc_p4_comb_fanin_same_domain_ok.arch` | same comb fan-in shape, producer and consumer both in domain A | ok | PASS |
 
 ## Why D1 still flags (phase 1 backstop)
 
@@ -107,6 +117,8 @@ domains is unsafe even when each domain's flop subset is independent.
 ## Relationship to the Rust integration tests
 
 Every scenario in this directory is also encoded as a Rust unit test in
-`tests/integration_test.rs` (functions `rdc_*`). The `.arch` files in this
+`tests/integration_test.rs` (functions `rdc_*` and `cdc_*`). One test has no
+`.arch` mirror: `cdc_p5_multibit_ff_synchronizer_warns` asserts on a *warning*
+(`kind ff` on multi-bit data), which the exit-code-based runner cannot see. The `.arch` files in this
 directory are the human-readable mirror — same source, same expected
 outcome — kept in sync intentionally.

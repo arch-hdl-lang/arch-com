@@ -1,0 +1,44 @@
+// P2: the same DA → DB crossing as P1, taken through a
+// `synchronizer kind ff` instance. The destination `seq` reads the
+// synchroniser output, not the foreign-domain register — no violation.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+
+synchronizer FlagSync
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<DA>;
+  port dst_clk:  in Clock<DB>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer FlagSync
+
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Sync>;
+  port da: in Bool;
+  port qb: out Bool;
+  reg ra: Bool reset rst => false;
+  reg rb: Bool reset rst => false;
+
+  inst flag_sync: FlagSync
+    src_clk  <- clk_a;
+    dst_clk  <- clk_b;
+    data_in  <- ra;
+    data_out -> ra_sync;
+  end inst flag_sync
+
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  seq on clk_b rising
+    rb <= ra_sync;
+  end seq
+  let qb = rb;
+end module M

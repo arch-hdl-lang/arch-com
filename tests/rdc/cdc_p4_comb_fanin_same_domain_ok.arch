@@ -1,0 +1,35 @@
+// P4: the same comb fan-in shape as P3 with producer and consumer both
+// in domain DA. The module is still multi-clock (clk_b drives its own
+// independent register), so the CDC pass runs and finds nothing.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Sync>;
+  port da: in UInt<8>;
+  port db: in UInt<8>;
+  port qa: out UInt<8>;
+  port qb: out UInt<8>;
+  wire masked: UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg ra2: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+    ra2 <= masked;
+  end seq
+  comb
+    masked = ra +% 1;
+  end comb
+  seq on clk_b rising
+    rb <= db;
+  end seq
+  let qa = ra2;
+  let qb = rb;
+end module M
