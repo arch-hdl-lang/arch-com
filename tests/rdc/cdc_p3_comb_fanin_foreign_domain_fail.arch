@@ -1,0 +1,30 @@
+// P3: in-module CDC through a comb block — `masked` reads the domain-DA
+// register `ra`, and is itself the data input of a domain-DB flop.
+// Sync resets throughout so no RDC phase fires on this design.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Sync>;
+  port da: in UInt<8>;
+  port qb: out UInt<8>;
+  wire masked: UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  comb
+    masked = ra +% 1;
+  end comb
+  seq on clk_b rising
+    rb <= masked;
+  end seq
+  let qb = rb;
+end module M

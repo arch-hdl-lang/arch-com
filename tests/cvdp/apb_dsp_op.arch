@@ -1,5 +1,4 @@
 module apb_dsp_op
-  pragma cdc_safe;
   param ADDR_WIDTH: const = 8;
   param DATA_WIDTH: const = 32;
 

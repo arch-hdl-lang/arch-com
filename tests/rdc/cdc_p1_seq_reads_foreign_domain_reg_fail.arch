@@ -1,0 +1,26 @@
+// P1: in-module CDC — a register driven in domain DA is read by a `seq`
+// block clocked in domain DB, with no synchroniser in between.
+// Sync resets throughout so no RDC phase fires on this design.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Sync>;
+  port da: in UInt<8>;
+  port qb: out UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  seq on clk_b rising
+    rb <= ra;
+  end seq
+  let qb = rb;
+end module M

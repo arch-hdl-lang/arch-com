@@ -1,4 +1,9 @@
 module glitch_free_mux
+  // The cross-coupled enables ARE the mechanism: `en1` (clk1 domain) is
+  // gated on `en2` (clk2 domain) and vice versa, so that one enable can
+  // only assert after the other has deasserted. The crossing is the
+  // design, not an oversight: a synchronizer in either path would break
+  // the mutual-exclusion handshake this mux depends on.
   pragma cdc_safe;
 
   port clk1:   in Clock<Clk1Domain>;

@@ -1737,10 +1737,11 @@ impl<'a> TypeChecker<'a> {
             })
             .collect();
 
-        // Phase 1 RDC + the surrounding CDC pass share this gate.
-        // `pragma cdc_safe;` opts out of CDC + phase 1 (legacy);
-        // `pragma rdc_safe;` opts out of phase 1 too (unified RDC opt-out).
-        if clk_domain.len() >= 2 && !m.cdc_safe && !m.rdc_safe {
+        // Phase 1 RDC and the in-module CDC pass share the multi-clock gate,
+        // but not the pragma opt-outs:
+        //   `pragma cdc_safe;` opts out of CDC + phase 1 (legacy);
+        //   `pragma rdc_safe;` opts out of the RDC phases only — CDC still runs.
+        if clk_domain.len() >= 2 {
             // Build reg → domain map (which domain drives each register)
             let mut reg_domain: HashMap<String, String> = HashMap::new();
             for item in &m.body {
@@ -1755,63 +1756,65 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            // For each seq block, check reads against domain map
-            for item in &m.body {
-                if let ModuleBodyItem::RegBlock(rb) = item {
-                    if let Some(this_domain) = clk_domain.get(&rb.clock.name) {
-                        let mut reads = HashSet::new();
-                        Self::collect_stmt_reads(&rb.stmts, &mut reads);
-                        for name in &reads {
-                            if let Some(src_domain) = reg_domain.get(name) {
-                                if src_domain != this_domain {
-                                    self.errors.push(CompileError::general(
-                                        &format!(
-                                            "CDC violation: register `{name}` is driven in domain `{src_domain}` \
-                                             but read in domain `{this_domain}` (clock `{}`). \
-                                             Use a `synchronizer` or async `fifo` to cross clock domains",
-                                            rb.clock.name
-                                        ),
-                                        rb.span,
-                                    ));
+            if !m.cdc_safe {
+                // For each seq block, check reads against domain map
+                for item in &m.body {
+                    if let ModuleBodyItem::RegBlock(rb) = item {
+                        if let Some(this_domain) = clk_domain.get(&rb.clock.name) {
+                            let mut reads = HashSet::new();
+                            Self::collect_stmt_reads(&rb.stmts, &mut reads);
+                            for name in &reads {
+                                if let Some(src_domain) = reg_domain.get(name) {
+                                    if src_domain != this_domain {
+                                        self.errors.push(CompileError::general(
+                                            &format!(
+                                                "CDC violation: register `{name}` is driven in domain `{src_domain}` \
+                                                 but read in domain `{this_domain}` (clock `{}`). \
+                                                 Use a `synchronizer` or async `fifo` to cross clock domains",
+                                                rb.clock.name
+                                            ),
+                                            rb.span,
+                                        ));
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // For each comb block, check if it reads registers from multiple domains
-            for item in &m.body {
-                if let ModuleBodyItem::CombBlock(cb) = item {
-                    let mut reads = HashSet::new();
-                    Self::collect_comb_stmt_reads(&cb.stmts, &mut reads);
-                    for name in &reads {
-                        // A comb block reading a cross-domain register is unsafe —
-                        // it could be consumed by any domain downstream
-                        if reg_domain.contains_key(name) {
-                            // Find which domains consume this comb block's outputs
-                            let mut comb_targets = HashSet::new();
-                            Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
-                            for target in &comb_targets {
-                                // Check if any seq block in a different domain reads this target
-                                for item2 in &m.body {
-                                    if let ModuleBodyItem::RegBlock(rb) = item2 {
-                                        if let Some(consumer_domain) =
-                                            clk_domain.get(&rb.clock.name)
-                                        {
-                                            let mut seq_reads = HashSet::new();
-                                            Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
-                                            if seq_reads.contains(target) {
-                                                if let Some(src_domain) = reg_domain.get(name) {
-                                                    if src_domain != consumer_domain {
-                                                        self.errors.push(CompileError::general(
-                                                            &format!(
-                                                                "CDC violation: comb signal `{target}` reads register `{name}` \
-                                                                 (domain `{src_domain}`) but is consumed in domain `{consumer_domain}`. \
-                                                                 Use a `synchronizer` or async `fifo` to cross clock domains"
-                                                            ),
-                                                            cb.span,
-                                                        ));
+                // For each comb block, check if it reads registers from multiple domains
+                for item in &m.body {
+                    if let ModuleBodyItem::CombBlock(cb) = item {
+                        let mut reads = HashSet::new();
+                        Self::collect_comb_stmt_reads(&cb.stmts, &mut reads);
+                        for name in &reads {
+                            // A comb block reading a cross-domain register is unsafe —
+                            // it could be consumed by any domain downstream
+                            if reg_domain.contains_key(name) {
+                                // Find which domains consume this comb block's outputs
+                                let mut comb_targets = HashSet::new();
+                                Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
+                                for target in &comb_targets {
+                                    // Check if any seq block in a different domain reads this target
+                                    for item2 in &m.body {
+                                        if let ModuleBodyItem::RegBlock(rb) = item2 {
+                                            if let Some(consumer_domain) =
+                                                clk_domain.get(&rb.clock.name)
+                                            {
+                                                let mut seq_reads = HashSet::new();
+                                                Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
+                                                if seq_reads.contains(target) {
+                                                    if let Some(src_domain) = reg_domain.get(name) {
+                                                        if src_domain != consumer_domain {
+                                                            self.errors.push(CompileError::general(
+                                                                &format!(
+                                                                    "CDC violation: comb signal `{target}` reads register `{name}` \
+                                                                     (domain `{src_domain}`) but is consumed in domain `{consumer_domain}`. \
+                                                                     Use a `synchronizer` or async `fifo` to cross clock domains"
+                                                                ),
+                                                                cb.span,
+                                                            ));
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1822,101 +1825,103 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+
+                // CDC check across instance boundaries
+                for item in &m.body {
+                    if let ModuleBodyItem::Inst(inst) = item {
+                        self.check_inst_cdc(inst, &clk_domain, &reg_domain, m);
+                    }
+                }
             }
 
-            // CDC check across instance boundaries
-            for item in &m.body {
-                if let ModuleBodyItem::Inst(inst) = item {
-                    self.check_inst_cdc(inst, &clk_domain, &reg_domain, m);
-                }
-            }
-
-            // ── RDC check: a reset signal used by registers in more than
-            // one clock domain is unsafe (deassertion not synchronised).
-            // Reset's "domain" is inferred from the registers that use it
-            // — no separate annotation needed. Fix is `synchronizer kind
-            // reset` to deassert-synchronise the reset into the new domain.
-            //
-            // v1 narrows the check to **async** reset ports. Sync resets
-            // crossing domains are technically a CDC concern (reset signal
-            // treated as data) but rarely a real bug in practice — they
-            // propagate through clocks and the deassertion-edge race that
-            // makes async cross-domain reset dangerous doesn't apply. If
-            // false-negatives become an issue, broaden by removing the
-            // is-async filter below.
-            let async_reset_ports: HashSet<String> = m
-                .ports
-                .iter()
-                .filter_map(|p| {
-                    if let TypeExpr::Reset(ResetKind::Async, _) = &p.ty {
-                        Some(p.name.name.clone())
-                    } else {
-                        None
+            if !m.cdc_safe && !m.rdc_safe {
+                // ── RDC check: a reset signal used by registers in more than
+                // one clock domain is unsafe (deassertion not synchronised).
+                // Reset's "domain" is inferred from the registers that use it
+                // — no separate annotation needed. Fix is `synchronizer kind
+                // reset` to deassert-synchronise the reset into the new domain.
+                //
+                // v1 narrows the check to **async** reset ports. Sync resets
+                // crossing domains are technically a CDC concern (reset signal
+                // treated as data) but rarely a real bug in practice — they
+                // propagate through clocks and the deassertion-edge race that
+                // makes async cross-domain reset dangerous doesn't apply. If
+                // false-negatives become an issue, broaden by removing the
+                // is-async filter below.
+                let async_reset_ports: HashSet<String> = m
+                    .ports
+                    .iter()
+                    .filter_map(|p| {
+                        if let TypeExpr::Reset(ResetKind::Async, _) = &p.ty {
+                            Some(p.name.name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                // Tracks (reset_signal_name → set of (clock_domain, conflict span)).
+                // Span carries the first reg-decl that introduced each domain so
+                // the diagnostic can point at the offending site. Both inline
+                // `reg` decls and `port reg` decls participate.
+                let mut reset_users: HashMap<String, Vec<(String, crate::lexer::Span)>> =
+                    HashMap::new();
+                let record_reset = |sig: &str,
+                                    reg_name: &str,
+                                    span: crate::lexer::Span,
+                                    reset_users: &mut HashMap<
+                    String,
+                    Vec<(String, crate::lexer::Span)>,
+                >| {
+                    if let Some(domain) = reg_domain.get(reg_name) {
+                        let entry = reset_users.entry(sig.to_string()).or_default();
+                        if !entry.iter().any(|(d, _)| d == domain) {
+                            entry.push((domain.clone(), span));
+                        }
                     }
-                })
-                .collect();
-            // Tracks (reset_signal_name → set of (clock_domain, conflict span)).
-            // Span carries the first reg-decl that introduced each domain so
-            // the diagnostic can point at the offending site. Both inline
-            // `reg` decls and `port reg` decls participate.
-            let mut reset_users: HashMap<String, Vec<(String, crate::lexer::Span)>> =
-                HashMap::new();
-            let record_reset = |sig: &str,
-                                reg_name: &str,
-                                span: crate::lexer::Span,
-                                reset_users: &mut HashMap<
-                String,
-                Vec<(String, crate::lexer::Span)>,
-            >| {
-                if let Some(domain) = reg_domain.get(reg_name) {
-                    let entry = reset_users.entry(sig.to_string()).or_default();
-                    if !entry.iter().any(|(d, _)| d == domain) {
-                        entry.push((domain.clone(), span));
+                };
+                for item in &m.body {
+                    if let ModuleBodyItem::RegDecl(rd) = item {
+                        let sig_name = match &rd.reset {
+                            RegReset::None => continue,
+                            RegReset::Explicit(s, _, _, _) => s.name.clone(),
+                            RegReset::Inherit(s, _) => s.name.clone(),
+                        };
+                        if !async_reset_ports.contains(&sig_name) {
+                            continue;
+                        }
+                        record_reset(&sig_name, &rd.name.name, rd.name.span, &mut reset_users);
                     }
                 }
-            };
-            for item in &m.body {
-                if let ModuleBodyItem::RegDecl(rd) = item {
-                    let sig_name = match &rd.reset {
-                        RegReset::None => continue,
-                        RegReset::Explicit(s, _, _, _) => s.name.clone(),
-                        RegReset::Inherit(s, _) => s.name.clone(),
-                    };
-                    if !async_reset_ports.contains(&sig_name) {
-                        continue;
+                for p in &m.ports {
+                    if let Some(ri) = &p.reg_info {
+                        let sig_name = match &ri.reset {
+                            RegReset::None => continue,
+                            RegReset::Explicit(s, _, _, _) => s.name.clone(),
+                            RegReset::Inherit(s, _) => s.name.clone(),
+                        };
+                        if !async_reset_ports.contains(&sig_name) {
+                            continue;
+                        }
+                        record_reset(&sig_name, &p.name.name, p.name.span, &mut reset_users);
                     }
-                    record_reset(&sig_name, &rd.name.name, rd.name.span, &mut reset_users);
                 }
-            }
-            for p in &m.ports {
-                if let Some(ri) = &p.reg_info {
-                    let sig_name = match &ri.reset {
-                        RegReset::None => continue,
-                        RegReset::Explicit(s, _, _, _) => s.name.clone(),
-                        RegReset::Inherit(s, _) => s.name.clone(),
-                    };
-                    if !async_reset_ports.contains(&sig_name) {
-                        continue;
+                for (sig, users) in &reset_users {
+                    if users.len() > 1 {
+                        let domains: Vec<&str> = users.iter().map(|(d, _)| d.as_str()).collect();
+                        // Point at the second domain's introducer — the first is
+                        // the established domain, the second is the violating
+                        // crossing.
+                        let report_span = users[1].1;
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "RDC violation: reset signal `{sig}` is used by registers in \
+                                 multiple clock domains ({}). Use `synchronizer kind reset` to \
+                                 deassert-synchronise the reset into each receiving domain.",
+                                domains.join(", ")
+                            ),
+                            report_span,
+                        ));
                     }
-                    record_reset(&sig_name, &p.name.name, p.name.span, &mut reset_users);
-                }
-            }
-            for (sig, users) in &reset_users {
-                if users.len() > 1 {
-                    let domains: Vec<&str> = users.iter().map(|(d, _)| d.as_str()).collect();
-                    // Point at the second domain's introducer — the first is
-                    // the established domain, the second is the violating
-                    // crossing.
-                    let report_span = users[1].1;
-                    self.errors.push(CompileError::general(
-                        &format!(
-                            "RDC violation: reset signal `{sig}` is used by registers in \
-                             multiple clock domains ({}). Use `synchronizer kind reset` to \
-                             deassert-synchronise the reset into each receiving domain.",
-                            domains.join(", ")
-                        ),
-                        report_span,
-                    ));
                 }
             }
         }

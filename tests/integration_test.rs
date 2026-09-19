@@ -25306,6 +25306,124 @@ end module M
     );
 }
 
+// ── Group N: pragma asymmetry — `rdc_safe` must not suppress CDC ──────────
+// Regression for the shared-gate defect: the in-module CDC checks,
+// `check_inst_cdc` and RDC phase 1 all sat behind one
+// `!m.cdc_safe && !m.rdc_safe` condition, so `pragma rdc_safe;` silently
+// disabled CDC checking as well. `cdc_safe` suppresses CDC + phase 1;
+// `rdc_safe` suppresses the RDC phases only.
+
+#[test]
+fn rdc_n1_rdc_safe_does_not_suppress_cdc_fail() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_n1_rdc_safe_does_not_suppress_cdc_fail.arch")
+        .expect("read N1");
+    assert_rdc_fails("N1", &src, &["CDC violation", "ra", "DA", "DB"]);
+}
+
+#[test]
+fn rdc_n2_cdc_safe_suppresses_cdc_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_n2_cdc_safe_suppresses_cdc_ok.arch")
+        .expect("read N2");
+    assert_rdc_ok("N2", &src);
+}
+
+// ── Group P: in-module CDC checks ─────────────────────────────────────────
+// The seq→seq and comb→seq cross-domain reads, and the `kind ff`
+// multi-bit warning. These checks shipped without any test of their own.
+
+#[test]
+fn cdc_p1_seq_reads_foreign_domain_reg_fail() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_p1_seq_reads_foreign_domain_reg_fail.arch")
+        .expect("read P1");
+    assert_rdc_fails("P1", &src, &["CDC violation: register", "ra", "DA", "DB"]);
+}
+
+#[test]
+fn cdc_p2_seq_reads_via_synchronizer_ok() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_p2_seq_reads_via_synchronizer_ok.arch")
+        .expect("read P2");
+    assert_rdc_ok("P2", &src);
+}
+
+#[test]
+fn cdc_p3_comb_fanin_foreign_domain_fail() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_p3_comb_fanin_foreign_domain_fail.arch")
+        .expect("read P3");
+    assert_rdc_fails(
+        "P3",
+        &src,
+        &["CDC violation: comb signal", "masked", "ra", "DB"],
+    );
+}
+
+#[test]
+fn cdc_p4_comb_fanin_same_domain_ok() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_p4_comb_fanin_same_domain_ok.arch")
+        .expect("read P4");
+    assert_rdc_ok("P4", &src);
+}
+
+#[test]
+fn cdc_p5_multibit_ff_synchronizer_warns() {
+    // `kind ff` is a two-flop synchroniser: safe for a single bit, unsafe
+    // for a multi-bit bus (the bits resolve on different cycles). It is a
+    // warning, not an error, so assert on the diagnostics — the exit code
+    // stays 0 either way.
+    let src = |data_ty: &str| {
+        format!(
+            r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+
+synchronizer BusSync
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<DA>;
+  port dst_clk:  in Clock<DB>;
+  port data_in:  in {data_ty};
+  port data_out: out {data_ty};
+end synchronizer BusSync
+
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port d: in {data_ty};
+  port q: out {data_ty};
+
+  inst s: BusSync
+    src_clk  <- clk_a;
+    dst_clk  <- clk_b;
+    data_in  <- d;
+    data_out -> d_sync;
+  end inst s
+
+  let q = d_sync;
+end module M
+"#
+        )
+    };
+
+    let multibit = warnings_after_full_lower(&src("UInt<8>"));
+    assert!(
+        multibit
+            .iter()
+            .any(|w| w.contains("`kind ff` on multi-bit data is unsafe") && w.contains("BusSync")),
+        "expected a multi-bit `kind ff` warning naming BusSync, got: {multibit:?}"
+    );
+
+    let single_bit = warnings_after_full_lower(&src("Bool"));
+    assert!(
+        !single_bit
+            .iter()
+            .any(|w| w.contains("`kind ff` on multi-bit data is unsafe")),
+        "single-bit `kind ff` must not warn, got: {single_bit:?}"
+    );
+}
+
 #[test]
 fn test_archi_interface_stub_skips_body_only_passes() {
     // Mimics the multi-file dep-loader case: a parent module instantiates

@@ -1,0 +1,26 @@
+// N2: `pragma cdc_safe;` does suppress CDC checking — same design as
+// N1, documenting the intended asymmetry between the two pragmas.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  pragma cdc_safe;
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Async>;
+  port da: in UInt<8>;
+  port qb: out UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  seq on clk_b rising
+    rb <= ra;
+  end seq
+  let qb = rb;
+end module M

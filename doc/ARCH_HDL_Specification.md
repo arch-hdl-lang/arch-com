@@ -2292,7 +2292,7 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
 
 5. **Async-reset glitches from combiners at inst boundaries (phase 2d).** `rst_combined = rst_a | rst_b` (or any combinational expression — bitwise OR, AND, negation, ternary, etc.) produces transient pulses on edge skew between the inputs. The ARCH type system already prevents writing `let combined: Reset = ...` inside a module body, but inst connections accept arbitrary `Expr` in the signal slot, so the hazard can still enter through `inst sub: M; rst <- (rst_a | rst_b);`. The check walks every inst and, for any connection whose target port is `Reset<...>`, requires the parent-side signal to be a simple `Ident` (a port, wire, let-bound name, or another inst's output). Anything more structured (Binary, Unary, FieldAccess, FunctionCall, etc.) is flagged. Idents themselves are trusted — the legal direct routings, including `synchronizer kind reset` outputs, all flow through Idents. Test scenarios live in `tests/rdc/rdc_k*.arch`.
 
-With phase 2d landed, all five article-3 RDC bug classes catalogued in mainstream literature are now covered by the compiler:
+With phase 2d landed, all five of the RDC bug classes below are now covered by the compiler:
 
   | Phase | Class | Status |
   |---|---|---|
@@ -2307,12 +2307,12 @@ With phase 2d landed, all five article-3 RDC bug classes catalogued in mainstrea
 ```
 module M
   pragma cdc_safe;     // suppress CDC checks + RDC phase 1
-  pragma rdc_safe;     // suppress every RDC phase (1 + 2a–2d)
+  pragma rdc_safe;     // suppress every RDC phase (1 + 2a–2d); CDC still checked
   ...
 end module M
 ```
 
-`pragma cdc_safe;` is the long-standing CDC opt-out and incidentally suppresses the structural cross-clock RDC rule (phase 1) because the two checks overlap. `pragma rdc_safe;` is the dedicated RDC opt-out — it suppresses *every* RDC phase, including 2a–2d which `cdc_safe` does not touch. Either pragma alone is enough to silence phase 1; both can coexist on the same module. Use these only when the design has been externally analysed (Synopsys SpyGlass, Cadence Conformal) and the violations are provably safe in the surrounding integration. Unknown pragma names error at parse time, so a typo on `rdc_safe` is caught before compile.
+`pragma cdc_safe;` is the long-standing CDC opt-out and incidentally suppresses the structural cross-clock RDC rule (phase 1) because the two checks overlap. `pragma rdc_safe;` is the dedicated RDC opt-out — it suppresses *every* RDC phase, including 2a–2d which `cdc_safe` does not touch. **`pragma rdc_safe;` does not affect CDC checking**: a module carrying it is still checked for cross-domain register reads (seq→seq and comb→seq) and for crossings at `inst` boundaries. Only `cdc_safe` silences those. (Fixed in v0.72.3; v0.72.2 and earlier shared one gate between the two checks, so `rdc_safe` suppressed CDC as well.) Either pragma alone is enough to silence phase 1; both can coexist on the same module. Use these only when the design has been externally analysed (Synopsys SpyGlass, Cadence Conformal) and the violations are provably safe in the surrounding integration. Unknown pragma names error at parse time, so a typo on `rdc_safe` is caught before compile.
 
 **5.4a Whole-Design Combinational Feedback Loops**
 
