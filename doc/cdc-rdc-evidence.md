@@ -4,9 +4,9 @@ Compiled as an inventory of `arch-com` at tag `v0.72.2` (`3a3744e0`);
 nothing was added or changed to produce the original survey. The
 inventory turned up one defect — `pragma rdc_safe;` also suppressed CDC
 checking (§3) — and two checks with no automated test at all (§2).
-Both were fixed in **v0.72.3**; §2, §3, §6 and §7 have been updated to
-the post-fix state, with the pre-fix finding kept as history in §3.
-§1, §4 and §5 are unchanged from the v0.72.2 survey.
+Both were fixed in **v0.72.3**; §2, §3, §5, §6 and §7 have been updated
+to the post-fix state, with the pre-fix finding kept as history in §3.
+§1 and §4 are unchanged from the v0.72.2 survey.
 
 ## 1. Where the checks are
 
@@ -143,11 +143,13 @@ the parent's declared clocks.
   spec as closing "the Aldec article 2140 patterns (bit-slice splitting,
   common-source register, comb-fanout)"; tests `rdc_m1`–`rdc_m6`
   correspond one-to-one to those three patterns plus two negatives.
-- The five RDC classes are described in the spec as "all five article-3
-  RDC bug classes catalogued in mainstream literature." The article is
-  not cited by title in code, tests, or docs; the correspondence is
-  asserted, not documented. A citation should be added to the spec
-  before the paper relies on it.
+- The five RDC classes were described in the spec as "all five article-3
+  RDC bug classes catalogued in mainstream literature." No such article
+  was cited by title in code, tests, docs or the paper, so the phrase
+  was **removed in v0.72.3**: the spec (§5.4) and `COMPILER_STATUS.md`
+  now refer to the five classes listed in place, and claim no external
+  catalog. Should a specific source be identified later, adding the
+  citation is a spec edit, not a change to the checker.
 - No other catalog correspondence is documented.
 
 ## 6. Run confirmation
@@ -184,6 +186,38 @@ tests passed, `cargo fmt -- --check` clean) and the binary is:
 The `tests/rdc/README.md` "Currently" column and
 `tests/arch_regression_baseline.json` record PASS as of their last
 refresh but are not dated per entry.
+
+### Release identity
+
+The fix and its tests shipped in **v0.72.3**, tag commit
+`8b1f324963cd0a9664fe4912e45cc8e11167797a` (squash-merge of PR #1025,
+<https://github.com/arch-hdl-lang/arch-com/pull/1025>). Release:
+<https://github.com/arch-hdl-lang/arch-com/releases/tag/v0.72.3>.
+
+Published asset SHA-256s (cargo-dist's own `.sha256` sidecars):
+
+| Asset | SHA-256 |
+|---|---|
+| `arch-aarch64-apple-darwin.tar.xz` | `11da4952ca9dafe6d43690b916c2c46742bf177097a48a8aa1fdb48c2bcbf9ce` |
+| `arch-x86_64-apple-darwin.tar.xz` | `a895fdddaf1c3f8804e1bb69d98c51b2a11525f75b658a0ea39b4e82073eb189` |
+| `arch-aarch64-unknown-linux-gnu.tar.xz` | `eaca234f5ac09556affd6a164ef00878bc409d09e48058b2f8d87c501073846c` |
+| `arch-x86_64-unknown-linux-gnu.tar.xz` | `be87e3c81c5632c35f7a9e1f186059ad361f1d9785fc4686a20b43e29a16973f` |
+| `arch-x86_64-pc-windows-msvc.zip` | `8ba2b8d3ef43c2dc723e5926efea3d2b3d706677f1ebb9ae2d4dc81660ca94f5` |
+| `source.tar.gz` | `16648bf8a9cb447831f6db5dff343f2d1d99363bca2cf7c738a30f455002b2ef` |
+
+The `arch 0.72.3` binary hash recorded above reproduces byte-for-byte
+from a clean `cargo build --release` of the tag commit on the same host
+(macOS 15 / darwin 25.6.0, aarch64-apple-darwin), so the run totals in
+this section are tied to a rebuildable artifact rather than to a
+one-off local build.
+
+The first release run failed in
+`build-local-artifacts (x86_64-apple-darwin)` — the build itself
+succeeded and only the artifact **upload** hit
+`Failed to CreateArtifact: Unable to make request: ENOTFOUND`, a
+transient GitHub Actions network fault. A `--failed` re-run of the same
+workflow succeeded with no change to the tree, so the assets above are
+built from the tag commit exactly as tagged.
 
 ## 7. Related observation: pragma use in the compiler's own test corpus
 
