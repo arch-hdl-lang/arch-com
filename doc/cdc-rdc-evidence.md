@@ -4,9 +4,9 @@ Compiled as an inventory of `arch-com` at tag `v0.72.2` (`3a3744e0`);
 nothing was added or changed to produce the original survey. The
 inventory turned up one defect — `pragma rdc_safe;` also suppressed CDC
 checking (§3) — and two checks with no automated test at all (§2).
-Both were fixed in **v0.72.3**; §2, §3, §6 and §7 have been updated to
-the post-fix state, with the pre-fix finding kept as history in §3.
-§1, §4 and §5 are unchanged from the v0.72.2 survey.
+Both were fixed in **v0.72.3**; §2, §3, §5, §6 and §7 have been updated
+to the post-fix state, with the pre-fix finding kept as history in §3.
+§1 and §4 are unchanged from the v0.72.2 survey.
 
 ## 1. Where the checks are
 
@@ -143,11 +143,13 @@ the parent's declared clocks.
   spec as closing "the Aldec article 2140 patterns (bit-slice splitting,
   common-source register, comb-fanout)"; tests `rdc_m1`–`rdc_m6`
   correspond one-to-one to those three patterns plus two negatives.
-- The five RDC classes are described in the spec as "all five article-3
-  RDC bug classes catalogued in mainstream literature." The article is
-  not cited by title in code, tests, or docs; the correspondence is
-  asserted, not documented. A citation should be added to the spec
-  before the paper relies on it.
+- The five RDC classes were described in the spec as "all five article-3
+  RDC bug classes catalogued in mainstream literature." No such article
+  was cited by title in code, tests, docs or the paper, so the phrase
+  was **removed in v0.72.3**: the spec (§5.4) and `COMPILER_STATUS.md`
+  now refer to the five classes listed in place, and claim no external
+  catalog. Should a specific source be identified later, adding the
+  citation is a spec edit, not a change to the checker.
 - No other catalog correspondence is documented.
 
 ## 6. Run confirmation
