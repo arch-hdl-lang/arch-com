@@ -185,6 +185,38 @@ The `tests/rdc/README.md` "Currently" column and
 `tests/arch_regression_baseline.json` record PASS as of their last
 refresh but are not dated per entry.
 
+### Release identity
+
+The fix and its tests shipped in **v0.72.3**, tag commit
+`8b1f324963cd0a9664fe4912e45cc8e11167797a` (squash-merge of PR #1025,
+<https://github.com/arch-hdl-lang/arch-com/pull/1025>). Release:
+<https://github.com/arch-hdl-lang/arch-com/releases/tag/v0.72.3>.
+
+Published asset SHA-256s (cargo-dist's own `.sha256` sidecars):
+
+| Asset | SHA-256 |
+|---|---|
+| `arch-aarch64-apple-darwin.tar.xz` | `11da4952ca9dafe6d43690b916c2c46742bf177097a48a8aa1fdb48c2bcbf9ce` |
+| `arch-x86_64-apple-darwin.tar.xz` | `a895fdddaf1c3f8804e1bb69d98c51b2a11525f75b658a0ea39b4e82073eb189` |
+| `arch-aarch64-unknown-linux-gnu.tar.xz` | `eaca234f5ac09556affd6a164ef00878bc409d09e48058b2f8d87c501073846c` |
+| `arch-x86_64-unknown-linux-gnu.tar.xz` | `be87e3c81c5632c35f7a9e1f186059ad361f1d9785fc4686a20b43e29a16973f` |
+| `arch-x86_64-pc-windows-msvc.zip` | `8ba2b8d3ef43c2dc723e5926efea3d2b3d706677f1ebb9ae2d4dc81660ca94f5` |
+| `source.tar.gz` | `16648bf8a9cb447831f6db5dff343f2d1d99363bca2cf7c738a30f455002b2ef` |
+
+The `arch 0.72.3` binary hash recorded above reproduces byte-for-byte
+from a clean `cargo build --release` of the tag commit on the same host
+(macOS 15 / darwin 25.6.0, aarch64-apple-darwin), so the run totals in
+this section are tied to a rebuildable artifact rather than to a
+one-off local build.
+
+The first release run failed in
+`build-local-artifacts (x86_64-apple-darwin)` — the build itself
+succeeded and only the artifact **upload** hit
+`Failed to CreateArtifact: Unable to make request: ENOTFOUND`, a
+transient GitHub Actions network fault. A `--failed` re-run of the same
+workflow succeeded with no change to the tree, so the assets above are
+built from the tag commit exactly as tagged.
+
 ## 7. Related observation: pragma use in the compiler's own test corpus
 
 `tests/cvdp/` (CVDP-derived designs kept as compiler regression units,
