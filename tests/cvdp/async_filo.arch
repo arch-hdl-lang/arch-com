@@ -1,5 +1,4 @@
 module async_filo
-  pragma cdc_safe;
   param DATA_WIDTH: const = 16;
   // Use unbounded const so testbench overrides like DEPTH=16 are preserved.
   param DEPTH:         const = 8;
