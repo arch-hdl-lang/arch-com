@@ -1566,7 +1566,7 @@ impl<'a> Codegen<'a> {
                 // predicate while walking the then-branch. The else-
                 // branch is walked under the OUTER predicate (an `else`
                 // arm doesn't refine the state to a single value).
-                let new_pred = Self::extract_state_predicate(&ie.cond);
+                let new_pred = self.extract_state_predicate(&ie.cond);
                 let then_pred = match (&new_pred, state_pred) {
                     (Some((reg, lit)), None) => Some((reg.as_str(), *lit)),
                     // Already inside a state arm: nested `_tN_state == K`
@@ -1784,19 +1784,50 @@ impl<'a> Codegen<'a> {
     /// Match `_tN_state == LIT` exactly. Returns `(state_reg_name, lit_value)`.
     /// Unrecognized shapes return None — the caller falls back to
     /// inline (no shared rewrite) so we never silently mis-gate a call.
-    fn extract_state_predicate(cond: &Expr) -> Option<(String, u64)> {
+    fn extract_state_predicate(&self, cond: &Expr) -> Option<(String, u64)> {
         if let ExprKind::Binary(BinOp::Eq, lhs, rhs) = &cond.kind {
-            // _tN_state on the LHS, literal on the RHS (the shape
-            // emitted by elaborate.rs).
-            if let (ExprKind::Ident(name), ExprKind::Literal(LitKind::Dec(n))) =
-                (&lhs.kind, &rhs.kind)
-            {
-                if name.starts_with("_t") && name.ends_with("_state") {
-                    return Some((name.clone(), *n));
+            let ExprKind::Ident(name) = &lhs.kind else {
+                return None;
+            };
+            if !(name.starts_with("_t") && name.ends_with("_state")) {
+                return None;
+            }
+            match &rhs.kind {
+                // Bare numeric literal: the shape `elaborate` emitted before
+                // the per-thread state-name localparams landed (#247).
+                ExprKind::Literal(LitKind::Dec(n)) => return Some((name.clone(), *n)),
+                // State-name localparam (`_t0_S3_action`): #247 rewrote every
+                // state comparison to reference the name instead of the
+                // literal, which silently blinded this collector — it could no
+                // longer recover the `u64`, so no call site bound to a
+                // harness and every `shared function` call inlined its own
+                // copy of the operator. Resolve the name back to the value
+                // `elaborate` stored as the localparam's default.
+                ExprKind::Ident(p) => {
+                    if let Some(v) = self.state_param_value(p) {
+                        return Some((name.clone(), v));
+                    }
                 }
+                _ => {}
             }
         }
         None
+    }
+
+    /// Numeric value of a thread state-name localparam (`_t0_S3_action`),
+    /// read from the `default` that `elaborate::threads` stored when it
+    /// created the param. `None` for any identifier that is not such a
+    /// param, so a non-state comparison can never be mistaken for one.
+    fn state_param_value(&self, name: &str) -> Option<u64> {
+        let params = self.current_construct_params()?;
+        let p = params.iter().find(|p| p.name.name == name)?;
+        if !p.is_local {
+            return None;
+        }
+        match &p.default.as_ref()?.kind {
+            ExprKind::Literal(LitKind::Dec(n)) => Some(*n),
+            _ => None,
+        }
     }
 
     /// Resolve the SV emission name a `FunctionCall(name, args)` would
