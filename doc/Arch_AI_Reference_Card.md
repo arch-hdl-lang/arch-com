@@ -1519,6 +1519,8 @@ end module MyModule
 
 SV output: `function automatic` inside the module block. Use for one-off helpers that don't warrant a package.
 
+**`shared function`** — prefix a module-local function with `shared` to emit **one** instance at module scope, operands muxed by thread state, instead of inlining at every call site. Semantics are identical; only the structure changes, so flipping the keyword and re-synthesising is a complete evaluation. Binds only for call sites inside a `thread` state body; **any site that does not bind is silently inlined with no diagnostic** (arch#1032) — confirm by grepping the emitted SV for `__shared_<NAME>_out`. Worth it when the operator is expensive and called from several states (17×17 MAC on sky130: −56 % module area); may cost LUTs on FPGAs whose hard multiplier blocks absorb the copies anyway.
+
 Function bodies support: `let`, `return`, `if/elsif/else`, `for` loops, assignment (`=`).
 
 **No-latch rule:** every code path must reach a `return`. An `if` without `else` containing `return` is a compile error. Fix with `else` branch or final `return` after the `if`.

@@ -2764,6 +2764,11 @@ block simply acquires one of the `N` slots.
 
 Ports driven inside `lock` blocks that are also driven by other threads must be declared `shared(or)`.
 
+> Not to be confused with `shared function`, which shares one
+> combinational instance across call sites rather than resolving
+> multiple drivers onto a port. See "Shared functions" in the functions
+> chapter.
+
 **7a.4 `default when` (Soft Reset)**
 
 ```
@@ -9705,6 +9710,88 @@ endmodule
 ```
 
 Module-local functions have access to the module's parameters. They are pure combinational (no state, no side effects).
+
+### Shared functions
+
+`shared function NAME(args) -> Ty ... end function NAME` declares a
+function that is emitted **once** per module, at module scope, with its
+operands selected by a mux over the thread states that call it. A plain
+`function` is inlined at every call site.
+
+Semantics are identical. Both forms compute the same value at every call
+site in every cycle, and `arch check` accepts the same programs with or
+without the keyword — only the emitted structure differs. Because the
+two forms are behaviourally identical, changing the keyword and
+re-synthesising is a complete evaluation of the trade-off, with no
+re-verification needed.
+
+**Binding rules (v0.72.4).** A call site is bound to the shared instance
+only when both hold:
+
+- the call sits inside a `thread` body, under a state comparison the
+  emitter can read — after thread lowering each state body is guarded by
+  `_tN_state == <state>`, and the emitter keys the call on that state;
+- the function declaration is visible to the module being emitted:
+  either declared in that module's body, or a top-level / `package`
+  function.
+
+One shared instance is created per (function, thread-state register)
+pair, so two threads calling the same `shared function` get one instance
+each, not one between them.
+
+If several call sites **in the same state** pass different arguments,
+only the first binds; the rest fall back to inlining, because one
+instance cannot serve two different operand sets in one cycle. Call
+sites in different states, or in the same state with identical
+arguments, share the one instance.
+
+**Any call site that does not bind is silently inlined.** There is no
+diagnostic — see the warning below.
+
+**Emitted SV.** One `function automatic` body, `__shared_<NAME>_in_<arg>`
+and `__shared_<NAME>_out` wires, and an `always_comb` that decodes the
+thread state onto the operand wires. The function body itself is still
+emitted (unused function definitions synthesise to nothing); what
+changes is that call sites read `__shared_<NAME>_out` instead of calling
+it.
+
+> **Warning — no diagnostic exists.** `arch check` and `arch build` are
+> both silent when `shared` has no effect. Three paths fall back to
+> inlining without a word: a call outside a thread-state context, a
+> declaration the emitter cannot see, and the same-state/different-args
+> case. The one `CompileWarning` in the implementation (same state,
+> different args) is pushed to `SvCodegen::warnings`, which **no caller
+> reads**, so it never reaches the user either. The only way to confirm
+> sharing is to inspect the emitted SV for `__shared_<NAME>_out`, or to
+> count operator instances after synthesis. This is how a 2026-05-11
+> change (per-thread state-name localparams) silently disabled sharing
+> on arch-ibex's multiplier for four months — four multipliers where one
+> was intended, +28,491 µm² on sky130 — until a per-module area audit
+> found it. Tracked as arch#1032.
+
+**When to use it.** For an operator that is expensive and called from
+several states of one thread — a wide multiply, a divider step — where
+one instance plus operand muxes is smaller than N copies. Whether it is
+smaller **depends on the target**: on standard cells the copies are real
+area, and on arch-ibex's `ibex_multdiv_fast` sharing a 17×17 MAC across
+nine call sites took sky130 area from 50,595 µm² to 22,104 µm² (−56 %).
+On an FPGA with hard multiplier blocks the copies may fold into one
+block and the muxes then cost more than they save: the same change on
+ECP5 *added* 232 LUT4, because both builds used exactly one
+`MULT18X18D`. Measure on the target you care about.
+
+```
+shared function MacRes(sign_a: Bool, op_a16: UInt<16>,
+                       sign_b: Bool, op_b16: UInt<16>,
+                       accum: UInt<34>) -> UInt<34>
+  ...
+end function MacRes
+```
+
+See also `shared(or)` / `shared(and)` in the thread chapter — a
+different feature that happens to use the same word: those resolve
+multiple thread drivers onto one port, whereas `shared function` shares
+one combinational instance across call sites.
 
 Function bodies support `let`, `return`, `if/elsif/else`, `for` loops, and local variable assignment (`=`):
 
