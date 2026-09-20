@@ -40884,10 +40884,12 @@ fn test_concat_numeric_literals_preserve_widths() {
 module ConcatLiterals
   port x: in UInt<3>;
   port q: out UInt<4>;
+  port shifted: out UInt<4>;
   port mixed: out UInt<10>;
   port repeated: out UInt<4>;
   comb
     q = {x, 1};
+    shifted = {0, x};
     mixed = {0, 0xf, 0b101, {1, 0}};
     repeated = {4{1}};
   end comb
@@ -40895,6 +40897,7 @@ end module ConcatLiterals
 "#,
     );
     assert!(sv.contains("{x, 1'd1}"), "{sv}");
+    assert!(sv.contains("{1'd0, x}"), "{sv}");
     assert!(sv.contains("{1'd0, 4'd15, 3'd5, {1'd1, 1'd0}}"), "{sv}");
     assert!(sv.contains("{4{1'd1}}"), "{sv}");
     if std::process::Command::new("iverilog")
@@ -40906,7 +40909,7 @@ end module ConcatLiterals
     }
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("test.sv");
-    std::fs::write(&src, format!("{sv}\nmodule tb; reg [2:0] x; wire [3:0] q, repeated; wire [9:0] mixed; ConcatLiterals dut(.*); initial begin x=3; #1; if(q !== 7 || mixed !== 10'd502 || repeated !== 15) $fatal(1, \"concat width/value mismatch\"); $finish; end endmodule\n")).unwrap();
+    std::fs::write(&src, format!("{sv}\nmodule tb; reg [2:0] x; wire [3:0] q, repeated, shifted; wire [9:0] mixed; ConcatLiterals dut(.*); initial begin x=3; #1; if(q !== 7 || shifted !== 3 || mixed !== 10'd502 || repeated !== 15) $fatal(1, \"concat width/value mismatch\"); $finish; end endmodule\n")).unwrap();
     let out = dir.path().join("sim");
     let build = std::process::Command::new("iverilog")
         .args(["-g2012", "-s", "tb", "-o"])

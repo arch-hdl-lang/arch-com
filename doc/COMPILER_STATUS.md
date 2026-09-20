@@ -1,7 +1,12 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-09-20
-> Compiler version: 0.72.4
+> Compiler version: 0.72.5
+>
+> **0.72.5 release highlights:**
+> - Integrates the historical v51 benchmark emitter fixes: explicit widths for concatenated/replicated literals (`b3117381`) and widened arithmetic before zero-extension (`165841f1`), with Icarus regression tests and independent fix-reversal checks.
+> - Restores the benchmark's MCP seq lookup, advice event filtering, and optional feature retrieval as **agent-tooling changes, not emitter changes**. Conditional/FSM documentation and parser diagnostics are included separately.
+> - `arch --version` includes the build's source commit and a `+dirty` marker for tracked changes. The historical binary mismatch remains unexplained; source is pinned by `benchmark-compiler-v51`. See [v0.72.5 release notes](../docs/release-notes/v0.72.5.md).
 >
 > **0.72.4 release highlights:**
 > - **`shared function` call sites bind again through thread state-name localparams** (PR #1028) — `shared function` makes an operator called from several thread states emit as ONE instance fed by state-selected operand muxes. The collector binds a call site by reading the state value out of the enclosing `_tN_state == <value>` comparison, and only matched a bare `Literal(Dec)`. #247 ("emit per-thread state-name localparams") rewrote those comparisons to reference a localparam (`_t0_S1_action`), so the collector could no longer recover the value, bound no call sites, emitted no harness, and every call inlined its own copy of the operator. **Nothing failed** — the SV stayed correct and simply got much bigger, which is why it survived from 2026-05-11 undetected. On arch-ibex's multiplier it was four multipliers where one was intended: sky130 `ibex_multdiv_fast` **50,595 → 22,104 µm² (−56 %)**, ~25 % of that design's whole-chip area gap, and the whole design 1,838,368 → 1,812,428 µm² at synthesis. `extract_state_predicate` now also resolves an `Ident` right-hand side through the numeric `default` that `elaborate::threads` stored on the localparam; the lookup requires the param to exist in the construct being emitted and to be `is_local`, so an ordinary comparison against a module param can never be mistaken for a state predicate. Found by a per-module area audit, bisected to `65e5e89d`, and confirmed against a preserved May build artifact that still contained the working harness.

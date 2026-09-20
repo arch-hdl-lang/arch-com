@@ -53,7 +53,7 @@ fn cocotb_python_dir(build_dir: &Path) -> miette::Result<PathBuf> {
 }
 
 #[derive(Parser)]
-#[command(name = "arch", version, about = "ARCH HDL compiler")]
+#[command(name = "arch", version = env!("ARCH_BUILD_VERSION"), about = "ARCH HDL compiler")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
