@@ -6320,6 +6320,97 @@ end pipeline AluPipe
 }
 
 #[test]
+fn shared_function_binds_call_sites_through_thread_state_name_localparams() {
+    // Regression for the `shared function` thread-state harness.
+    //
+    // `shared function` exists so an expensive operator called from several
+    // thread states becomes ONE instance fed by state-selected operand
+    // muxes, instead of being inlined per call site. The collector binds a
+    // call site by reading the state literal out of the enclosing
+    // `_tN_state == <lit>` comparison.
+    //
+    // arch#247 ("emit per-thread state-name localparams") rewrote those
+    // comparisons to reference a localparam (`_t0_S1_action`) instead of a
+    // bare literal. The collector only matched `Literal(Dec)`, so it stopped
+    // recovering the state value, bound no call sites, emitted no harness,
+    // and every call inlined its own copy of the operator. Nothing failed:
+    // the SV stayed correct and simply got much bigger. On arch-ibex's
+    // multiplier this was 4 multipliers where 1 was intended, +28,000 um2
+    // of sky130 area, undetected from 2026-05-11 until a per-module area
+    // audit in September.
+    //
+    // The feature shipped with no tests at all, which is why. This asserts
+    // the emitted structure rather than any area number: one harness, one
+    // operator instance, call sites rewritten to the harness output.
+    let sv = compile_to_sv(
+        r#"
+domain D
+  freq_mhz: 100
+end domain D
+module MacShare
+  port clk: in Clock<D>;
+  port rst: in Reset<Async, Low>;
+  port a: in UInt<16>;
+  port b: in UInt<16>;
+  port q: out UInt<34>;
+  reg acc: UInt<34> reset rst => 0;
+
+  shared function Mac(x: UInt<16>, y: UInt<16>, accum: UInt<34>) -> UInt<34>
+    return accum +% (x.zext<34>() *% y.zext<34>());
+  end function Mac
+
+  thread t on clk rising, rst low
+    acc <= Mac(a, b, acc);
+    wait 1 cycle;
+    acc <= Mac(b, a, acc);
+    wait 1 cycle;
+    acc <= Mac(a, a, acc);
+  end thread t
+
+  let q = acc;
+end module MacShare
+"#,
+    );
+
+    // The harness exists: per-argument input wires plus one output wire.
+    assert!(
+        sv.contains("__shared_Mac_16_16_34_out"),
+        "expected a `__shared_Mac..._out` harness wire; without it the \
+         collector bound no call sites and every call inlined its own \
+         operator:\n{sv}"
+    );
+
+    // Exactly ONE call site, and it drives the harness output. The
+    // `function automatic` definition is cloned into both the parent and
+    // the `_threads` submodule, so definitions are excluded from the count;
+    // an uncalled SV function synthesises to nothing, a called one does not.
+    let call_sites: Vec<&str> = sv
+        .lines()
+        .filter(|l| l.contains("Mac_16_16_34(") && !l.contains("function automatic"))
+        .collect();
+    assert_eq!(
+        call_sites.len(),
+        1,
+        "expected exactly 1 call site (the shared harness), found {}:\n{:#?}",
+        call_sites.len(),
+        call_sites
+    );
+    assert!(
+        call_sites[0].contains("assign __shared_Mac_16_16_34_out ="),
+        "the single call site should drive the harness output:\n{}",
+        call_sites[0]
+    );
+
+    // The state-name localparams this regression is about are present, so
+    // the test would still be exercising the post-#247 shape if their
+    // naming changes.
+    assert!(
+        sv.contains("localparam") && sv.contains("_t0_S"),
+        "expected per-thread state-name localparams (#247 shape):\n{sv}"
+    );
+}
+
+#[test]
 fn test_native_pipeline_includes_shared_function_definitions() {
     let source = r#"
 domain SysDomain
