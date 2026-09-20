@@ -277,7 +277,7 @@ def get_construct_syntax(construct: str) -> str:
     """Get the ARCH syntax for a specific construct. Call this BEFORE writing
     any .arch code to avoid common mistakes.
 
-    Available constructs: module, function, pipeline, fsm, fifo, synchronizer,
+    Available constructs: module, seq, function, pipeline, fsm, fifo, synchronizer,
     ram, counter, arbiter, regfile, linklist, generate, bus, template, package,
     types, expressions, doc_comments
 
@@ -312,11 +312,17 @@ def arch_check(files: list[str]) -> str:
 
 
 @mcp.tool()
-def arch_advise(query: str, top: int = 3) -> str:
+def arch_advise(query: str, top: int = 3, feature: bool = False) -> str:
     """Retrieve past error→fix pairs from the local learning store that
     match `query`. Useful when an agent hits a compiler error and wants to
     see how the same user fixed a similar error before. Returns the top-K
     matches (default 3) with error code, error message, file, and diff.
+
+    Set feature=True to search stored construct descriptions harvested from
+    ARCH doc comments instead of error/fix pairs. Use design keywords such as
+    "round robin arbiter" to find prior constructs; these descriptions are
+    provenance, not proof that an implementation is correct. The default
+    feature=False searches error/fix lessons. Each call searches one kind.
 
     The store is built passively by every `arch check/build/sim/formal`
     invocation and lives at ~/.arch/learn/. Run `arch_learn_index` once
@@ -327,7 +333,10 @@ def arch_advise(query: str, top: int = 3) -> str:
       - "duplicate definition"
       - "undeclared identifier"
     """
-    return _run([ARCH_BIN, "advise", "-k", str(top), query])
+    args = [ARCH_BIN, "advise", "-k", str(top)]
+    if feature:
+        args.append("--feature")
+    return _run(args + [query])
 
 
 @mcp.tool()

@@ -82,6 +82,7 @@ session loads the server and exposes the MCP resources and tools.
 | Tool | Description |
 |------|-------------|
 | `arch_check` | Type-check .arch files |
+| `arch_advise` | Retrieve error/fix lessons by default; set `feature=True` to search stored construct descriptions. `query` supplies keywords and `top` limits results (default 3). |
 | `arch_build` | Compile .arch to SystemVerilog (returns generated SV) |
 | `arch_sim` | Compile + simulate with optional C++ testbench |
 | `read_arch_file` | Read a .arch file from the project |

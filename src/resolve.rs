@@ -652,7 +652,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         Some(ds) => {
                             if !declared.contains(&ds.name) {
                                 errors.push(CompileError::general(
-                                    &format!("default state `{}` not declared", ds.name),
+                                    &format!("default state `{}` not declared; syntax: state [<name>, ...] before default state <name>;", ds.name),
                                     ds.span,
                                 ));
                             }

@@ -1280,9 +1280,17 @@ impl Parser {
             }
         }
 
-        self.expect(TokenKind::End)?;
-        self.expect(TokenKind::Module)?;
-        let closing_name = self.expect_ident()?;
+        let closing_start = self.expect(TokenKind::End)?.span;
+        let closing_keyword = self.expect(TokenKind::Module)?.span;
+        let closing_name = self.expect_ident().map_err(|_| {
+            CompileError::general(
+                &format!(
+                    "missing closing module name; expected `end module {}`. Syntax: module <name> ... end module <name>",
+                    name.name
+                ),
+                closing_start.merge(closing_keyword),
+            )
+        })?;
         if closing_name.name != name.name {
             return Err(CompileError::mismatched_closing(
                 &name.name,
@@ -2720,10 +2728,40 @@ impl Parser {
         }
     }
 
+    /// Diagnose a foreign-language `then` delimiter without reserving the name.
+    /// A real assignment to a signal named `then` remains valid.
+    fn reject_then_delimiter(&self) -> Result<(), CompileError> {
+        if self.peek_str() != "then" {
+            return Ok(());
+        }
+        if matches!(
+            self.peek_real_kind_at(1),
+            Some(
+                TokenKind::Eq
+                    | TokenKind::LtEq
+                    | TokenKind::Dot
+                    | TokenKind::LBracket
+                    | TokenKind::At
+                    | TokenKind::LParen
+            )
+        ) {
+            return Ok(());
+        }
+        let token = self.tokens[self.pos..]
+            .iter()
+            .find(|t| !matches!(t.kind, TokenKind::DocOuter(_) | TokenKind::DocInner(_)))
+            .expect("peek_str found then");
+        Err(CompileError::general(
+            "unexpected `then` after condition; syntax: if <condition> <statements> { elsif <condition> <statements> } [ else <statements> ] end if",
+            token.span,
+        ))
+    }
+
     /// Parse `if ... elsif ... else ... end if` inside a thread block.
     fn parse_thread_if(&mut self) -> Result<ThreadStmt, CompileError> {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
+        self.reject_then_delimiter()?;
 
         let mut then_stmts = Vec::new();
         while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf)
@@ -3186,6 +3224,7 @@ impl Parser {
     fn parse_reg_if(&mut self, unique: bool) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
+        self.reject_then_delimiter()?;
         let mut then_stmts = Vec::new();
         while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf)
         {
@@ -3449,6 +3488,7 @@ impl Parser {
     fn parse_comb_if(&mut self, unique: bool) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
+        self.reject_then_delimiter()?;
         let mut then_stmts = Vec::new();
         while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf)
         {
@@ -4614,6 +4654,14 @@ impl Parser {
 
     fn parse_prefix(&mut self) -> Result<Expr, CompileError> {
         match self.peek_kind() {
+            Some(TokenKind::Let) => Err(CompileError::general(
+                "unexpected `let` in statement/expression; declare `let <name>: <type> = <expression>;` at module/FSM scope, or assign an existing wire in comb / register in seq",
+                self.peek_span(),
+            )),
+            Some(TokenKind::If) => Err(CompileError::general(
+                "unexpected `if` in expression; syntax: <condition> ? <true_expression> : <false_expression>",
+                self.peek_span(),
+            )),
             Some(TokenKind::HashHash) => {
                 // SVA `##N expr` — forward cycle-shift sugar. Only legal
                 // inside assert/cover bodies (typecheck enforces).
@@ -7831,6 +7879,7 @@ impl Parser {
     fn parse_function_if(&mut self) -> Result<FunctionIfElse, CompileError> {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
+        self.reject_then_delimiter()?;
         let then_body = self.parse_function_body()?;
 
         let else_body = if self.check(TokenKind::ElsIf) {
@@ -7858,6 +7907,7 @@ impl Parser {
     fn parse_function_elsif(&mut self) -> Result<FunctionIfElse, CompileError> {
         let start = self.expect(TokenKind::ElsIf)?.span;
         let cond = self.parse_expr()?;
+        self.reject_then_delimiter()?;
         let then_body = self.parse_function_body()?;
 
         let else_body = if self.check(TokenKind::ElsIf) {
@@ -8088,6 +8138,102 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut parser = Parser::new(tokens, src);
         parser.parse_source_file().unwrap()
+    }
+
+    #[test]
+    fn missing_module_closing_name_points_to_ending_with_exact_syntax() {
+        for suffix in [
+            "",
+            "\n",
+            " // closing comment\n",
+            "\nmodule Next\nend module Next",
+        ] {
+            let src = format!("module morse_encoder\nend module{suffix}");
+            let mut parser = Parser::new(tokenize(&src).unwrap(), &src);
+            let error = parser.parse_source_file().unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("expected `end module morse_encoder`"));
+            assert!(error
+                .to_string()
+                .contains("Syntax: module <name> ... end module <name>"));
+            assert_eq!(error.span_offset(), src.find("end module").unwrap());
+        }
+        parse("module morse_encoder\nend module morse_encoder");
+        parse("module counter\nend module counter");
+        let src = "module M\nend module Other";
+        let error = Parser::new(tokenize(src).unwrap(), src)
+            .parse_source_file()
+            .unwrap_err();
+        assert!(matches!(error, CompileError::MismatchedClosingName { .. }));
+    }
+
+    #[test]
+    fn then_delimiter_points_to_keyword_in_each_if_context() {
+        for (open, close, stmt) in [
+            ("comb", "end comb", "q = 1;"),
+            ("seq on clk rising", "end seq", "q <= 1;"),
+            (
+                "thread T on clk rising, rst high",
+                "end thread T",
+                "q <= 1;",
+            ),
+            (
+                "function f(a: Bool) -> UInt<8>",
+                "end function f",
+                "return 1;",
+            ),
+        ] {
+            for branch in ["if a then", "if a\n STMT\nelsif b then"] {
+                let branch = branch.replace("STMT", stmt);
+                let src =
+                    format!("module M\n{open}\n{branch}\n{stmt}\nend if\n{close}\nend module M");
+                let mut parser = Parser::new(tokenize(&src).unwrap(), &src);
+                let error = parser.parse_source_file().unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("syntax: if <condition> <statements>"),
+                    "{src}: {error}"
+                );
+                assert_eq!(error.span_offset(), src.find("then").unwrap(), "{src}");
+                // The suggested edit must eliminate the parser error.
+                parse(&src.replace(" then", ""));
+            }
+        }
+    }
+
+    #[test]
+    fn if_expression_suggests_ternary_syntax() {
+        for statement in ["q <= if a then 1 else 0;", "q <= (if a then 1 else 0);"] {
+            let src = format!("module M\nseq on clk rising\n{statement}\nend seq\nend module M");
+            let mut parser = Parser::new(tokenize(&src).unwrap(), &src);
+            let error = parser.parse_source_file().unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("syntax: <condition> ? <true_expression> : <false_expression>"));
+            assert_eq!(error.span_offset(), src.find("if a").unwrap());
+            parse(&src.replace("if a then 1 else 0", "a ? 1 : 0"));
+        }
+    }
+
+    #[test]
+    fn local_let_suggests_declaration_scope() {
+        let src = "module M\nseq on clk rising\nlet x: UInt<1> = 0;\nend seq\nend module M";
+        let mut parser = Parser::new(tokenize(src).unwrap(), src);
+        let error = parser.parse_source_file().unwrap_err();
+        assert!(error.to_string().contains("at module/FSM scope"));
+        assert_eq!(error.span_offset(), src.find("let x").unwrap());
+    }
+
+    #[test]
+    fn then_remains_a_valid_identifier() {
+        for assignment in ["then = 1;", "then[0] = 1;", "then.field = 1;"] {
+            parse(&format!(
+                "module M\ncomb\nif a\n{assignment}\nend if\nend comb\nend module M"
+            ));
+        }
+        parse("module M\nseq on clk rising\nif a\nthen <= 1;\nend if\nif then\nq <= 0;\nend if\nend seq\nend module M");
     }
 
     #[test]

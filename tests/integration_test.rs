@@ -40874,3 +40874,158 @@ fn test_learn_store_survives_concurrent_checks_issue_1008() {
         "temp files left behind: {leftovers:?}"
     );
 }
+
+/// Unsized ARCH literals have minimum-value widths, including within concat
+/// and replication. SV requires these operand widths to be explicit.
+#[test]
+fn test_concat_numeric_literals_preserve_widths() {
+    let sv = compile_to_sv(
+        r#"
+module ConcatLiterals
+  port x: in UInt<3>;
+  port q: out UInt<4>;
+  port shifted: out UInt<4>;
+  port mixed: out UInt<10>;
+  port repeated: out UInt<4>;
+  comb
+    q = {x, 1};
+    shifted = {0, x};
+    mixed = {0, 0xf, 0b101, {1, 0}};
+    repeated = {4{1}};
+  end comb
+end module ConcatLiterals
+"#,
+    );
+    assert!(sv.contains("{x, 1'd1}"), "{sv}");
+    assert!(sv.contains("{1'd0, x}"), "{sv}");
+    assert!(sv.contains("{1'd0, 4'd15, 3'd5, {1'd1, 1'd0}}"), "{sv}");
+    assert!(sv.contains("{4{1'd1}}"), "{sv}");
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("test.sv");
+    std::fs::write(&src, format!("{sv}\nmodule tb; reg [2:0] x; wire [3:0] q, repeated, shifted; wire [9:0] mixed; ConcatLiterals dut(.*); initial begin x=3; #1; if(q !== 7 || shifted !== 3 || mixed !== 10'd502 || repeated !== 15) $fatal(1, \"concat width/value mismatch\"); $finish; end endmodule\n")).unwrap();
+    let out = dir.path().join("sim");
+    let build = std::process::Command::new("iverilog")
+        .args(["-g2012", "-s", "tb", "-o"])
+        .arg(&out)
+        .arg(src)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sim = std::process::Command::new("vvp").arg(out).output().unwrap();
+    assert!(
+        sim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sim.stdout)
+    );
+}
+
+#[test]
+fn test_concat_numeric_literals_in_pipeline() {
+    let sv = compile_to_sv(
+        r#"
+pipeline ConcatPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port din: in UInt<3>;
+  port dout: out UInt<4>;
+  stage S1
+    reg value: UInt<4> reset rst => 0;
+    seq on clk rising
+      value <= {din, 1};
+    end seq
+    comb
+      dout = value;
+    end comb
+  end stage S1
+end pipeline ConcatPipe
+"#,
+    );
+    assert!(sv.contains("{din, 1'd1}"), "{sv}");
+}
+
+/// A zero-extension must retain ARCH's widened arithmetic result before
+/// entering SV's self-determined $unsigned context.
+#[test]
+fn test_zext_widening_arithmetic_icarus() {
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let source = r#"
+module ZextArithmetic
+  param W: const = 8;
+  port a: in UInt<W>;
+  port b: in UInt<W>;
+  port s: in SInt<W>;
+  port t: in SInt<W>;
+  port product: out UInt<2 * W + 1>;
+  port sum: out UInt<2 * W + 1>;
+  port difference: out UInt<2 * W + 1>;
+  port signed_product: out SInt<2 * W + 1>;
+  port wrapped: out UInt<2 * W + 1>;
+  comb
+    product = (a * b).zext<2 * W + 1>();
+    sum = (a + b).zext<2 * W + 1>();
+    difference = (a - b).zext<2 * W + 1>();
+    signed_product = (s * t).zext<2 * W + 1>();
+    wrapped = (a *% b).zext<2 * W + 1>();
+  end comb
+end module ZextArithmetic
+"#;
+    let sv = compile_to_sv(source);
+    let td = tempfile::tempdir().unwrap();
+    let dut = td.path().join("dut.sv");
+    let tb = td.path().join("tb.sv");
+    let exe = td.path().join("sim.vvp");
+    std::fs::write(&dut, sv).unwrap();
+    std::fs::write(&tb, r#"
+module tb;
+  logic [3:0] a, b;
+  logic signed [3:0] s, t;
+  wire [8:0] product, sum, difference, wrapped;
+  wire signed [8:0] signed_product;
+  ZextArithmetic #(.W(4)) dut(.*);
+  initial begin
+    a=15; b=15; s=-1; t=1; #1;
+    if (product !== 225 || sum !== 30 || signed_product !== 255 || wrapped !== 1)
+      $fatal(1, "incorrect widened or wrapping arithmetic: %d %d %d %d", product,sum,signed_product,wrapped);
+    a=0; b=15; #1;
+    if (difference !== 17) $fatal(1, "lost widened subtraction bit: %d", difference);
+    $finish;
+  end
+endmodule
+"#).unwrap();
+    let build = std::process::Command::new("iverilog")
+        .args(["-g2012", "-s", "tb", "-o"])
+        .arg(&exe)
+        .arg(&dut)
+        .arg(&tb)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = std::process::Command::new("vvp").arg(exe).output().unwrap();
+    assert!(
+        run.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}

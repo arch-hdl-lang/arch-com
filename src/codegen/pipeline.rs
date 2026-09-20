@@ -2383,6 +2383,9 @@ impl<'a> Codegen<'a> {
                 let parts_str: Vec<String> = parts
                     .iter()
                     .map(|p| {
+                        if let Some(literal) = Self::sized_concat_literal(p) {
+                            return literal;
+                        }
                         self.emit_pipeline_stage_expr_str(
                             p,
                             current_prefix,

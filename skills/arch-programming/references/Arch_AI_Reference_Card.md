@@ -99,7 +99,22 @@ seq                                   // default-clock block; still uses end seq
 end seq
 ```
 
-**Conditionals:** use `elsif` (one word), NOT `else if`:
+**Conditionals**
+
+A statement condition is followed directly by its body: **no `then` keyword** after `if` or `elsif`. Use `elsif` for a chained branch and close the chain with `end if`.
+
+```text
+if <condition> <statements>
+{ elsif <condition> <statements> }
+[ else <statements> ]
+end if
+```
+
+Here `{ ... }` means zero or more repetitions and `[ ... ]` means optional syntax; these brackets are grammar notation, not source code.
+
+An `if` is a statement, not an expression. For a conditional value, use `<condition> ? <true_expression> : <false_expression>`, for example `let selected: UInt<8> = sel ? a : b;`. Do not write `let selected: UInt<8> = if sel then a else b;`.
+
+Statement example:
 
 ```
 if cond_a
@@ -501,6 +516,36 @@ end function AddSat
 
 ---
 
+### seq
+
+Clocked statement block inside a module or FSM state; assigns existing registers with `<=`.
+
+```arch
+module SeqExample
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, High>;
+  port enable: in Bool;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+  reg saved: UInt<8> reset rst => 0;
+  let data_out = saved;
+
+  seq on clk rising
+    if enable
+      saved <= data_in;
+    end if
+  end seq
+end module SeqExample
+```
+
+- Grammar: `seq on <clock> rising <statements> end seq` (or `falling`). A scope-level `default seq on clk rising;` permits the short form `seq ... end seq`.
+- Declare `reg`, `wire`, and signal `let` bindings at enclosing module/FSM scope, outside the sequential body. Use `<=` for register updates; use `comb` and `=` to drive combinational wires/outputs.
+- Conditionals use `if <condition> ... elsif <condition> ... else ... end if`: no `then`, `begin`, or braces. Conditional expressions use `condition ? true_value : false_value`.
+- Reset behavior comes from the reset port type and each register's `reset rst => value` clause; choose mode and polarity from the design specification. The example uses asynchronous active-high reset. The compiler generates its reset guard.
+- Right-hand sides sample pre-update values at the selected clock edge. A combinational expression driven by a register reevaluates when that register changes.
+
+---
+
 ### pipeline
 
 Staged datapath — compiler generates hazard logic.
@@ -610,6 +655,8 @@ fsm Name
 end fsm Name
 ```
 
+Declare every FSM state in `state [Idle, Running, Done]` (no trailing semicolon). Then select a declared reset state with `default state Idle;` and define behavior with `state Idle ... end state Idle`. The state list, reset-state selection, and state bodies are separate constructs: neither `default state` nor a state body declares a missing state name.
+
 - `default state` required (reset value)
 - `default ... end default` provides defaults emitted before state `case`; states only override what differs
 - Implicit hold: if no transition fires, FSM stays in current state — no `-> Self when true` needed
@@ -617,20 +664,32 @@ end fsm Name
 - For prose-derived FSMs, derive and preserve a standard transition table before coding: `input condition`, `current state`, `next state`, `output`. Also call out each input/output port's timing/type (input sampling edge, combinational/state-derived output, registered output, or `pipe_reg` latency). Save it as `transition_table.md` when writing files, or embed it as `///` doc comments above the FSM/module for code-only outputs. For serial protocols, include a distinct row/state for each sampled symbol boundary: start, every data bit, stop/parity, done, and error/recovery.
 - Interpret the table's `output` column together with each port's timing/type note. For combinational or state-derived outputs, the entry is the value visible in the current state. For registered or `pipe_reg` outputs, the entry is the value assigned by that state's sequential action and when it becomes externally visible. Do not invent extra `done`/`valid` ports or extra states because of this rule; choose output timing from the prompt/waveform.
 
-**FSM datapath extension** — `reg`, `let`, and `seq` inside FSM states:
+**FSM datapath extension** — scope-level `reg` and `let` declarations, with `seq` blocks inside state bodies:
+
+Signal `let` bindings belong at module or FSM scope, outside `comb`, `seq`, and state bodies. They define continuous combinational expressions, not procedural temporary variables. For a conditional intermediate value, declare a `wire` at scope level and assign it with `=` inside `comb`; for stored state, declare a `reg` at scope level and assign it with `<=` inside `seq`. Function-local `let` declarations are a separate supported case.
+
 
 ```
-fsm MulDiv
-  reg acc_r: UInt<64> reset rst => 0;
-  let done: Bool = (cycle_r == 31);
+fsm Accumulator
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port enable: in Bool;
+  reg acc_r: UInt<8> reset rst => 0;
+  let next_acc: UInt<8> = acc_r +% 1;
+
+  state [Idle, Running]
+  default state Idle;
 
   state Idle
-    seq on clk rising
-      acc_r <= 0;
-    end seq
-    -> Multiply when req_valid;
+    -> Running when enable;
   end state Idle
-end fsm MulDiv
+  state Running
+    seq on clk rising
+      acc_r <= next_acc;
+    end seq
+    -> Idle when not enable;
+  end state Running
+end fsm Accumulator
 ```
 
 Co-locates control and datapath — emits separate `always_ff` and `always_comb` in SV.

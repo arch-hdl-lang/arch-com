@@ -53,7 +53,7 @@ fn cocotb_python_dir(build_dir: &Path) -> miette::Result<PathBuf> {
 }
 
 #[derive(Parser)]
-#[command(name = "arch", version, about = "ARCH HDL compiler")]
+#[command(name = "arch", version = env!("ARCH_BUILD_VERSION"), about = "ARCH HDL compiler")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -1089,23 +1089,12 @@ fn main() -> miette::Result<()> {
                 eprintln!("error: empty query (pass a query string or pipe via --from-stderr)");
                 std::process::exit(2);
             }
-            // Pull more candidates than `top` when --feature is set so we
-            // can filter to feature events without starving the result set.
-            let pool_size = if feature { top.max(1) * 8 } else { top };
-            let matches = arch::learn::advise(&q, pool_size).into_diagnostic()?;
-            let matches: Vec<_> = if feature {
-                matches
-                    .into_iter()
-                    .filter(|m| m.event.kind == "feature")
-                    .take(top)
-                    .collect()
+            let filter = if feature {
+                arch::learn::AdviceFilter::Features
             } else {
-                matches
-                    .into_iter()
-                    .filter(|m| m.event.kind != "feature")
-                    .take(top)
-                    .collect()
+                arch::learn::AdviceFilter::NonFeatures
             };
+            let matches = arch::learn::advise_filtered(&q, top, filter).into_diagnostic()?;
             if matches.is_empty() {
                 eprintln!("No matches.");
                 return Ok(());
