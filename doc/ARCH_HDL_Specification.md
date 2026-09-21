@@ -2118,7 +2118,7 @@ The compiler validates that the default value fits within the declared range. Co
 
 **5. Clock Domains and CDC Safety**
 
-Every Clock signal in Arch carries a domain tag as part of its type. The compiler tracks which domain every signal belongs to. Crossing domain boundaries without an explicit crossing block is a compile-time error --- never a simulation-time surprise.
+Every Clock signal in Arch carries a domain tag as part of its type. The compiler tracks which domain every signal belongs to. Crossing domain boundaries without a `synchronizer` (§8.3) or an async `fifo` (§8.2) is a compile-time error --- never a simulation-time surprise.
 
 **5.1 Declaring Domains**
 
@@ -7154,7 +7154,7 @@ Designs with multiple clock domains are handled by a compile-time-generated mult
 |                                                                                    |
 | // \... (LCM = 8ns → 4 Fast edges per 1 Slow edge)                                 |
 |                                                                                    |
-| // CDC signals declared with crossing blocks are sampled                           |
+| // CDC signals crossed through a synchronizer are sampled                          |
 |                                                                                    |
 | // at the correct phase --- the compiler inserts the two-flop                      |
 |                                                                                    |
@@ -7578,7 +7578,7 @@ These three levels are not in conflict --- the compiler stacks them. A design wi
 
   **Clock domain boundaries**      Implicit --- clocks are just signals; no declared partition points              Explicit --- every Clock\<D\> declaration is a partition candidate
 
-  **CDC synchronisation points**   Unknown until runtime --- requires event queue                                  Statically known from domain freq_mhz and crossing block declarations
+  **CDC synchronisation points**   Unknown until runtime --- requires event queue                                  Statically known from domain freq_mhz and synchronizer declarations  
 
   **Determinism guarantee**        Only with +define+SIM_DETERMINISTIC and restricted coding style                 Structural guarantee --- identical results regardless of thread count
   -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -8502,15 +8502,13 @@ Several prompting patterns consistently produce high-quality Arch output:
 |                                                                              |
 | // ERROR AttentionUnit.arch:47                                               |
 |                                                                              |
-| // cdc_crossing: signal score_raw crosses from ComputeDomain to OutputDomain |
+| // CDC violation: register score_raw is driven in domain                     |
 |                                                                              |
-| // without a declared crossing block.                                        |
+| // ComputeDomain but read in domain OutputDomain (clock out_clk).            |
 |                                                                              |
-| // Add: crossing compute_to_output { from ComputeDomain to OutputDomain      |
+| // Use a synchronizer or async fifo to cross clock domains.\'                |
 |                                                                              |
-| // data score_raw -\> score_sync } or register score_raw in OutputDomain.\'  |
-|                                                                              |
-| // The AI reads the error, identifies the missing crossing block,            |
+| // The AI reads the error, identifies the missing synchronizer,              |
 |                                                                              |
 | // and inserts it at the correct location.                                   |
 |                                                                              |
@@ -8550,7 +8548,7 @@ When the AI generates Arch with errors, the compiler output is sufficient for se
 |                                                                                              |
 | // Signal req_valid: domain WriteDomain drives register in ReadDomain.                       |
 |                                                                                              |
-| // Add a crossing block or use a fifo with wr_clk / rd_clk ports.                            |
+| // Add a synchronizer or use a fifo with wr_clk / rd_clk ports.                              |
 |                                                                                              |
 | // Unreachable complete in rtl_accurate implement block:                                     |
 |                                                                                              |
@@ -9051,7 +9049,7 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
 
   **Module port width from implicit param math**   Explicit: port sum: out UInt\<T+1\>;
 
-  **CDC implicitly allowed across assignments**    Compile error --- crossing block required
+  **CDC implicitly allowed across assignments**    Compile error --- synchronizer or async fifo required
   --------------------------------------------------------------------------------------------------------------
 
 **27. Compilation and Output**
