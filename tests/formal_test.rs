@@ -978,3 +978,68 @@ fn formal_e8m0_nan_scale_proves() {
     assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
     assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
 }
+
+/// `arch formal` on an `fsm`. The SMT encoder is module-only; `fsm` items
+/// are lowered to an equivalent module (state register + priority
+/// transition chain in the seq block) before encoding. Previously this
+/// failed with "module `Mirror` not found in input" even though the `fsm`
+/// was right there in the file.
+///
+/// The property is a semantic cross-check, not a smoke test: `m` shadows
+/// the encoded state, so it holds only if the reset state, the state
+/// encoding, the transition chain and the comb/seq split are all correct.
+#[test]
+fn formal_fsm_top_state_encoding_proves() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    let (code, out) = run_formal("tests/formal/fsm_state_mirror.arch", &["--bound", "6"]);
+    assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
+    assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
+}
+
+/// Negative control for `formal_fsm_top_state_encoding_proves`: the mutant
+/// drops StA's `m <= 1` so the shadow desynchronises. Without this, a
+/// vacuous encoding (e.g. a state register that never advances, or an
+/// assert that never gets encoded) would "prove" the positive case and the
+/// test above would be worthless.
+#[test]
+fn formal_fsm_broken_state_mirror_is_refuted() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    let (code, out) = run_formal(
+        "tests/formal/fsm_state_mirror_broken.arch",
+        &["--bound", "6"],
+    );
+    assert!(
+        out.contains("REFUTED"),
+        "expected REFUTED for the mutant — a PROVED here means the fsm \
+         encoding is vacuous:\n{out}"
+    );
+    assert_ne!(code, 101, "arch formal must not panic:\n{out}");
+}
+
+/// Hierarchical formal across an `inst` of an `fsm`. Previously this failed
+/// with "hierarchical formal: sub-module `Mirror` not found in source" —
+/// misleading, since the construct was present and passed on the command
+/// line; `lookup_module` matched `Item::Module` only.
+#[test]
+fn formal_fsm_submodule_flattens() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    let (code, out) = run_formal(
+        "tests/formal/fsm_submodule.arch",
+        &["--top", "FsmSubTop", "--bound", "6"],
+    );
+    assert_eq!(code, 0, "expected exit 0; got {code}\n{out}");
+    assert!(
+        !out.contains("not found in source"),
+        "fsm sub-module should resolve:\n{out}"
+    );
+    assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
+}

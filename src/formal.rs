@@ -111,6 +111,13 @@ pub fn run(
     symbols: &SymbolTable,
     args: &FormalArgs,
 ) -> Result<FormalReport, CompileError> {
+    // 0. Lower `fsm` items to equivalent modules. The SMT encoder is
+    //    module-only; without this, both `--top <an fsm>` and an `inst` of
+    //    an `fsm` fail with a "not found" diagnostic even though the
+    //    construct is present in the input.
+    let lowered = lower_fsms_for_formal(ast)?;
+    let ast = &lowered;
+
     // 1. Pick the top module
     let module = select_top(ast, args.top.as_deref())?;
 
@@ -6655,4 +6662,339 @@ end module ReplayEdge
             ReplayVerdict::Contradicted
         );
     }
+}
+
+// ── `fsm` → `module` lowering for the formal frontend ────────────────────────
+//
+// `arch formal` encodes `module` bodies to SMT; the first-class constructs
+// have no SMT encoding of their own. Before this lowering, `--top <an fsm>`
+// failed with "module `X` not found in input" and an `inst` of an `fsm`
+// failed with "sub-module `X` not found in source" — both misleading, since
+// the construct *was* present and *had* been passed on the command line.
+//
+// Rather than teach the SMT emitter about states, lower an `fsm` into the
+// same shape `codegen/fsm.rs` emits in SV and let the existing module path
+// handle it:
+//
+//     reg  state: UInt<W> reset <rst> => <default index>;
+//     wire state_next: UInt<W>;
+//     comb { <default_comb>; state_next = state;
+//            if state == i then { <state i comb>; <transition chain> } … }
+//     seq on <clk> rising {
+//            <default_seq>; state <= state_next;
+//            if state == i then { <state i seq> } … }
+
+/// Name of the synthesized state register. `state` is the built-in
+/// identifier an fsm body uses to read its own current state, so naming the
+/// register `state` makes those reads resolve without a substitution pass.
+/// (The SV emitter calls it `state_r`; the name is not observable in SMT.)
+const FSM_STATE_REG: &str = "state";
+
+fn f_ident(name: &str, span: Span) -> Ident {
+    Ident {
+        name: name.to_string(),
+        span,
+    }
+}
+fn f_expr(kind: ExprKind, span: Span) -> Expr {
+    Expr {
+        kind,
+        span,
+        parenthesized: false,
+    }
+}
+fn f_ident_expr(name: &str, span: Span) -> Expr {
+    f_expr(ExprKind::Ident(name.to_string()), span)
+}
+fn f_state_lit(width: u32, idx: u64, span: Span) -> Expr {
+    f_expr(ExprKind::Literal(LitKind::Sized(width, idx)), span)
+}
+fn f_assign(target: Expr, value: Expr, span: Span) -> Stmt {
+    Stmt::Assign(Assign {
+        target,
+        value,
+        span,
+    })
+}
+/// `if <cond> then <body> end if` with no else arm.
+fn f_guard(cond: Expr, body: Vec<Stmt>, span: Span) -> Stmt {
+    Stmt::IfElse(IfElseOf {
+        cond,
+        then_stmts: body,
+        else_stmts: Vec::new(),
+        unique: false,
+        span,
+    })
+}
+
+/// Rewrite every `fsm` item into an equivalent `module` item, leaving all
+/// other items untouched. Returns the original AST unchanged (cloned) when
+/// the source declares no `fsm`.
+fn lower_fsms_for_formal(ast: &SourceFile) -> Result<SourceFile, CompileError> {
+    let mut out = ast.clone();
+    for item in out.items.iter_mut() {
+        if let Item::Fsm(f) = item {
+            let m = fsm_to_module(f)?;
+            *item = Item::Module(m);
+        }
+    }
+    Ok(out)
+}
+
+fn fsm_to_module(f: &FsmDecl) -> Result<ModuleDecl, CompileError> {
+    let sp = f.common.span;
+    let fname = &f.common.name.name;
+
+    if f.common.is_interface {
+        return Err(CompileError::general(
+            &format!(
+                "formal: `fsm {fname}` is an interface stub (`.archi`, port-only); \
+                 formal needs the implementation source"
+            ),
+            sp,
+        ));
+    }
+    let default_state = f.default_state.as_ref().ok_or_else(|| {
+        CompileError::general(
+            &format!("formal: `fsm {fname}` has no `default state` — no reset state to encode"),
+            sp,
+        )
+    })?;
+    if f.state_names.is_empty() {
+        return Err(CompileError::general(
+            &format!("formal: `fsm {fname}` declares no states"),
+            sp,
+        ));
+    }
+
+    // The lowering owns these two names; a user signal of the same name
+    // would be silently captured.
+    for reserved in [FSM_STATE_REG] {
+        let taken = f.common.ports.iter().any(|p| p.name.name == reserved)
+            || f.regs.iter().any(|r| r.name.name == reserved)
+            || f.wires.iter().any(|w| w.name.name == reserved)
+            || f.lets.iter().any(|l| l.name.name == reserved);
+        if taken {
+            return Err(CompileError::general(
+                &format!(
+                    "formal: `fsm {fname}` declares a signal named `{reserved}`, which collides \
+                     with the name the formal lowering gives the state register"
+                ),
+                sp,
+            ));
+        }
+    }
+
+    let width = crate::typecheck::enum_width(f.state_names.len());
+    let index_of = |name: &str| -> Option<u64> {
+        f.state_names
+            .iter()
+            .position(|s| s.name == name)
+            .map(|i| i as u64)
+    };
+    let reset_idx = index_of(&default_state.name).ok_or_else(|| {
+        CompileError::general(
+            &format!(
+                "formal: `fsm {fname}`: default state `{}` is not in the state list",
+                default_state.name
+            ),
+            default_state.span,
+        )
+    })?;
+
+    let state_ty = TypeExpr::UInt(Box::new(f_expr(
+        ExprKind::Literal(LitKind::Dec(width as u64)),
+        sp,
+    )));
+
+    let has_reset_port = f
+        .common
+        .ports
+        .iter()
+        .any(|p| matches!(p.ty, TypeExpr::Reset(..)));
+    let (reset, init) = if has_reset_port {
+        let (rst, is_async, is_low) = extract_reset_info(&f.common.ports);
+        (
+            RegReset::Explicit(
+                f_ident(&rst, sp),
+                if is_async {
+                    ResetKind::Async
+                } else {
+                    ResetKind::Sync
+                },
+                if is_low {
+                    ResetLevel::Low
+                } else {
+                    ResetLevel::High
+                },
+                f_state_lit(width, reset_idx, sp),
+            ),
+            None,
+        )
+    } else {
+        (RegReset::None, Some(f_state_lit(width, reset_idx, sp)))
+    };
+
+    let mut body: Vec<ModuleBodyItem> = Vec::new();
+    body.push(ModuleBodyItem::RegDecl(RegDecl {
+        name: f_ident(FSM_STATE_REG, sp),
+        ty: state_ty,
+        init,
+        reset,
+        guard: None,
+        multicycle: None,
+        span: sp,
+    }));
+    for r in &f.regs {
+        body.push(ModuleBodyItem::RegDecl(r.clone()));
+    }
+    for w in &f.wires {
+        body.push(ModuleBodyItem::WireDecl(w.clone()));
+    }
+    for l in &f.lets {
+        body.push(ModuleBodyItem::LetBinding(l.clone()));
+    }
+
+    // ── comb: defaults, hold-by-default, then per-state arms ────────────
+    let mut comb: Vec<Stmt> = f.default_comb.clone();
+    for sb in &f.states {
+        let idx = index_of(&sb.name.name).ok_or_else(|| {
+            CompileError::general(
+                &format!(
+                    "formal: `fsm {fname}`: state body `{}` is not in the state list",
+                    sb.name.name
+                ),
+                sb.span,
+            )
+        })?;
+        let arm = sb.comb_stmts.clone();
+        if arm.is_empty() {
+            continue;
+        }
+        comb.push(f_guard(
+            f_expr(
+                ExprKind::Binary(
+                    BinOp::Eq,
+                    Box::new(f_ident_expr(FSM_STATE_REG, sb.span)),
+                    Box::new(f_state_lit(width, idx, sb.span)),
+                ),
+                sb.span,
+            ),
+            arm,
+            sb.span,
+        ));
+    }
+    body.push(ModuleBodyItem::CombBlock(CombBlock {
+        stmts: comb,
+        span: sp,
+    }));
+
+    // ── seq: defaults, state commit, then per-state arms ────────────────
+    let clk = f
+        .common
+        .ports
+        .iter()
+        .find(|p| matches!(p.ty, TypeExpr::Clock(_)))
+        .map(|p| p.name.name.clone())
+        .ok_or_else(|| {
+            CompileError::general(
+                &format!("formal: `fsm {fname}` has no `Clock` port to drive the state register"),
+                sp,
+            )
+        })?;
+    let mut seq: Vec<Stmt> = f.default_seq.clone();
+    for sb in &f.states {
+        let mut arm = sb.seq_stmts.clone();
+        arm.extend(fsm_transition_chain(sb, &index_of, width, fname)?);
+        if arm.is_empty() {
+            continue;
+        }
+        let idx = index_of(&sb.name.name).ok_or_else(|| {
+            CompileError::general(
+                &format!(
+                    "formal: `fsm {fname}`: state body `{}` is not in the state list",
+                    sb.name.name
+                ),
+                sb.span,
+            )
+        })?;
+        seq.push(f_guard(
+            f_expr(
+                ExprKind::Binary(
+                    BinOp::Eq,
+                    Box::new(f_ident_expr(FSM_STATE_REG, sb.span)),
+                    Box::new(f_state_lit(width, idx, sb.span)),
+                ),
+                sb.span,
+            ),
+            arm,
+            sb.span,
+        ));
+    }
+    body.push(ModuleBodyItem::RegBlock(RegBlock {
+        clock: f_ident(&clk, sp),
+        clock_edge: ClockEdge::Rising,
+        stmts: seq,
+        span: sp,
+    }));
+
+    for a in &f.common.asserts {
+        body.push(ModuleBodyItem::Assert(a.clone()));
+    }
+
+    Ok(ModuleDecl {
+        name: f.common.name.clone(),
+        params: f.common.params.clone(),
+        ports: f.common.ports.clone(),
+        body,
+        implements: None,
+        hooks: Vec::new(),
+        cdc_safe: false,
+        rdc_safe: false,
+        comb_loops_allowed: false,
+        allow_dead_skid_feedback: false,
+        span: sp,
+        doc: None,
+        inner_doc: None,
+        is_interface: false,
+    })
+}
+
+/// Transitions as a priority if/else-if chain, mirroring the arm order the
+/// SV emitter produces. The chain lives in the `seq` block and assigns the
+/// state register directly: a register holds its value when no arm fires,
+/// which is exactly the SV emitter's `state_next = state_r` default, so no
+/// separate next-state net is needed. An unconditional transition needs no
+/// special case either — its condition is a literal truth.
+fn fsm_transition_chain(
+    sb: &StateBody,
+    index_of: &dyn Fn(&str) -> Option<u64>,
+    width: u32,
+    fname: &str,
+) -> Result<Vec<Stmt>, CompileError> {
+    let mut chain: Vec<Stmt> = Vec::new();
+    for tr in sb.transitions.iter().rev() {
+        let target = index_of(&tr.target.name).ok_or_else(|| {
+            CompileError::general(
+                &format!(
+                    "formal: `fsm {fname}`: transition target `{}` is not in the state list",
+                    tr.target.name
+                ),
+                tr.span,
+            )
+        })?;
+        let assign = f_assign(
+            f_ident_expr(FSM_STATE_REG, tr.span),
+            f_state_lit(width, target, tr.span),
+            tr.span,
+        );
+        chain = vec![Stmt::IfElse(IfElseOf {
+            cond: tr.condition.clone(),
+            then_stmts: vec![assign],
+            else_stmts: chain,
+            unique: false,
+            span: tr.span,
+        })];
+    }
+    Ok(chain)
 }
