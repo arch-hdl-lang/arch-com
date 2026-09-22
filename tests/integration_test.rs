@@ -34232,9 +34232,10 @@ fn test_nic400_fabric_rs_slave_inserts_per_slave_reg_slices_with_packed_wire_con
 // User-written `assert` SVA reset gating
 // ────────────────────────────────────────────────────────────────────
 //
-// `doc/ARCH_HDL_Specification.md:7783` states that user-written
-// `assert`/`cover` bodies are evaluated "at every clock edge under
-// the construct's `posedge clk` with `disable iff (rst)`". The
+// `doc/ARCH_HDL_Specification.md` §12.4 ("Scope --- Same-Cycle
+// Safety Today, Temporal Sugar on the Roadmap") states that
+// user-written `assert`/`cover` bodies are evaluated "at every clock
+// edge under the construct's `posedge clk` with `disable iff (rst)`". The
 // auto-emitted SVA family (`_auto_bound_*`, `_auto_div0_*`,
 // `_auto_hs_*`, `_auto_thread_*`) already honours this — emission
 // goes through the same `rst_active` extraction logic. User-written
