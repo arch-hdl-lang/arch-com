@@ -6677,12 +6677,16 @@ end module ReplayEdge
 // handle it:
 //
 //     reg  state: UInt<W> reset <rst> => <default index>;
-//     wire state_next: UInt<W>;
-//     comb { <default_comb>; state_next = state;
-//            if state == i then { <state i comb>; <transition chain> } … }
+//     comb { <default_comb>;
+//            if state == i then <state i comb> … }
 //     seq on <clk> rising {
-//            <default_seq>; state <= state_next;
-//            if state == i then { <state i seq> } … }
+//            <default_seq>;
+//            if state == i then { <state i seq>; <transition chain> } … }
+//
+// No `state_next` net: the transition chain lives in the `seq` block and
+// assigns `state` directly, holding by default when no arm fires (see
+// `fsm_transition_chain`). The comment previously sketched an abandoned
+// next-state-net design.
 
 /// Name of the synthesized state register. `state` is the built-in
 /// identifier an fsm body uses to read its own current state, so naming the
