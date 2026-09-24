@@ -27919,6 +27919,63 @@ fn test_comb_loop_across_two_instances_detected() {
 }
 
 #[test]
+fn test_comb_loop_cycle_path_is_lexicographically_sorted() {
+    // Issue #756: the rendered cycle path used to be printed in Tarjan's
+    // component-emission order, which follows hash-seeded node numbering and
+    // so rotated/reordered between runs of the same binary on the same input.
+    // The fix canonicalizes the node list to lexicographic (`display()`)
+    // order at the `CombScc` boundary. This test asserts that property
+    // directly — a stable, deterministic check that would have caught the
+    // bug — rather than trying to observe the (per-process) nondeterminism.
+    //
+    // Wire names are deliberately declared out of alphabetical order so that
+    // "sorted" is distinguishable from "declaration order".
+    let source = r#"
+        module M
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          wire zz: UInt<1>;
+          wire mm: UInt<1>;
+          wire aa: UInt<1>;
+          comb
+            aa = zz or i;
+            mm = aa;
+            zz = mm;
+            o = aa;
+          end comb
+        end module M
+    "#;
+    let errs = comb_loop_errors(source);
+    let cycle_msg = errs
+        .iter()
+        .find(|m| m.contains("combinational feedback cycle"))
+        .unwrap_or_else(|| panic!("expected a comb-loop error, got: {:?}", errs));
+
+    // Extract the "cycle: A -> B -> ... -> A" node sequence.
+    let after = cycle_msg
+        .split("cycle: ")
+        .nth(1)
+        .expect("message should contain a `cycle: ` segment");
+    let mut nodes: Vec<&str> = after.trim().split(" -> ").collect();
+    // The render closes the loop by repeating the first node; drop it.
+    if nodes.len() >= 2 && nodes.first() == nodes.last() {
+        nodes.pop();
+    }
+    assert!(
+        nodes.len() >= 3,
+        "expected a multi-node cycle, got: {:?}",
+        nodes
+    );
+    let mut sorted = nodes.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        nodes, sorted,
+        "cycle path must be rendered in lexicographic order (issue #756); got {:?}",
+        nodes
+    );
+}
+
+#[test]
 fn test_comb_loop_suppressed_by_pragma() {
     // Same setup as cross-instance test, but parent has the bless pragma.
     let source = r#"
