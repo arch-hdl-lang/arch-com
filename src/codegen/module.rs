@@ -1268,17 +1268,47 @@ impl<'a> Codegen<'a> {
             .map(|port| port.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
 
-        let rst_name = m
+        // Reset kind AND polarity must match the module's `Reset<Kind, Level>`
+        // port. Emitting a hard-coded synchronous `if (rst)` here was wrong
+        // twice over: on the common active-low port it *inverted* the reset
+        // (the chain held '0 during normal operation and only shifted while
+        // reset was asserted), and on an async port it flopped the reset net
+        // both synchronously and asynchronously within one design — which is
+        // what Verilator's SYNCASYNCNET reports. arch sim already honored
+        // both (`sim_codegen/mod.rs`), so the two backends disagreed.
+        let rst_info = m
             .ports
             .iter()
             .find(|port| matches!(&port.ty, TypeExpr::Reset(..)))
-            .map(|port| port.name.name.clone());
+            .map(|port| {
+                let (is_async, is_low) = match &port.ty {
+                    TypeExpr::Reset(kind, level) => {
+                        (*kind == ResetKind::Async, *level == ResetLevel::Low)
+                    }
+                    _ => unreachable!(),
+                };
+                (port.name.name.clone(), is_async, is_low)
+            });
 
-        self.line(&format!("always_ff @(posedge {}) begin", clk_name));
+        match &rst_info {
+            Some((rst, true, is_low)) => {
+                let rst_edge = if *is_low { "negedge" } else { "posedge" };
+                self.line(&format!(
+                    "always_ff @(posedge {} or {} {}) begin",
+                    clk_name, rst_edge, rst
+                ));
+            }
+            _ => self.line(&format!("always_ff @(posedge {}) begin", clk_name)),
+        }
         self.indent += 1;
 
-        if let Some(ref rst) = rst_name {
-            self.line(&format!("if ({}) begin", rst));
+        if let Some((ref rst, _, is_low)) = rst_info {
+            let rst_cond = if is_low {
+                format!("(!{})", rst)
+            } else {
+                rst.clone()
+            };
+            self.line(&format!("if ({}) begin", rst_cond));
             self.indent += 1;
             for name in &chain {
                 self.line(&format!("{} <= '0;", name));
@@ -1294,7 +1324,7 @@ impl<'a> Codegen<'a> {
             prev = name.clone();
         }
 
-        if rst_name.is_some() {
+        if rst_info.is_some() {
             self.indent -= 1;
             self.line("end");
         }
