@@ -1217,8 +1217,10 @@ impl NodeKey {
 
 /// One combinational SCC found in the whole-design graph.
 pub struct CombScc {
-    /// Nodes in the SCC (declaration / discovery order — Tarjan emits them
-    /// in reverse-finish order which is fine for diagnostic display).
+    /// Nodes in the SCC, sorted by `NodeKey::display()` for a deterministic
+    /// diagnostic (issue #756). The membership is a graph invariant; the
+    /// order the members are listed in is not meaningful (the render is not an
+    /// edge-ordered walk), so a stable lexicographic order is used.
     pub nodes: Vec<NodeKey>,
     /// Owning-parent inst paths (i.e. each unique `path` of nodes in the
     /// SCC). Used by the suppression rule: if any owning-parent module has
@@ -1336,6 +1338,17 @@ pub fn analyze_whole_design(source: &SourceFile, symbols: &SymbolTable) -> Whole
                 }
                 nodes.push(key);
             }
+            // Canonicalize the node order (issue #756). Tarjan emits component
+            // members in reverse-finish order, and the finish order derives
+            // from node numbering, which `GraphBuilder::intern` assigns while
+            // walking `HashSet`-collected identifier sets (`scan_assignments`,
+            // the let-binding edge loop) — hash-seeded per process. So the
+            // rendered cycle path rotated/reordered run to run for the same
+            // input and binary. The SCC membership is a graph invariant, so
+            // sorting the display strings loses nothing (the `-> ` render was
+            // never an edge-ordered walk anyway) and makes the diagnostic
+            // stable, which lets golden tests assert on it.
+            nodes.sort_by(|a, b| a.display().cmp(&b.display()));
             // Suppression: any owning module has `pragma comb_loops_allowed;`.
             let blessed = owning_modules.iter().any(|mn| {
                 module_by_name
@@ -1354,6 +1367,15 @@ pub fn analyze_whole_design(source: &SourceFile, symbols: &SymbolTable) -> Whole
             });
         }
     }
+
+    // Stabilize the order of multiple cycles in one design (issue #756).
+    // Each `nodes` vec is now sorted, so its first element is the SCC's
+    // lexicographically smallest node; distinct SCCs have disjoint node sets,
+    // so keying on that first node is a total order across cycles.
+    out_sccs.sort_by(|a, b| match (a.nodes.first(), b.nodes.first()) {
+        (Some(x), Some(y)) => x.display().cmp(&y.display()),
+        _ => std::cmp::Ordering::Equal,
+    });
 
     WholeDesignAnalysis {
         sccs: out_sccs,
