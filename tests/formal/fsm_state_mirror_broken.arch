@@ -1,0 +1,40 @@
+/// `arch formal` on an `fsm`: the SMT encoder is module-only, so `fsm`
+/// constructs are lowered to an equivalent module first. `m` shadows the
+/// encoded state, so this assert holds only if the lowering gets the state
+/// encoding, the reset state, the transition chain and the comb/seq split
+/// all right. Mutant of `fsm_state_mirror.arch`: StA no longer sets `m`, so the shadow
+/// desynchronises and the assert must be REFUTED. Guards against a vacuous
+/// encoding that would "prove" anything.
+fsm Mirror
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port o: out Bool;
+
+  reg m: UInt<1> reset rst => 1'd0;
+
+  state [ StA, StB ]
+  default state StA;
+  default seq on clk rising;
+
+  state StA
+    comb
+      o = false;
+    end comb
+    seq
+      m <= 1'd0;
+    end seq
+    -> StB;
+  end state StA
+
+  state StB
+    comb
+      o = true;
+    end comb
+    seq
+      m <= 1'd0;
+    end seq
+    -> StA;
+  end state StB
+
+  assert a_mirror: m == state;
+end fsm Mirror

@@ -1,0 +1,44 @@
+/// `arch formal` hierarchical flattening across an `inst` of an `fsm`.
+/// Before the fsm lowering this failed with "sub-module `Mirror` not found
+/// in source" even with the source in the input.
+module FsmSubTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port q: out Bool;
+
+  wire s: Bool;
+
+  inst u: Mirror
+    clk <- clk; rst <- rst; o -> s;
+  end inst u
+
+  comb
+    q = s;
+  end comb
+
+  assert a_sub_reachable: (q == q);
+end module FsmSubTop
+
+fsm Mirror
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port o: out Bool;
+
+  state [ StA, StB ]
+  default state StA;
+  default seq on clk rising;
+
+  state StA
+    comb
+      o = false;
+    end comb
+    -> StB;
+  end state StA
+
+  state StB
+    comb
+      o = true;
+    end comb
+    -> StA;
+  end state StB
+end fsm Mirror
