@@ -38,11 +38,13 @@ module BusArbiter #(
   end
   
   // synopsys translate_off
+  /* verilator lint_off SYNCASYNCNET */
   // Auto-generated handshake protocol assertions (Tier 2)
   generate for (genvar i = 0; i < NUM_REQ; i++) begin: g_auto_hs_request
     _auto_hs_request__lane_valid_stable: assert property (@(posedge clk) disable iff (rst) (request_valid[i] && !request_ready[i]) |=> request_valid[i])
       else $fatal(1, "HANDSHAKE VIOLATION (valid must stay asserted until ready): BusArbiter._auto_hs_request__lane_valid_stable");
   end endgenerate
+  /* verilator lint_on SYNCASYNCNET */
   // synopsys translate_on
 
 endmodule

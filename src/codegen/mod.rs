@@ -4703,6 +4703,33 @@ impl<'a> Codegen<'a> {
             })
     }
 
+    /// Open a `synopsys translate_off` region that contains auto-generated
+    /// SVA, and disable Verilator's SYNCASYNCNET rule inside it.
+    ///
+    /// A concurrent assertion's `disable iff (<reset>)` is not a flop, but
+    /// Verilator (5.048, and every release we have tested) counts it as a
+    /// *synchronous* read of the reset net. In an async-reset design that is
+    /// enough on its own to report the reset as "flopped as both synchronous
+    /// and async" — a false positive that no downstream project can waive by
+    /// hand, because the assertion labels are compiler-generated. Minimal
+    /// reproducer (plain hand-written SV, no ARCH involved): one
+    /// `always_ff @(posedge clk or negedge rst)` plus one
+    /// `assert property (@(posedge clk) disable iff (!rst) ...)`.
+    ///
+    /// The suppression is scoped to the instrumentation region only: a design
+    /// that genuinely mixes a synchronous and an asynchronous reset still gets
+    /// the warning, pointing at the real flop.
+    fn sva_region_begin(&mut self) {
+        self.line("// synopsys translate_off");
+        self.line("/* verilator lint_off SYNCASYNCNET */");
+    }
+
+    /// Close a region opened by [`Self::sva_region_begin`].
+    fn sva_region_end(&mut self) {
+        self.line("/* verilator lint_on SYNCASYNCNET */");
+        self.line("// synopsys translate_on");
+    }
+
     fn emit_assert_sva(
         &mut self,
         a: &AssertDecl,
@@ -4766,11 +4793,11 @@ impl<'a> Codegen<'a> {
         if asserts.is_empty() {
             return;
         }
-        self.line("// synopsys translate_off");
+        self.sva_region_begin();
         for a in asserts {
             self.emit_assert_sva(a, name, clk, rst_active);
         }
-        self.line("// synopsys translate_on");
+        self.sva_region_end();
     }
 
     /// For each `reg ... guard <sig>` in the module, emit:
@@ -4811,15 +4838,25 @@ impl<'a> Codegen<'a> {
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
-        let (rst_name, _, is_low) = Self::extract_reset_info(&m.ports);
+        let (rst_name, is_async, is_low) = Self::extract_reset_info(&m.ports);
         let rst_active = if is_low {
             format!("!{rst_name}")
         } else {
             rst_name.clone()
         };
+        // The shadow flop must reset the same way the design's own flops do.
+        // A synchronous `if (rst)` inside an otherwise async-reset design
+        // makes the reset net "flopped as both synchronous and async"
+        // (Verilator SYNCASYNCNET) at every level that fans the net out.
+        let shadow_sens = if is_async {
+            let rst_edge = if is_low { "negedge" } else { "posedge" };
+            format!("@(posedge {clk} or {rst_edge} {rst_name})")
+        } else {
+            format!("@(posedge {clk})")
+        };
 
         self.line("");
-        self.line("// synopsys translate_off");
+        self.sva_region_begin();
         self.line("// Guard-contract shadow regs + SVA (one per `reg ... guard <sig>`)");
         for (reg_name, guard_sig, _) in &guarded {
             // Collect the disjunction of conditions under which `reg_name` is written.
@@ -4838,7 +4875,7 @@ impl<'a> Codegen<'a> {
 
             // Shadow "written at least once" flag; goes high only when reg is actually assigned
             self.line(&format!("logic _{reg_name}_written;"));
-            self.line(&format!("always_ff @(posedge {clk}) begin"));
+            self.line(&format!("always_ff {shadow_sens} begin"));
             self.indent += 1;
             self.line(&format!("if ({rst_active}) _{reg_name}_written <= 1'b0;"));
             self.line(&format!(
@@ -4857,7 +4894,7 @@ impl<'a> Codegen<'a> {
                 mod = m.name.name,
             ));
         }
-        self.line("// synopsys translate_on");
+        self.sva_region_end();
     }
 
     /// Emit concurrent SVA safety checks for runtime-risky expressions in
@@ -5001,7 +5038,7 @@ impl<'a> Codegen<'a> {
             return;
         };
 
-        self.line("// synopsys translate_off");
+        self.sva_region_begin();
         self.line("// Auto-generated safety assertions (bounds / divide-by-zero)");
         for (i, (predicate, tag)) in sites.iter().enumerate() {
             let is_div0 = tag == "div0" || tag == "mod0";
@@ -5020,7 +5057,7 @@ impl<'a> Codegen<'a> {
                 mod = m.name.name
             ));
         }
-        self.line("// synopsys translate_on");
+        self.sva_region_end();
     }
 
     /// Tier 2 of the handshake primitive: for every bus port on this module
@@ -5089,7 +5126,7 @@ impl<'a> Codegen<'a> {
             return;
         }
 
-        self.line("// synopsys translate_off");
+        self.sva_region_begin();
         self.line("// Auto-generated handshake protocol assertions (Tier 2)");
         let mod_name = m.name.name.clone();
         for (port_name, hs) in &emissions {
@@ -5104,7 +5141,7 @@ impl<'a> Codegen<'a> {
                 &mod_name,
             );
         }
-        self.line("// synopsys translate_on");
+        self.sva_region_end();
     }
 
     /// Construct-agnostic helper: emit Tier-2 protocol-SVA for a single
@@ -5288,7 +5325,7 @@ impl<'a> Codegen<'a> {
         }
 
         self.line("");
-        self.line("// synopsys translate_off");
+        self.sva_region_begin();
         self.line("// Auto-generated handshake protocol assertions (Tier 2)");
         let mod_name = a.name.name.clone();
         let handshakes = a.handshakes.clone();
@@ -5304,7 +5341,7 @@ impl<'a> Codegen<'a> {
                 &mod_name,
             );
         }
-        self.line("// synopsys translate_on");
+        self.sva_region_end();
     }
 
     /// Emit the synthesized credit-counter state for each `send`-role
@@ -5793,7 +5830,7 @@ impl<'a> Codegen<'a> {
         let mod_name = m.name.name.clone();
 
         self.line("");
-        self.line("// synopsys translate_off");
+        self.sva_region_begin();
         self.line("// Auto-generated credit_channel protocol assertions (Tier 2)");
 
         for (port_name, cc) in &sender_emissions {
@@ -5840,7 +5877,7 @@ impl<'a> Codegen<'a> {
             ));
         }
 
-        self.line("// synopsys translate_on");
+        self.sva_region_end();
     }
 
     /// TLM method protocol assertions for the flattened req/rsp handshake.
@@ -5893,7 +5930,7 @@ impl<'a> Codegen<'a> {
         let mod_name = m.name.name.clone();
 
         self.line("");
-        self.line("// synopsys translate_off");
+        self.sva_region_begin();
         self.line("// Auto-generated TLM method protocol assertions");
 
         for (port_name, tm) in &emissions {
@@ -5937,7 +5974,7 @@ impl<'a> Codegen<'a> {
             ));
         }
 
-        self.line("// synopsys translate_on");
+        self.sva_region_end();
     }
 
     /// Stringify a compile-time constant expression to an SV literal/expression.

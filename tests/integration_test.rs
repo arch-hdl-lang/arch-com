@@ -18434,6 +18434,174 @@ fn test_pipe_reg_tap_reads_q_at_k() {
     assert!(sv.contains("assign o3 = q;"), "q@3 should be bare q:\n{sv}");
 }
 
+/// Every auto-generated concurrent assertion carries `disable iff (<reset>)`.
+/// Verilator counts that as a *synchronous* read of the reset net, so an
+/// otherwise clean async-reset module reports SYNCASYNCNET purely because it
+/// was instrumented. The assertion labels are compiler-generated, so no
+/// downstream project can waive that by hand — the emitter pairs the
+/// `translate_off` region with a scoped `lint_off`/`lint_on` instead.
+#[test]
+fn test_auto_sva_region_carries_syncasyncnet_pragma() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst_ni: in Reset<Async, Low>;
+          port idx: in UInt<4>;
+          port en: in Bool;
+          port o: out UInt<8>;
+
+          reg mem: Vec<UInt<8>, 4> reset rst_ni => 0;
+
+          seq on clk rising
+            if en
+              mem[idx] <= 8'd1;
+            end if
+          end seq
+
+          comb
+            o = mem[0];
+          end comb
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("disable iff"),
+        "expected an auto-generated bounds assertion:\n{sv}"
+    );
+    // Every `disable iff` must sit inside a lint_off/lint_on pair.
+    let mut depth = 0i32;
+    for line in sv.lines() {
+        if line.contains("lint_off SYNCASYNCNET") {
+            depth += 1;
+        } else if line.contains("lint_on SYNCASYNCNET") {
+            depth -= 1;
+            assert!(depth >= 0, "unbalanced lint_on:\n{sv}");
+        } else if line.contains("disable iff") {
+            assert!(
+                depth > 0,
+                "`disable iff` outside a lint_off SYNCASYNCNET region:\n{line}\n{sv}"
+            );
+        }
+    }
+    assert_eq!(depth, 0, "unbalanced lint_off/lint_on:\n{sv}");
+    // The pragma stays inside the simulation-only region.
+    assert!(
+        sv.contains("// synopsys translate_off\n  /* verilator lint_off SYNCASYNCNET */"),
+        "lint_off should open just inside translate_off:\n{sv}"
+    );
+}
+
+/// A module-scope `pipe_reg` has no reset clause of its own; the emitter
+/// picks up the enclosing module's `Reset<Kind, Level>` port. It must honor
+/// BOTH halves of that type. Before this was fixed the emitter hard-coded
+/// `always_ff @(posedge clk)` + `if (rst)` regardless, which on the common
+/// `Reset<Async, Low>` port inverted the reset outright (the chain held '0
+/// during normal operation and shifted only while reset was asserted) and
+/// also made the reset net "flopped as both synchronous and async"
+/// (Verilator SYNCASYNCNET) alongside the module's ordinary regs.
+/// arch sim already honored both, so the two backends disagreed.
+#[test]
+fn test_pipe_reg_honors_reset_kind_and_polarity() {
+    let src = |rst_ty: &str| {
+        format!(
+            r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst_ni: in {rst_ty};
+          port a: in UInt<8>;
+          port o: out UInt<8>;
+          pipe_reg q: a stages 2;
+          comb
+            o = q@2;
+          end comb
+        end module M
+    "#
+        )
+    };
+
+    // Async active-low: async sensitivity, `!rst_ni` as the reset condition.
+    let sv = compile_to_sv(&src("Reset<Async, Low>"));
+    assert!(
+        sv.contains("always_ff @(posedge clk or negedge rst_ni) begin"),
+        "async-low pipe_reg needs a negedge reset in the sensitivity list:\n{sv}"
+    );
+    assert!(
+        sv.contains("if ((!rst_ni)) begin"),
+        "async-low pipe_reg must reset on !rst_ni, not rst_ni:\n{sv}"
+    );
+
+    // Async active-high: async sensitivity, bare `rst` as the condition.
+    let sv = compile_to_sv(&src("Reset<Async, High>"));
+    assert!(
+        sv.contains("always_ff @(posedge clk or posedge rst_ni) begin"),
+        "async-high pipe_reg needs a posedge reset in the sensitivity list:\n{sv}"
+    );
+
+    // Sync active-low: clock-only sensitivity, `!rst_ni` as the condition.
+    let sv = compile_to_sv(&src("Reset<Sync, Low>"));
+    assert!(
+        sv.contains("always_ff @(posedge clk) begin"),
+        "sync pipe_reg keeps a clock-only sensitivity list:\n{sv}"
+    );
+    assert!(
+        !sv.contains("negedge rst_ni"),
+        "sync pipe_reg must not add a reset edge:\n{sv}"
+    );
+    assert!(
+        sv.contains("if ((!rst_ni)) begin"),
+        "sync-low pipe_reg must reset on !rst_ni:\n{sv}"
+    );
+}
+
+/// The `guard`-contract shadow flop is instrumentation, but it still flops
+/// the design's reset net, so it has to reset the same way the design does.
+/// A synchronous `if (!rst_ni)` inside an async-reset design trips
+/// Verilator's SYNCASYNCNET at every level the net fans out to.
+#[test]
+fn test_guard_contract_shadow_flop_matches_reset_kind() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst_ni: in Reset<Async, Low>;
+          port we: in Bool;
+          port a: in UInt<8>;
+          port o: out UInt<8>;
+
+          reg valid_q: Bool reset rst_ni => false;
+          reg data_q: UInt<8> guard valid_q;
+
+          seq on clk rising
+            valid_q <= we;
+            if we
+              data_q <= a;
+            end if
+          end seq
+
+          comb
+            o = data_q;
+          end comb
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic _data_q_written;"),
+        "guard contract should emit a shadow flop:\n{sv}"
+    );
+    assert!(
+        sv.contains("always_ff @(posedge clk or negedge rst_ni) begin\n    if ((!rst_ni)) begin")
+            || sv.contains("always_ff @(posedge clk or negedge rst_ni) begin"),
+        "shadow flop must use the design's async reset:\n{sv}"
+    );
+    // No clock-only always_ff may read the reset net.
+    for block in sv.split("always_ff @(posedge clk) begin").skip(1) {
+        let body = block.split("\n  end").next().unwrap_or(block);
+        assert!(
+            !body.contains("rst_ni"),
+            "a clock-only always_ff still reads rst_ni (SYNCASYNCNET):\n{body}"
+        );
+    }
+}
+
 #[test]
 fn test_pipe_reg_tap_out_of_range_errors() {
     let source = r#"
