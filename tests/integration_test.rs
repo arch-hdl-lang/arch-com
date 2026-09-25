@@ -18553,6 +18553,82 @@ fn test_pipe_reg_honors_reset_kind_and_polarity() {
     );
 }
 
+/// `linklist` codegen used to hard-code `always_ff @(posedge clk)` + `if (rst)`
+/// for its free-list / head / tail reset block, ignoring the reset port's kind
+/// and polarity entirely — the same class of miscompile fixed for `pipe_reg` in
+/// arch-com #1043. On a `Reset<Async, Low>` port that *inverts* the reset, the
+/// free list was re-initialized every normal cycle and never on the real reset.
+/// This locks all four Kind x Level combinations against the shared helpers.
+#[test]
+fn test_linklist_honors_reset_kind_and_polarity() {
+    let src = |rst_ty: &str| {
+        format!(
+            r#"
+        linklist LL
+          param DEPTH: const = 4;
+          param DATA: type = UInt<8>;
+          port clk: in Clock<SysDomain>;
+          port rst_ni: in {rst_ty};
+          kind singly;
+          op alloc
+            latency: 1;
+            port req_valid:   in Bool;
+            port req_ready:   out Bool;
+            port resp_valid:  out Bool;
+            port resp_handle: out UInt<2>;
+          end op alloc
+          port empty: out Bool;
+          port full:  out Bool;
+        end linklist LL
+    "#
+        )
+    };
+
+    // Async active-low: async sensitivity, `!rst_ni` as the reset condition.
+    let sv = compile_to_sv(&src("Reset<Async, Low>"));
+    assert!(
+        sv.contains("always_ff @(posedge clk or negedge rst_ni) begin"),
+        "async-low linklist needs a negedge reset in the sensitivity list:\n{sv}"
+    );
+    assert!(
+        sv.contains("if ((!rst_ni)) begin"),
+        "async-low linklist must reset on !rst_ni, not rst_ni:\n{sv}"
+    );
+
+    // Async active-high: async sensitivity, bare `rst_ni` as the condition.
+    let sv = compile_to_sv(&src("Reset<Async, High>"));
+    assert!(
+        sv.contains("always_ff @(posedge clk or posedge rst_ni) begin"),
+        "async-high linklist needs a posedge reset in the sensitivity list:\n{sv}"
+    );
+    assert!(
+        sv.contains("if (rst_ni) begin"),
+        "async-high linklist must reset on rst_ni:\n{sv}"
+    );
+
+    // Sync active-low: clock-only sensitivity, `!rst_ni` as the condition.
+    let sv = compile_to_sv(&src("Reset<Sync, Low>"));
+    assert!(
+        !sv.contains("negedge rst_ni"),
+        "sync linklist must not add a reset edge:\n{sv}"
+    );
+    assert!(
+        sv.contains("if ((!rst_ni)) begin"),
+        "sync-low linklist must reset on !rst_ni:\n{sv}"
+    );
+
+    // Sync active-high (the historical default): clock-only, bare `rst_ni`.
+    let sv = compile_to_sv(&src("Reset<Sync, High>"));
+    assert!(
+        !sv.contains("negedge rst_ni"),
+        "sync-high linklist must not add a reset edge:\n{sv}"
+    );
+    assert!(
+        sv.contains("if (rst_ni) begin"),
+        "sync-high linklist must reset on rst_ni:\n{sv}"
+    );
+}
+
 /// The `guard`-contract shadow flop is instrumentation, but it still flops
 /// the design's reset net, so it has to reset the same way the design does.
 /// A synchronous `if (!rst_ni)` inside an async-reset design trips

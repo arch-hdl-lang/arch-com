@@ -290,10 +290,19 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         // ── Reset + free-list init + op controllers ───────────────────────────
+        // Honor the reset port's kind and polarity, matching fifo/module/pipe_reg
+        // codegen. A `Reset<Async, Low>` port needs `posedge clk or negedge rst`
+        // in the sensitivity list and `if ((!rst))` as the guard; hard-coding
+        // `posedge clk` + `if (rst)` inverts an active-low reset (the free-list
+        // is re-initialized every normal cycle and never on the real reset) and
+        // drops the async edge. See arch-com #1043 for the same fix in pipe_reg.
+        let (rst_sig, rst_is_async, rst_is_low) = Self::extract_reset_info(&l.ports);
+        let ff_sens = Self::ff_sensitivity(clk_name, &rst_sig, rst_is_async, rst_is_low);
+        let rst_cond = Self::rst_condition(&rst_sig, rst_is_low);
         self.line(&format!("integer _ll_i;"));
-        self.line(&format!("always_ff @(posedge {clk_name}) begin"));
+        self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst_name}) begin"));
+        self.line(&format!("if ({rst_cond}) begin"));
         self.indent += 1;
         self.line("for (_ll_i = 0; _ll_i < DEPTH; _ll_i++)");
         self.indent += 1;
