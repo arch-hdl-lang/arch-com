@@ -353,7 +353,16 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  bool _rising = (clk && !_clk_prev);\n");
         cpp.push_str("  _clk_prev = clk;\n");
         cpp.push_str("  if (!_rising) return;\n");
-        cpp.push_str("  if (rst) {\n");
+        // Honor reset polarity so the sim agrees with the SV backend (see
+        // codegen/linklist.rs and arch-com #1043). An active-low reset asserts
+        // when the `rst` signal is 0, so the guard is `!rst`. Hard-coding
+        // `if (rst)` would invert an active-low reset.
+        let rst_is_low = l
+            .ports
+            .iter()
+            .any(|p| matches!(&p.ty, TypeExpr::Reset(_, crate::ast::ResetLevel::Low)));
+        let rst_guard = if rst_is_low { "!rst" } else { "rst" };
+        cpp.push_str(&format!("  if ({rst_guard}) {{\n"));
         cpp.push_str(&format!(
             "    for (int _i = 0; _i < {depth}; _i++) _fl_mem[_i] = (uint8_t)_i;\n"
         ));
