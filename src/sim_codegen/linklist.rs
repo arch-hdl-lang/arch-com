@@ -73,6 +73,31 @@ impl<'a> SimCodegen<'a> {
             cpp_port_type_with_params(ty, &l.params)
         };
 
+        // Resolve the clock and reset port names *by type*, mirroring the SV
+        // backend (codegen/linklist.rs) and `extract_reset_info`. The sim
+        // backend previously hard-coded the member names `clk`/`rst`, so a
+        // linklist whose reset port is named anything else (the common `rst_n`)
+        // was emitted with a phantom always-zero `rst` member that the reset
+        // logic read, while the driven port got its own separate member — the
+        // two backends silently diverged (arch-com #1046, the #990 magic-name
+        // class). Resolve once and thread the real names through declaration,
+        // ctor init, port enumeration, the rising-edge gate, and the reset
+        // guard. Fall back to the legacy literals only when no typed port is
+        // present (matches the SV path's `.unwrap_or`).
+        let clk_name = l
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone())
+            .unwrap_or_else(|| "clk".to_string());
+        let rst_name = l
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
+            .map(|p| p.name.name.clone())
+            .unwrap_or_else(|| "rst".to_string());
+        let is_clk_or_rst = |n: &str| n == clk_name || n == rst_name;
+
         let has_doubly = matches!(l.kind, LinklistKind::Doubly | LinklistKind::CircularDoubly);
 
         let is_out_data = |p: &crate::ast::PortDecl| {
@@ -91,7 +116,7 @@ impl<'a> SimCodegen<'a> {
         }
         h.push_str(&header_inc);
         h.push_str(&format!("class {class} {{\npublic:\n"));
-        h.push_str("  uint8_t clk;\n  uint8_t rst;\n");
+        h.push_str(&format!("  uint8_t {clk_name};\n  uint8_t {rst_name};\n"));
         for op in &l.ops {
             for p in &op.ports {
                 h.push_str(&format!(
@@ -103,28 +128,24 @@ impl<'a> SimCodegen<'a> {
             }
         }
         for p in &l.ports {
-            match p.name.name.as_str() {
-                "clk" | "rst" => {}
-                _ => {
-                    h.push_str(&format!("  {} {};\n", port_cpp_ty(&p.ty), p.name.name));
-                }
+            if is_clk_or_rst(&p.name.name) {
+                continue;
             }
+            h.push_str(&format!("  {} {};\n", port_cpp_ty(&p.ty), p.name.name));
         }
         h.push('\n');
 
-        let mut ctor_inits: Vec<String> = vec!["clk(0)".into(), "rst(0)".into()];
+        let mut ctor_inits: Vec<String> = vec![format!("{clk_name}(0)"), format!("{rst_name}(0)")];
         for op in &l.ops {
             for p in &op.ports {
                 ctor_inits.push(format!("{}_{} (0)", op.name.name, p.name.name));
             }
         }
         for p in &l.ports {
-            match p.name.name.as_str() {
-                "clk" | "rst" => {}
-                _ => {
-                    ctor_inits.push(format!("{}(0)", p.name.name));
-                }
+            if is_clk_or_rst(&p.name.name) {
+                continue;
             }
+            ctor_inits.push(format!("{}(0)", p.name.name));
         }
         ctor_inits.extend([
             "_clk_prev(0)".into(),
@@ -231,7 +252,7 @@ impl<'a> SimCodegen<'a> {
             // Collect debug ports: main ports + op ports (flattened as op_port)
             let mut debug_ports: Vec<SimpleDebugPort> = Vec::new();
             for p in &l.ports {
-                if p.name.name == "clk" || p.name.name == "rst" {
+                if is_clk_or_rst(&p.name.name) {
                     continue;
                 }
                 if matches!(&p.ty, TypeExpr::Clock(_)) {
@@ -350,8 +371,8 @@ impl<'a> SimCodegen<'a> {
         // Rising-edge gate: parent modules call eval_posedge() directly on
         // each of their eval() invocations, so the inst must detect its own
         // clock edge here (not in eval()).
-        cpp.push_str("  bool _rising = (clk && !_clk_prev);\n");
-        cpp.push_str("  _clk_prev = clk;\n");
+        cpp.push_str(&format!("  bool _rising = ({clk_name} && !_clk_prev);\n"));
+        cpp.push_str(&format!("  _clk_prev = {clk_name};\n"));
         cpp.push_str("  if (!_rising) return;\n");
         // Honor reset polarity so the sim agrees with the SV backend (see
         // codegen/linklist.rs and arch-com #1043). An active-low reset asserts
@@ -361,7 +382,11 @@ impl<'a> SimCodegen<'a> {
             .ports
             .iter()
             .any(|p| matches!(&p.ty, TypeExpr::Reset(_, crate::ast::ResetLevel::Low)));
-        let rst_guard = if rst_is_low { "!rst" } else { "rst" };
+        let rst_guard = if rst_is_low {
+            format!("!{rst_name}")
+        } else {
+            rst_name.clone()
+        };
         cpp.push_str(&format!("  if ({rst_guard}) {{\n"));
         cpp.push_str(&format!(
             "    for (int _i = 0; _i < {depth}; _i++) _fl_mem[_i] = (uint8_t)_i;\n"
@@ -558,7 +583,7 @@ impl<'a> SimCodegen<'a> {
         if self.debug {
             let mut debug_ports: Vec<SimpleDebugPort> = Vec::new();
             for p in &l.ports {
-                if p.name.name == "clk" || p.name.name == "rst" {
+                if is_clk_or_rst(&p.name.name) {
                     continue;
                 }
                 if matches!(&p.ty, TypeExpr::Clock(_)) {
@@ -601,7 +626,7 @@ impl<'a> SimCodegen<'a> {
                     });
                 }
             }
-            emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, Some("clk"));
+            emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, Some(&clk_name));
         }
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
