@@ -18629,6 +18629,90 @@ fn test_linklist_honors_reset_kind_and_polarity() {
     );
 }
 
+/// The `arch sim` linklist backend used to hard-code the reset *member name*
+/// `rst` (declared `uint8_t rst;`, read `if (!rst)`), while the driven reset
+/// port — the common `rst_n` — got a *second, separate* member. The reset
+/// logic then read an always-zero phantom, so on an active-low reset the sim
+/// re-initialized the free list every cycle and the queue never operated,
+/// diverging from the SV backend (which resolves the port name by type after
+/// #1044). This locks the sim member wiring to the real clock/reset port names.
+/// arch-com #1046 (the #990 magic-name-parity class); #1044 fixed only the
+/// reset *polarity*, not the member-name assumption.
+#[test]
+fn test_linklist_sim_resolves_reset_port_name_by_type() {
+    let gen_h_and_cpp = |rst_port: &str, rst_ty: &str| -> (String, String) {
+        let source = format!(
+            r#"
+        linklist LL
+          param DEPTH: const = 4;
+          param DATA: type = UInt<8>;
+          port clk: in Clock<SysDomain>;
+          port {rst_port}: in {rst_ty};
+          kind singly;
+          op alloc
+            latency: 1;
+            port req_valid:   in Bool;
+            port req_ready:   out Bool;
+            port resp_valid:  out Bool;
+            port resp_handle: out UInt<2>;
+          end op alloc
+          port empty: out Bool;
+          port full:  out Bool;
+        end linklist LL
+    "#
+        );
+        let tokens = arch::lexer::tokenize(&source).expect("lexer error");
+        let mut parser = arch::parser::Parser::new(tokens, &source);
+        let parsed = parser.parse_source_file().expect("parse error");
+        let ast = arch::elaborate::elaborate(parsed).expect("elaborate error");
+        let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+        let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+        let (_, overload_map) = checker.check().expect("type check error");
+        let models = arch::sim_codegen::SimCodegen::new(&symbols, &ast, overload_map).generate();
+        let m = models
+            .iter()
+            .find(|m| m.class_name == "VLL")
+            .expect("missing VLL sim model");
+        (m.header.clone(), m.impl_.clone())
+    };
+
+    // Non-default active-low reset named `rst_n`: the real port must be the
+    // sole reset member, and eval_posedge must read it — no phantom `rst`.
+    let (h, cpp) = gen_h_and_cpp("rst_n", "Reset<Sync, Low>");
+    assert!(
+        h.contains("uint8_t rst_n;"),
+        "sim must declare the real reset port member `rst_n`:\n{h}"
+    );
+    assert!(
+        !h.contains("uint8_t rst;"),
+        "sim must NOT declare a phantom `rst` member alongside `rst_n`:\n{h}"
+    );
+    assert!(
+        cpp.contains("if (!rst_n) {"),
+        "sim reset guard must read the driven `rst_n`, not a phantom:\n{cpp}"
+    );
+    assert!(
+        !cpp.contains("if (!rst) {"),
+        "sim must not read an always-zero phantom `rst`:\n{cpp}"
+    );
+    // Constructor initializes the real member, not the phantom.
+    assert!(
+        h.contains("rst_n(0)") && !h.contains(", rst(0)"),
+        "ctor must init `rst_n`, not a phantom `rst`:\n{h}"
+    );
+
+    // The historical default name `rst` still works unchanged (active-high).
+    let (h, cpp) = gen_h_and_cpp("rst", "Reset<Sync, High>");
+    assert!(
+        h.contains("uint8_t rst;"),
+        "default `rst`-named reset still declares `rst`:\n{h}"
+    );
+    assert!(
+        cpp.contains("if (rst) {"),
+        "default active-high reset guard is `if (rst)`:\n{cpp}"
+    );
+}
+
 /// The `guard`-contract shadow flop is instrumentation, but it still flops
 /// the design's reset net, so it has to reset the same way the design does.
 /// A synchronous `if (!rst_ni)` inside an async-reset design trips
