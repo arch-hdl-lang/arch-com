@@ -1,7 +1,13 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-09-21
-> Compiler version: 0.72.5
+> Last updated: 2026-09-28
+> Compiler version: 0.72.6
+>
+> **0.72.6 release highlights:**
+> - **Reset kind and polarity are honored by `pipe_reg` and `linklist`** (PRs #1043, #1044) — both emitters hard-coded `always_ff @(posedge clk)` + `if (rst)`. On a `Reset<Async, Low>` port that **inverted the reset**: a module-scope `pipe_reg` chain was cleared every normal cycle (a constant-zero delay line), and a `linklist` re-initialized its free list every cycle and never on reset. Both are live miscompiles, fixed for all four `Kind x Level` combinations. #1043 also gives the `guard`-contract `_<reg>_written` shadow flop the design's reset kind, and scopes a Verilator `SYNCASYNCNET` waiver to each auto-SVA `translate_off` region, since `disable iff` counts as a synchronous reset use. Together these clear arch-ibex's SoC lint.
+> - **`linklist` sim reads the real reset port** (PR #1047, closes #1046) — the C++ model hard-coded a member named `rst`, so a `rst_n` port produced a phantom, never-driven `rst` that the reset logic read. Clock and reset are now resolved by type, as in the SV backend.
+> - **`arch sim` packs a whole-`Vec` RHS into a scalar LHS** (PR #1023, arch#1019 defect #3) — this used to emit non-compiling C++. **`arch formal` accepts `fsm`** by lowering it to a module first (PR #1039). **Comb-loop diagnostics print the cycle in a deterministic order** (PR #1041, closes #756).
+> - Docs: the never-implemented `crossing` construct is removed from the spec in favour of `synchronizer` / async `fifo` (#1035). See the [v0.72.6 release notes](../docs/release-notes/v0.72.6.md).
 >
 > **0.72.5 release highlights:**
 > - Integrates the historical v51 benchmark emitter fixes: explicit widths for concatenated/replicated literals (`b3117381`) and widened arithmetic before zero-extension (`165841f1`), with Icarus regression tests and independent fix-reversal checks.
