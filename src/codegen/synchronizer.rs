@@ -119,6 +119,27 @@ impl<'a> Codegen<'a> {
 
     // ── Synchronizer kind helpers ────────────────────────────────────────────
 
+    /// The `or <edge> <rst>` suffix an `always_ff` sensitivity list needs so a
+    /// flop honors the *kind* of its reset port. `Reset<Async, Low>` →
+    /// `" or negedge rst"`, `Reset<Async, High>` → `" or posedge rst"`,
+    /// `Reset<Sync, _>` (or no reset port) → `""` (synchronous — clock edge
+    /// only). Centralized so every synchronizer kind honors the declared kind
+    /// identically; dropping it silently downgrades an async reset to sync,
+    /// which also trips Verilator's `SYNCASYNCNET` when the same reset net
+    /// drives async flops elsewhere in the parent.
+    fn reset_sensitivity_suffix(rst_port: Option<&PortDecl>) -> String {
+        if let Some(rp) = rst_port {
+            let is_low = matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low);
+            let is_async =
+                matches!(&rp.ty, TypeExpr::Reset(sync_type, _) if *sync_type == ResetKind::Async);
+            if is_async {
+                let edge = if is_low { "negedge" } else { "posedge" };
+                return format!(" or {edge} {}", rp.name.name);
+            }
+        }
+        String::new()
+    }
+
     fn emit_sync_reset_begin(
         &mut self,
         dst_clk: &str,
@@ -126,14 +147,7 @@ impl<'a> Codegen<'a> {
     ) -> Option<String> {
         if let Some(rp) = rst_port {
             let is_low = matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low);
-            let is_async =
-                matches!(&rp.ty, TypeExpr::Reset(sync_type, _) if *sync_type == ResetKind::Async);
-            let sensitivity = if is_async {
-                let edge = if is_low { "negedge" } else { "posedge" };
-                format!(" or {edge} {}", rp.name.name)
-            } else {
-                String::new()
-            };
+            let sensitivity = Self::reset_sensitivity_suffix(rst_port);
             self.line(&format!(
                 "always_ff @(posedge {dst_clk}{sensitivity}) begin"
             ));
@@ -273,12 +287,16 @@ impl<'a> Codegen<'a> {
         } else {
             rst_name.to_string()
         };
+        // Honor the declared reset kind: an async reset must appear in the
+        // sensitivity list (like the ff/gray paths), or it silently degrades
+        // to a synchronous reset and trips SYNCASYNCNET in composition.
+        let rst_edge = Self::reset_sensitivity_suffix(rst_port);
 
         // Source domain: latch data and toggle req
         self.line(&format!(
             "// Source domain ({src_clk}): latch data, manage req/ack"
         ));
-        self.line(&format!("always_ff @(posedge {src_clk}) begin"));
+        self.line(&format!("always_ff @(posedge {src_clk}{rst_edge}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_active}) begin"));
         self.indent += 1;
@@ -297,7 +315,7 @@ impl<'a> Codegen<'a> {
 
         // Synchronize req into destination domain
         self.line(&format!("// Synchronize req into {dst_clk}"));
-        self.line(&format!("always_ff @(posedge {dst_clk}) begin"));
+        self.line(&format!("always_ff @(posedge {dst_clk}{rst_edge}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_active}) begin"));
         self.indent += 1;
@@ -317,7 +335,7 @@ impl<'a> Codegen<'a> {
 
         // Synchronize ack back into source domain
         self.line(&format!("// Synchronize ack back into {src_clk}"));
-        self.line(&format!("always_ff @(posedge {src_clk}) begin"));
+        self.line(&format!("always_ff @(posedge {src_clk}{rst_edge}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_active}) begin"));
         self.indent += 1;
@@ -385,6 +403,8 @@ impl<'a> Codegen<'a> {
                 n.to_string()
             }
         });
+        // Async resets belong in the sensitivity list (see ff/gray paths).
+        let rst_edge = Self::reset_sensitivity_suffix(rst_port);
 
         self.line(&format!("// Pulse synchronizer: {src_clk} → {dst_clk}"));
         self.line("// Source: pulse → toggle; Destination: sync toggle → edge detect → pulse");
@@ -394,7 +414,7 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         // Source domain: toggle on input pulse
-        self.line(&format!("always_ff @(posedge {src_clk}) begin"));
+        self.line(&format!("always_ff @(posedge {src_clk}{rst_edge}) begin"));
         self.indent += 1;
         if let Some(ref cond) = rst_cond {
             self.line(&format!("if ({cond}) toggle_src <= 1'b0;"));
@@ -407,7 +427,7 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         // Destination domain: sync the toggle through FF chain
-        self.line(&format!("always_ff @(posedge {dst_clk}) begin"));
+        self.line(&format!("always_ff @(posedge {dst_clk}{rst_edge}) begin"));
         self.indent += 1;
         if let Some(ref cond) = rst_cond {
             self.line(&format!("if ({cond}) begin"));
