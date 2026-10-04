@@ -1,0 +1,45 @@
+// P8c: the domain-DA register `ra` reaches a child input consumed in DB
+// only through parent comb intermediates — a `let`, then a wire in a
+// comb block. The connected wire `w` reads no register directly, so the
+// inst-boundary check must follow its transitive fan-in to find the
+// DA→DB crossing.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module Consumer
+  port clk: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= data_in;
+  end seq
+  let data_out = r;
+end module Consumer
+module Top
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port da: in UInt<8>;
+  port q: out UInt<8>;
+  wire w: UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  let l: UInt<8> = ra +% 1;
+  comb
+    w = l;
+  end comb
+  inst cons: Consumer
+    clk <- clk_b;
+    rst <- rst;
+    data_in <- w;
+    data_out -> q;
+  end inst cons
+end module Top
