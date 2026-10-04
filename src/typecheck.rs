@@ -1782,41 +1782,42 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                // For each comb block, check if it reads registers from multiple domains
+                // Comb → seq crossings. Each comb target is checked against
+                // its OWN transitive register fan-in — through wires, other
+                // comb targets and `let`s, across comb blocks — not against
+                // the union of everything its comb block reads. A block-level
+                // union flags `a = ra;` because a sibling `b = rb;` in the
+                // same block reads a foreign-domain register (false
+                // positive) and names that unrelated register as the source.
+                let comb_deps = Self::module_comb_deps(m);
                 for item in &m.body {
                     if let ModuleBodyItem::CombBlock(cb) = item {
-                        let mut reads = HashSet::new();
-                        Self::collect_comb_stmt_reads(&cb.stmts, &mut reads);
-                        for name in &reads {
-                            // A comb block reading a cross-domain register is unsafe —
-                            // it could be consumed by any domain downstream
-                            if reg_domain.contains_key(name) {
-                                // Find which domains consume this comb block's outputs
-                                let mut comb_targets = HashSet::new();
-                                Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
-                                for target in &comb_targets {
-                                    // Check if any seq block in a different domain reads this target
-                                    for item2 in &m.body {
-                                        if let ModuleBodyItem::RegBlock(rb) = item2 {
-                                            if let Some(consumer_domain) =
-                                                clk_domain.get(&rb.clock.name)
-                                            {
-                                                let mut seq_reads = HashSet::new();
-                                                Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
-                                                if seq_reads.contains(target) {
-                                                    if let Some(src_domain) = reg_domain.get(name) {
-                                                        if src_domain != consumer_domain {
-                                                            self.errors.push(CompileError::general(
-                                                                &format!(
-                                                                    "CDC violation: comb signal `{target}` reads register `{name}` \
-                                                                     (domain `{src_domain}`) but is consumed in domain `{consumer_domain}`. \
-                                                                     Use a `synchronizer` or async `fifo` to cross clock domains"
-                                                                ),
-                                                                cb.span,
-                                                            ));
-                                                        }
-                                                    }
-                                                }
+                        let mut comb_targets = HashSet::new();
+                        Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
+                        let mut comb_targets: Vec<String> = comb_targets.into_iter().collect();
+                        comb_targets.sort();
+                        for target in &comb_targets {
+                            let src_regs = Self::comb_reg_fanin(target, &comb_deps, &reg_domain);
+                            // Check if any seq block in a different domain reads this target
+                            for item2 in &m.body {
+                                if let ModuleBodyItem::RegBlock(rb) = item2 {
+                                    if let Some(consumer_domain) = clk_domain.get(&rb.clock.name) {
+                                        let mut seq_reads = HashSet::new();
+                                        Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
+                                        if !seq_reads.contains(target) {
+                                            continue;
+                                        }
+                                        for name in &src_regs {
+                                            let src_domain = &reg_domain[name];
+                                            if src_domain != consumer_domain {
+                                                self.errors.push(CompileError::general(
+                                                    &format!(
+                                                        "CDC violation: comb signal `{target}` reads register `{name}` \
+                                                         (domain `{src_domain}`) but is consumed in domain `{consumer_domain}`. \
+                                                         Use a `synchronizer` or async `fifo` to cross clock domains"
+                                                    ),
+                                                    cb.span,
+                                                ));
                                             }
                                         }
                                     }
@@ -7590,6 +7591,136 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+    }
+
+    /// Module-wide direct combinational dependency map: each comb-block
+    /// target and each `let` name → the identifiers its value reads,
+    /// including the enclosing `if` conditions / `match` scrutinees that
+    /// select the assignment and any index expressions on the LHS
+    /// (`out[idx] = …` reads `idx`). Multiple assignments to one target
+    /// union their reads. Expression reads go through `collect_expr_reads`,
+    /// the same walker the seq-side CDC checks use.
+    fn module_comb_deps(m: &ModuleDecl) -> HashMap<String, HashSet<String>> {
+        let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::CombBlock(cb) => {
+                    Self::collect_comb_stmt_deps(&cb.stmts, &mut Vec::new(), &mut deps);
+                }
+                ModuleBodyItem::LetBinding(lb) => {
+                    let mut reads = HashSet::new();
+                    Self::collect_expr_reads(&lb.value, &mut reads);
+                    if lb.destructure_fields.is_empty() {
+                        deps.entry(lb.name.name.clone()).or_default().extend(reads);
+                    } else {
+                        for f in &lb.destructure_fields {
+                            deps.entry(f.name.clone())
+                                .or_default()
+                                .extend(reads.iter().cloned());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        deps
+    }
+
+    fn collect_comb_stmt_deps(
+        stmts: &[Stmt],
+        cond_stack: &mut Vec<HashSet<String>>,
+        deps: &mut HashMap<String, HashSet<String>>,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign(a) => {
+                    let target = Self::expr_root_name_tc(&a.target);
+                    if target.is_empty() {
+                        continue;
+                    }
+                    let mut reads = HashSet::new();
+                    Self::collect_expr_reads(&a.value, &mut reads);
+                    Self::collect_lhs_index_reads_tc(&a.target, &mut reads);
+                    for conds in cond_stack.iter() {
+                        reads.extend(conds.iter().cloned());
+                    }
+                    deps.entry(target).or_default().extend(reads);
+                }
+                Stmt::IfElse(ie) => {
+                    let mut cond = HashSet::new();
+                    Self::collect_expr_reads(&ie.cond, &mut cond);
+                    cond_stack.push(cond);
+                    Self::collect_comb_stmt_deps(&ie.then_stmts, cond_stack, deps);
+                    Self::collect_comb_stmt_deps(&ie.else_stmts, cond_stack, deps);
+                    cond_stack.pop();
+                }
+                Stmt::Match(mt) => {
+                    let mut scrut = HashSet::new();
+                    Self::collect_expr_reads(&mt.scrutinee, &mut scrut);
+                    cond_stack.push(scrut);
+                    for arm in &mt.arms {
+                        Self::collect_comb_stmt_deps(&arm.body, cond_stack, deps);
+                    }
+                    cond_stack.pop();
+                }
+                Stmt::For(f) => Self::collect_comb_stmt_deps(&f.body, cond_stack, deps),
+                // `log` arguments are observation, not dataflow.
+                Stmt::Log(_) => {}
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                    unreachable!("seq-only Stmt variant inside comb-context walker")
+                }
+            }
+        }
+    }
+
+    /// Identifiers read by the index / slice expressions of an assignment
+    /// target (`v[i] = …` reads `i`), excluding the root name itself.
+    fn collect_lhs_index_reads_tc(target: &Expr, out: &mut HashSet<String>) {
+        match &target.kind {
+            ExprKind::Index(base, idx) => {
+                Self::collect_expr_reads(idx, out);
+                Self::collect_lhs_index_reads_tc(base, out);
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                Self::collect_expr_reads(hi, out);
+                Self::collect_expr_reads(lo, out);
+                Self::collect_lhs_index_reads_tc(base, out);
+            }
+            ExprKind::PartSelect(base, start, width, _) => {
+                Self::collect_expr_reads(start, out);
+                Self::collect_expr_reads(width, out);
+                Self::collect_lhs_index_reads_tc(base, out);
+            }
+            ExprKind::FieldAccess(base, _) => Self::collect_lhs_index_reads_tc(base, out),
+            _ => {}
+        }
+    }
+
+    /// The registers (keys of `reg_domain`) that transitively feed comb
+    /// signal `target` through `deps` (see `module_comb_deps`), sorted for
+    /// deterministic diagnostics.
+    fn comb_reg_fanin(
+        target: &str,
+        deps: &HashMap<String, HashSet<String>>,
+        reg_domain: &HashMap<String, String>,
+    ) -> Vec<String> {
+        let mut regs = std::collections::BTreeSet::new();
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = vec![target];
+        while let Some(cur) = stack.pop() {
+            if !visited.insert(cur) {
+                continue;
+            }
+            let Some(reads) = deps.get(cur) else { continue };
+            for r in reads {
+                if reg_domain.contains_key(r) {
+                    regs.insert(r.clone());
+                } else if deps.contains_key(r) {
+                    stack.push(r);
+                }
+            }
+        }
+        regs.into_iter().collect()
     }
 
     /// Collect all target names assigned in comb statements.
