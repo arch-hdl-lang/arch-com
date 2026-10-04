@@ -1,0 +1,37 @@
+// P7: the domain-DA register `ra` reaches the domain-DB flop `rb` only
+// through comb intermediates — a `let`, a wire in a second comb block,
+// then a wire in a third. No comb target reads `ra` directly, so the
+// check must follow each target's transitive fan-in to find the crossing
+// and name `ra` as its source.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Sync>;
+  port da: in UInt<8>;
+  port qb: out UInt<8>;
+  wire w1: UInt<8>;
+  wire w2: UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  let l: UInt<8> = ra +% 1;
+  comb
+    w1 = l;
+  end comb
+  comb
+    w2 = w1;
+  end comb
+  seq on clk_b rising
+    rb <= w2;
+  end seq
+  let qb = rb;
+end module M

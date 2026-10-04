@@ -25782,6 +25782,57 @@ fn cdc_p4_comb_fanin_same_domain_ok() {
     assert_rdc_ok("P4", &src);
 }
 
+// P6/P7: the comb→seq check works per comb target, on each target's
+// transitive register fan-in — not on the union of everything its comb
+// block reads.
+
+#[test]
+fn cdc_p6_comb_block_shared_targets_same_domain_ok() {
+    let src =
+        std::fs::read_to_string("tests/rdc/cdc_p6_comb_block_shared_targets_same_domain_ok.arch")
+            .expect("read P6");
+    assert_rdc_ok("P6", &src);
+}
+
+#[test]
+fn cdc_p7_comb_transitive_foreign_domain_fail() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_p7_comb_transitive_foreign_domain_fail.arch")
+        .expect("read P7");
+    assert_rdc_fails(
+        "P7",
+        &src,
+        &[
+            "CDC violation: comb signal `w2` reads register `ra`",
+            "DA",
+            "DB",
+        ],
+    );
+}
+
+#[test]
+fn cdc_comb_names_actual_source_register() {
+    // sd_rx_fifo's unsynchronized `empty = adr_i == adr_o;` shares a comb
+    // block with the read mux `q = ram_N;`. The crossing is `adr_i` (write
+    // domain); the `ram_*` registers do not feed `empty`. Strip any CDC
+    // opt-out so the check runs.
+    let src = std::fs::read_to_string("tests/sdc/sd_rx_fifo.arch")
+        .expect("read sd_rx_fifo")
+        .replace("pragma cdc_safe;", "");
+    let errs: Vec<String> = match rdc_check(&src) {
+        Ok(()) => Vec::new(),
+        Err(es) => es.iter().map(|e| e.to_string()).collect(),
+    };
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("comb signal `empty` reads register `adr_i`")),
+        "expected the adr_i crossing on `empty`, got: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("register `ram_")),
+        "`ram_*` do not feed any comb signal consumed cross-domain, got: {errs:?}"
+    );
+}
+
 #[test]
 fn cdc_p5_multibit_ff_synchronizer_warns() {
     // `kind ff` is a two-flop synchroniser: safe for a single bit, unsafe
