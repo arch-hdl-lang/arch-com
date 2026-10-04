@@ -103,6 +103,8 @@ violation:
 | `cdc_p8_inst_parent_comb_block_shared_port_target_ok.arch` | parent comb block drives a DA wire and a port-fed wire; only the port-fed wire reaches the DB child | ok | PASS (inst-boundary per-target fan-in) |
 | `cdc_p8_inst_parent_transitive_fanin_fail.arch` | DA register reaches a DB child input only via `let` → comb wire | fail | PASS (inst-boundary transitive fan-in) |
 | `cdc_p8_inst_child_input_two_domains_fail.arch` | child input read by both a DA and a DB flop, driven from a DA register | fail | PASS (inst-boundary port domain sets; order-independent) |
+| `cdc_q1_let_consumed_in_foreign_domain_fail.arch` | DA register reaches a DB flop through a `let` read directly by the DB `seq` | fail | PASS (`let` as comb signal) |
+| `cdc_q2_let_consumed_in_same_domain_ok.arch` | same `let`, consumed only in its own domain | ok | PASS |
 
 ## Why D1 still flags (phase 1 backstop)
 
