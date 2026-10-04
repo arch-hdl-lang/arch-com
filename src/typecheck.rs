@@ -1782,43 +1782,66 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                // Comb → seq crossings. Each comb target is checked against
-                // its OWN transitive register fan-in — through wires, other
-                // comb targets and `let`s, across comb blocks — not against
-                // the union of everything its comb block reads. A block-level
-                // union flags `a = ra;` because a sibling `b = rb;` in the
-                // same block reads a foreign-domain register (false
-                // positive) and names that unrelated register as the source.
+                // Comb → seq crossings. Each comb signal — a `comb` block
+                // target or a `let` — is checked against its OWN transitive
+                // register fan-in, through wires, other comb targets and
+                // `let`s, across comb blocks. Not against the union of
+                // everything its comb block reads: that flags `a = ra;`
+                // because a sibling `b = rb;` in the same block reads a
+                // foreign-domain register (false positive) and names that
+                // unrelated register as the source. Diagnostics point at the
+                // comb block or `let` that drives the signal.
                 let comb_deps = Self::module_comb_deps(m);
+                let mut comb_signals: Vec<(Span, Vec<String>)> = Vec::new();
                 for item in &m.body {
-                    if let ModuleBodyItem::CombBlock(cb) = item {
-                        let mut comb_targets = HashSet::new();
-                        Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
-                        let mut comb_targets: Vec<String> = comb_targets.into_iter().collect();
-                        comb_targets.sort();
-                        for target in &comb_targets {
-                            let src_regs = Self::comb_reg_fanin(target, &comb_deps, &reg_domain);
-                            // Check if any seq block in a different domain reads this target
-                            for item2 in &m.body {
-                                if let ModuleBodyItem::RegBlock(rb) = item2 {
-                                    if let Some(consumer_domain) = clk_domain.get(&rb.clock.name) {
-                                        let mut seq_reads = HashSet::new();
-                                        Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
-                                        if !seq_reads.contains(target) {
-                                            continue;
-                                        }
-                                        for name in &src_regs {
-                                            let src_domain = &reg_domain[name];
-                                            if src_domain != consumer_domain {
-                                                self.errors.push(CompileError::general(
-                                                    &format!(
-                                                        "CDC violation: comb signal `{target}` reads register `{name}` \
-                                                         (domain `{src_domain}`) but is consumed in domain `{consumer_domain}`. \
-                                                         Use a `synchronizer` or async `fifo` to cross clock domains"
-                                                    ),
-                                                    cb.span,
-                                                ));
-                                            }
+                    match item {
+                        ModuleBodyItem::CombBlock(cb) => {
+                            let mut targets = HashSet::new();
+                            Self::collect_comb_stmt_targets(&cb.stmts, &mut targets);
+                            let mut targets: Vec<String> = targets.into_iter().collect();
+                            targets.sort();
+                            comb_signals.push((cb.span, targets));
+                        }
+                        ModuleBodyItem::LetBinding(lb) => {
+                            let names = if lb.destructure_fields.is_empty() {
+                                vec![lb.name.name.clone()]
+                            } else {
+                                lb.destructure_fields
+                                    .iter()
+                                    .map(|f| f.name.clone())
+                                    .collect()
+                            };
+                            comb_signals.push((lb.span, names));
+                        }
+                        _ => {}
+                    }
+                }
+                for (span, signals) in &comb_signals {
+                    for target in signals {
+                        let src_regs = Self::comb_reg_fanin(target, &comb_deps, &reg_domain);
+                        if src_regs.is_empty() {
+                            continue;
+                        }
+                        // Check if any seq block in a different domain reads this signal
+                        for item in &m.body {
+                            if let ModuleBodyItem::RegBlock(rb) = item {
+                                if let Some(consumer_domain) = clk_domain.get(&rb.clock.name) {
+                                    let mut seq_reads = HashSet::new();
+                                    Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
+                                    if !seq_reads.contains(target) {
+                                        continue;
+                                    }
+                                    for name in &src_regs {
+                                        let src_domain = &reg_domain[name];
+                                        if src_domain != consumer_domain {
+                                            self.errors.push(CompileError::general(
+                                                &format!(
+                                                    "CDC violation: comb signal `{target}` reads register `{name}` \
+                                                     (domain `{src_domain}`) but is consumed in domain `{consumer_domain}`. \
+                                                     Use a `synchronizer` or async `fifo` to cross clock domains"
+                                                ),
+                                                *span,
+                                            ));
                                         }
                                     }
                                 }

@@ -25809,6 +25809,31 @@ fn cdc_p7_comb_transitive_foreign_domain_fail() {
     );
 }
 
+// Q1/Q2: a module-scope `let` is a comb signal too — a foreign-domain
+// `seq` reading it directly is a crossing.
+
+#[test]
+fn cdc_q1_let_consumed_in_foreign_domain_fail() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_q1_let_consumed_in_foreign_domain_fail.arch")
+        .expect("read Q1");
+    assert_rdc_fails(
+        "Q1",
+        &src,
+        &[
+            "CDC violation: comb signal `nxt` reads register `ra`",
+            "DA",
+            "DB",
+        ],
+    );
+}
+
+#[test]
+fn cdc_q2_let_consumed_in_same_domain_ok() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_q2_let_consumed_in_same_domain_ok.arch")
+        .expect("read Q2");
+    assert_rdc_ok("Q2", &src);
+}
+
 #[test]
 fn cdc_comb_names_actual_source_register() {
     // sd_rx_fifo's unsynchronized `empty = adr_i == adr_o;` shares a comb

@@ -99,6 +99,8 @@ violation:
 | `cdc_p4_comb_fanin_same_domain_ok.arch` | same comb fan-in shape, producer and consumer both in domain A | ok | PASS |
 | `cdc_p6_comb_block_shared_targets_same_domain_ok.arch` | one comb block drives a DA-only and a DB-only target, each consumed in its own domain | ok | PASS (per-target fan-in) |
 | `cdc_p7_comb_transitive_foreign_domain_fail.arch` | DA register reaches a DB flop only via `let` → wire → wire across comb blocks | fail | PASS (transitive fan-in) |
+| `cdc_q1_let_consumed_in_foreign_domain_fail.arch` | DA register reaches a DB flop through a `let` read directly by the DB `seq` | fail | PASS (`let` as comb signal) |
+| `cdc_q2_let_consumed_in_same_domain_ok.arch` | same `let`, consumed only in its own domain | ok | PASS |
 
 ## Why D1 still flags (phase 1 backstop)
 
