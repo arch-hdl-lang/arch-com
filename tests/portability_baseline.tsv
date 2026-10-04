@@ -6,6 +6,8 @@ examples/arbiter_latency2.arch	iverilog	OK	-
 examples/arbiter_latency2.arch	verilator	OK	-
 examples/async_fifo.arch	iverilog	OK	-
 examples/async_fifo.arch	verilator	OK	-
+examples/auto_connect.arch	iverilog	OK	-
+examples/auto_connect.arch	verilator	OK	-
 examples/bus_arbiter.arch	iverilog	OK	-
 examples/bus_arbiter.arch	verilator	OK	-
 examples/bus_basic.arch	-	BUILD_FAIL	Error:   × 9 errors
@@ -219,6 +221,10 @@ tests/aes/domain.arch	-	NO_MODULE	-
 tests/aes/xtime.arch	-	BUILD_FAIL	Error:   × .trunc<8>() on a 8-bit value is a no-op — remove the cast
 tests/arbiter_custom_policy/CustomRrArb4.arch	iverilog	OK	-
 tests/arbiter_custom_policy/CustomRrArb4.arch	verilator	OK	-
+tests/arbiter_latency/LatArb2.arch	iverilog	OK	-
+tests/arbiter_latency/LatArb2.arch	verilator	OK	-
+tests/arbiter_latency/LatArb3.arch	iverilog	OK	-
+tests/arbiter_latency/LatArb3.arch	verilator	OK	-
 tests/arbiter_rr_nonpow2/RRArb3.arch	iverilog	OK	-
 tests/arbiter_rr_nonpow2/RRArb3.arch	verilator	OK	-
 tests/assert_cover/counter_check.arch	iverilog	FAIL	SV:20: syntax error
@@ -393,6 +399,12 @@ tests/cam_dual_basic.arch	verilator	OK	-
 tests/cam_lookup.arch	-	BUILD_FAIL	Error:   × 2 errors
 tests/cam_value_basic.arch	iverilog	OK	-
 tests/cam_value_basic.arch	verilator	OK	-
+tests/cocotb_axi/AxiLiteMemory.arch	iverilog	OK	-
+tests/cocotb_axi/AxiLiteMemory.arch	verilator	OK	-
+tests/cocotb_axi/AxiMemory.arch	iverilog	OK	-
+tests/cocotb_axi/AxiMemory.arch	verilator	OK	-
+tests/cocotb_native/WidePorts.arch	iverilog	OK	-
+tests/cocotb_native/WidePorts.arch	verilator	OK	-
 tests/cvdp/16qam_demapper.arch	iverilog	OK	-
 tests/cvdp/16qam_demapper.arch	verilator	OK	-
 tests/cvdp/16qam_mapper.arch	iverilog	FAIL	SV:33: error: A reference to a wire or reg (`j') is not allowed in a constant expression.
@@ -859,7 +871,8 @@ tests/cvdp/sobel_filter.arch	iverilog	OK	-
 tests/cvdp/sobel_filter.arch	verilator	OK	-
 tests/cvdp/sorting_engine.arch	iverilog	OK	-
 tests/cvdp/sorting_engine.arch	verilator	OK	-
-tests/cvdp/soundgenerator.arch	-	BUILD_FAIL	Error:   × 2 errors
+tests/cvdp/soundgenerator.arch	iverilog	OK	-
+tests/cvdp/soundgenerator.arch	verilator	OK	-
 tests/cvdp/spi_fsm.arch	iverilog	OK	-
 tests/cvdp/spi_fsm.arch	verilator	OK	-
 tests/cvdp/sprite_fsm.arch	iverilog	OK	-
@@ -1049,6 +1062,10 @@ tests/e203/e203_uart.arch	iverilog	OK	-
 tests/e203/e203_uart.arch	verilator	OK	-
 tests/expect_fatal_smoke/Probe.arch	iverilog	OK	-
 tests/expect_fatal_smoke/Probe.arch	verilator	OK	-
+tests/fifo_latency1_async.arch	iverilog	OK	-
+tests/fifo_latency1_async.arch	verilator	OK	-
+tests/fifo_latency1_sync.arch	iverilog	OK	-
+tests/fifo_latency1_sync.arch	verilator	OK	-
 tests/formal/bus_field_unsupported.arch	iverilog	OK	-
 tests/formal/bus_field_unsupported.arch	verilator	OK	-
 tests/formal/counter_bounded.arch	iverilog	OK	-
@@ -1065,6 +1082,12 @@ tests/formal/credit_channel_invariant.arch	iverilog	OK	-
 tests/formal/credit_channel_invariant.arch	verilator	FAIL	%Error: SV:101:69: Can't find definition of variable: '__chwire_data_credit'
 tests/formal/e8m0_nan_scale.arch	iverilog	OK	-
 tests/formal/e8m0_nan_scale.arch	verilator	OK	-
+tests/formal/fsm_state_mirror.arch	iverilog	OK	-
+tests/formal/fsm_state_mirror.arch	verilator	OK	-
+tests/formal/fsm_state_mirror_broken.arch	iverilog	OK	-
+tests/formal/fsm_state_mirror_broken.arch	verilator	OK	-
+tests/formal/fsm_submodule.arch	iverilog	OK	-
+tests/formal/fsm_submodule.arch	verilator	OK	-
 tests/formal/guard_fail.arch	iverilog	FAIL	SV:19: syntax error
 tests/formal/guard_fail.arch	verilator	OK	-
 tests/formal/guard_pass.arch	iverilog	FAIL	SV:25: syntax error
@@ -1081,6 +1104,11 @@ tests/formal/hier_port_reg_proves.arch	iverilog	OK	-
 tests/formal/hier_port_reg_proves.arch	verilator	OK	-
 tests/formal/hier_port_reg_refutes.arch	iverilog	OK	-
 tests/formal/hier_port_reg_refutes.arch	verilator	OK	-
+tests/formal/pipelined_fma_equiv.arch	iverilog	OK	-
+tests/formal/pipelined_fma_equiv.arch	verilator	OK	-
+tests/formal/pipelined_fma_wrong_binding_rejected.arch	-	BUILD_FAIL	Error:   × 2 errors
+tests/formal/pipelined_fma_wrong_latency_refutes.arch	iverilog	OK	-
+tests/formal/pipelined_fma_wrong_latency_refutes.arch	verilator	OK	-
 tests/formal/reachable_implication.arch	iverilog	FAIL	SV:12: syntax error
 tests/formal/reachable_implication.arch	verilator	OK	-
 tests/formal/replay_float_refutes.arch	iverilog	OK	-
@@ -1152,6 +1180,8 @@ tests/fp_v1/MxQuantBound.arch	iverilog	OK	-
 tests/fp_v1/MxQuantBound.arch	verilator	OK	-
 tests/fp_v1/NanProf.arch	iverilog	OK	-
 tests/fp_v1/NanProf.arch	verilator	OK	-
+tests/fp_v1/Nvfp4Quant.arch	iverilog	OK	-
+tests/fp_v1/Nvfp4Quant.arch	verilator	OK	-
 tests/fp_v1/ScaledQuant.arch	iverilog	OK	-
 tests/fp_v1/ScaledQuant.arch	verilator	OK	-
 tests/fp_v1/ScaledVecType.arch	iverilog	OK	-
@@ -1216,6 +1246,8 @@ tests/native_bool_not/Probe.arch	iverilog	OK	-
 tests/native_bool_not/Probe.arch	verilator	OK	-
 tests/native_fsm_state_r/Probe.arch	iverilog	OK	-
 tests/native_fsm_state_r/Probe.arch	verilator	OK	-
+tests/native_param_bus_wire/Probe.arch	iverilog	OK	-
+tests/native_param_bus_wire/Probe.arch	verilator	OK	-
 tests/native_pipe_reg_thread_output/Probe.arch	iverilog	OK	-
 tests/native_pipe_reg_thread_output/Probe.arch	verilator	OK	-
 tests/native_pkg_struct_fsm/Probe.arch	iverilog	OK	-
@@ -1238,11 +1270,19 @@ tests/operator_precedence_test.arch	iverilog	OK	-
 tests/operator_precedence_test.arch	verilator	OK	-
 tests/operator_type_test.arch	iverilog	OK	-
 tests/operator_type_test.arch	verilator	OK	-
+tests/pipeline_init_reset.arch	iverilog	OK	-
+tests/pipeline_init_reset.arch	verilator	OK	-
 tests/pipeline_wait_stage.arch	iverilog	OK	-
 tests/pipeline_wait_stage.arch	verilator	OK	-
 tests/pkg_param_in_function/PkgFoo.arch	-	NO_MODULE	-
 tests/pkg_param_in_function/Probe.arch	iverilog	OK	-
 tests/pkg_param_in_function/Probe.arch	verilator	OK	-
+tests/rdc/cdc_p1_seq_reads_foreign_domain_reg_fail.arch	-	BUILD_FAIL	Error:   × CDC violation: register `ra` is driven in domain `DA` but read in domain
+tests/rdc/cdc_p2_seq_reads_via_synchronizer_ok.arch	iverilog	OK	-
+tests/rdc/cdc_p2_seq_reads_via_synchronizer_ok.arch	verilator	OK	-
+tests/rdc/cdc_p3_comb_fanin_foreign_domain_fail.arch	-	BUILD_FAIL	Error:   × CDC violation: comb signal `masked` reads register `ra` (domain `DA`) but
+tests/rdc/cdc_p4_comb_fanin_same_domain_ok.arch	iverilog	OK	-
+tests/rdc/cdc_p4_comb_fanin_same_domain_ok.arch	verilator	OK	-
 tests/rdc/rdc_a1_same_async_direct_ok.arch	iverilog	OK	-
 tests/rdc/rdc_a1_same_async_direct_ok.arch	verilator	OK	-
 tests/rdc/rdc_a2_diff_async_direct_fail.arch	-	BUILD_FAIL	Error:   × RDC violation: register `rb` is reset by async signal `rst_b` but its data
@@ -1304,6 +1344,9 @@ tests/rdc/rdc_m5_cdc_distinct_sources_ok.arch	iverilog	OK	-
 tests/rdc/rdc_m5_cdc_distinct_sources_ok.arch	verilator	OK	-
 tests/rdc/rdc_m6_cdc_bit_slice_distinct_vecs_ok.arch	iverilog	OK	-
 tests/rdc/rdc_m6_cdc_bit_slice_distinct_vecs_ok.arch	verilator	OK	-
+tests/rdc/rdc_n1_rdc_safe_does_not_suppress_cdc_fail.arch	-	BUILD_FAIL	Error:   × CDC violation: register `ra` is driven in domain `DA` but read in domain
+tests/rdc/rdc_n2_cdc_safe_suppresses_cdc_ok.arch	iverilog	OK	-
+tests/rdc/rdc_n2_cdc_safe_suppresses_cdc_ok.arch	verilator	OK	-
 tests/regression/issues/alias_in_generate_if/AliasInGenif.arch	iverilog	OK	-
 tests/regression/issues/alias_in_generate_if/AliasInGenif.arch	verilator	OK	-
 tests/regression/issues/concat_bus_field_width/ConcatBusFieldWidth.arch	iverilog	OK	-
@@ -1370,6 +1413,8 @@ tests/sim_bus_vec_elem_width.arch	iverilog	OK	-
 tests/sim_bus_vec_elem_width.arch	verilator	OK	-
 tests/sim_fp_narrow_mx_regression.arch	iverilog	OK	-
 tests/sim_fp_narrow_mx_regression.arch	verilator	OK	-
+tests/sim_fsm_vec_port_trace_regression.arch	iverilog	OK	-
+tests/sim_fsm_vec_port_trace_regression.arch	verilator	OK	-
 tests/sim_ranged_slice_regression.arch	iverilog	FAIL	SV:42: error: A reference to a wire or reg (`addr') is not allowed in a constant expression.
 tests/sim_ranged_slice_regression.arch	verilator	OK	-
 tests/sim_vec_elem_width_regression.arch	iverilog	OK	-
