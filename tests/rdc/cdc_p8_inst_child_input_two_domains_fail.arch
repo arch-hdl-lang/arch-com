@@ -1,0 +1,52 @@
+// P8d: the child input `d` is consumed in BOTH of the child's domains
+// (a DB flop and a DA flop). The parent drives it from the domain-DA
+// register `ra`, so the DB consumer is an unsynchronized DA→DB crossing.
+// A check that keeps a single domain per child port takes whichever seq
+// block comes last in the body — here DA — and misses the crossing; with
+// the two seq blocks swapped it reports it. The result must not depend
+// on body order.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module Sink
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port qa: out UInt<8>;
+  port qb: out UInt<8>;
+  reg sb: UInt<8> reset rst => 0;
+  reg sa: UInt<8> reset rst => 0;
+  seq on clk_b rising
+    sb <= d;
+  end seq
+  seq on clk_a rising
+    sa <= d;
+  end seq
+  let qa = sa;
+  let qb = sb;
+end module Sink
+module Top
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port da: in UInt<8>;
+  port qa: out UInt<8>;
+  port qb: out UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  inst s: Sink
+    clk_a <- clk_a;
+    clk_b <- clk_b;
+    rst <- rst;
+    d <- ra;
+    qa -> qa;
+    qb -> qb;
+  end inst s
+end module Top
