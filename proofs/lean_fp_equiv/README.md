@@ -175,6 +175,14 @@ formal` SMT are byte-for-byte unchanged.
 **Also verified (`cargo test`):** the `render_lean` renderer and its output
 (`src/fp_ir.rs` unit tests `renders_both_dialects`, `lean_renders_every_op_kind`).
 
+The separate [Lean-to-SMT renderer correspondence check](../../tests/fp_v1/smt_proof/README.md#lean-to-smt-renderer-correspondence-artifact-level-check)
+compares emitted Lean expressions with emitted SMT-LIB expressions by local
+QF_UFBV miters. It covers all current shared functions, including those newer
+than this checked-in Lean proof snapshot. It is an external solver-checked
+artifact check with a trusted Lean-subset parser, **not** a Lean-kernel-checked
+renderer theorem; the model-regeneration/unit tests alone do not establish
+semantic renderer correspondence.
+
 ## Build
 
 ```
