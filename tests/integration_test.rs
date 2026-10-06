@@ -41556,3 +41556,66 @@ endmodule
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+/// Regression: every data-synchronizer kind must honor the *kind* of its
+/// declared reset port in the emitted `always_ff` sensitivity list. Before the
+/// fix, `kind ff`/`kind gray` added `or <edge> rst` for `Reset<Async, _>` but
+/// `kind handshake`/`kind pulse` silently dropped it, emitting a synchronous
+/// reset for an async-declared port — a reset-kind fidelity bug that also
+/// trips Verilator SYNCASYNCNET when the same reset net drives async flops in
+/// the parent. `Reset<Sync, _>` must stay clock-edge-only for all kinds.
+#[test]
+fn synchronizer_all_kinds_honor_reset_kind_in_sensitivity() {
+    // `kind reset` is excluded: its `data_in` *is* the async reset by
+    // construction (async-assert / sync-deassert), so its sensitivity is
+    // `or posedge data_in`, not driven by a `Reset<>` port.
+    let build = |kind: &str, data_ty: &str, reset_ty: &str| -> String {
+        let src = format!(
+            r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+
+synchronizer S
+  kind {kind};
+  param STAGES: const = 2;
+  port src_clk:  in Clock<DA>;
+  port dst_clk:  in Clock<DB>;
+  port rst:      in {reset_ty};
+  port data_in:  in {data_ty};
+  port data_out: out {data_ty};
+end synchronizer S
+"#
+        );
+        compile_to_sv(&src)
+    };
+
+    for (kind, data_ty) in [
+        ("ff", "Bool"),
+        ("gray", "UInt<4>"),
+        ("handshake", "UInt<8>"),
+        ("pulse", "Bool"),
+    ] {
+        // Async, Low → `or negedge rst`; Async, High → `or posedge rst`.
+        let sv_low = build(kind, data_ty, "Reset<Async, Low>");
+        assert!(
+            sv_low.contains("or negedge rst)"),
+            "kind {kind}: async-low reset must appear in the sensitivity list, got:\n{sv_low}"
+        );
+        let sv_high = build(kind, data_ty, "Reset<Async, High>");
+        assert!(
+            sv_high.contains("or posedge rst)"),
+            "kind {kind}: async-high reset must appear in the sensitivity list, got:\n{sv_high}"
+        );
+
+        // Sync reset stays clock-edge-only: no async reset edge anywhere.
+        let sv_sync = build(kind, data_ty, "Reset<Sync, High>");
+        assert!(
+            !sv_sync.contains("or negedge rst)") && !sv_sync.contains("or posedge rst)"),
+            "kind {kind}: sync reset must NOT add an async reset edge, got:\n{sv_sync}"
+        );
+    }
+}
