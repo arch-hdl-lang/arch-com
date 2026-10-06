@@ -1,0 +1,26 @@
+//! Regression fixture for arch#1058: non-power-of-two FIFO DEPTH.
+//!
+//! DEPTH=3 sync FIFO. The pre-fix SV codegen wrapped pointers at
+//! 2^PTR_W = 8 and indexed with the low PTR_W-1 = 2 bits (mod 4), so the
+//! emitted SV behaved as a capacity-4 FIFO over a 3-entry memory:
+//! it accepted 4 items (writing out of range) and popped garbage,
+//! while arch sim correctly capped the FIFO at three entries.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+fifo FifoCapD3
+  param DEPTH: const = 3;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+  port full: out Bool;
+  port empty: out Bool;
+end fifo FifoCapD3
