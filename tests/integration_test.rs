@@ -25833,6 +25833,71 @@ fn cdc_comb_names_actual_source_register() {
     );
 }
 
+// P8: the instance-boundary CDC check gives each parent signal and each
+// child port the domains of its OWN transitive register fan-in (sets, not
+// a single last-written domain) — not the union of its comb block's reads.
+
+#[test]
+fn cdc_p8_inst_parent_comb_block_mixed_domains_fail() {
+    let src =
+        std::fs::read_to_string("tests/rdc/cdc_p8_inst_parent_comb_block_mixed_domains_fail.arch")
+            .expect("read P8a");
+    assert_rdc_fails(
+        "P8a",
+        &src,
+        &[
+            "CDC violation at instance `cons`: signal `wa` (domain `DA`)",
+            "port `data_in` which operates in domain `DB`",
+        ],
+    );
+}
+
+#[test]
+fn cdc_p8_inst_parent_comb_block_shared_port_target_ok() {
+    let src = std::fs::read_to_string(
+        "tests/rdc/cdc_p8_inst_parent_comb_block_shared_port_target_ok.arch",
+    )
+    .expect("read P8b");
+    assert_rdc_ok("P8b", &src);
+}
+
+#[test]
+fn cdc_p8_inst_parent_transitive_fanin_fail() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_p8_inst_parent_transitive_fanin_fail.arch")
+        .expect("read P8c");
+    assert_rdc_fails(
+        "P8c",
+        &src,
+        &[
+            "CDC violation at instance `cons`: signal `w` (domain `DA`)",
+            "port `data_in` which operates in domain `DB`",
+        ],
+    );
+}
+
+#[test]
+fn cdc_p8_inst_child_input_two_domains_fail() {
+    // The crossing must be reported for both orders of the child's two
+    // seq blocks, not only when the DB block happens to come last.
+    let src = std::fs::read_to_string("tests/rdc/cdc_p8_inst_child_input_two_domains_fail.arch")
+        .expect("read P8d");
+    let blk_b = "  seq on clk_b rising\n    sb <= d;\n  end seq\n";
+    let blk_a = "  seq on clk_a rising\n    sa <= d;\n  end seq\n";
+    let order_ba = format!("{blk_b}{blk_a}");
+    assert!(src.contains(&order_ba), "P8d fixture layout changed");
+    let swapped = src.replace(&order_ba, &format!("{blk_a}{blk_b}"));
+    for (label, s) in [("P8d", &src), ("P8d-swapped", &swapped)] {
+        assert_rdc_fails(
+            label,
+            s,
+            &[
+                "CDC violation at instance `s`: signal `ra` (domain `DA`)",
+                "port `d` which operates in domain `DB`",
+            ],
+        );
+    }
+}
+
 #[test]
 fn cdc_p5_multibit_ff_synchronizer_warns() {
     // `kind ff` is a two-flop synchroniser: safe for a single bit, unsafe

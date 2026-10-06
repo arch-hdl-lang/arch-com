@@ -99,6 +99,10 @@ violation:
 | `cdc_p4_comb_fanin_same_domain_ok.arch` | same comb fan-in shape, producer and consumer both in domain A | ok | PASS |
 | `cdc_p6_comb_block_shared_targets_same_domain_ok.arch` | one comb block drives a DA-only and a DB-only target, each consumed in its own domain | ok | PASS (per-target fan-in) |
 | `cdc_p7_comb_transitive_foreign_domain_fail.arch` | DA register reaches a DB flop only via `let` → wire → wire across comb blocks | fail | PASS (transitive fan-in) |
+| `cdc_p8_inst_parent_comb_block_mixed_domains_fail.arch` | parent comb block drives a DA-only and a DB-only wire; the DA wire feeds a child input consumed in DB | fail | PASS (inst-boundary per-target fan-in) |
+| `cdc_p8_inst_parent_comb_block_shared_port_target_ok.arch` | parent comb block drives a DA wire and a port-fed wire; only the port-fed wire reaches the DB child | ok | PASS (inst-boundary per-target fan-in) |
+| `cdc_p8_inst_parent_transitive_fanin_fail.arch` | DA register reaches a DB child input only via `let` → comb wire | fail | PASS (inst-boundary transitive fan-in) |
+| `cdc_p8_inst_child_input_two_domains_fail.arch` | child input read by both a DA and a DB flop, driven from a DA register | fail | PASS (inst-boundary port domain sets; order-independent) |
 
 ## Why D1 still flags (phase 1 backstop)
 

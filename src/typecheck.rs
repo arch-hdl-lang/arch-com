@@ -7244,45 +7244,56 @@ impl<'a> TypeChecker<'a> {
             return; // Single-clock or no-clock child; no CDC concern
         }
 
-        // Build child module's port → domain map (which domain uses each port)
-        // A port is in a domain if a seq block on that clock reads/writes it
-        let mut child_port_domain: HashMap<String, String> = HashMap::new();
+        // Build the child module's port → domains map: the set of clock
+        // domains each port carries data in. Sets, not a single domain, so
+        // a port used in two domains keeps both — a single-valued map keeps
+        // whichever `insert` ran last, which makes detection depend on the
+        // order of seq blocks in the body.
+        let mut child_port_domain: HashMap<String, BTreeSet<String>> = HashMap::new();
 
         // Clock ports map to their own domain
         for (clk_name, domain) in &child_clk_domain {
-            child_port_domain.insert(clk_name.clone(), domain.clone());
+            child_port_domain
+                .entry(clk_name.clone())
+                .or_default()
+                .insert(domain.clone());
         }
 
-        // Reset ports: if there's only one, it's shared; skip domain assignment
-        // Data ports: determine domain from seq block usage
+        // Registers → the domain of the seq block that assigns them.
+        let mut child_reg_domain: HashMap<String, String> = HashMap::new();
         for body_item in &child_module.body {
             if let ModuleBodyItem::RegBlock(rb) = body_item {
                 if let Some(domain) = child_clk_domain.get(&rb.clock.name) {
-                    // Registers assigned in this seq block
                     let mut assigned = HashSet::new();
                     Self::collect_stmt_targets(&rb.stmts, &mut assigned);
-
-                    // Find which output ports these registers feed via comb blocks
-                    for comb_item in &child_module.body {
-                        if let ModuleBodyItem::CombBlock(cb) = comb_item {
-                            let mut comb_reads = HashSet::new();
-                            Self::collect_comb_stmt_reads(&cb.stmts, &mut comb_reads);
-                            let mut comb_targets = HashSet::new();
-                            Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
-
-                            // If this comb block reads any register from this domain,
-                            // its output ports belong to this domain
-                            if comb_reads.iter().any(|r| assigned.contains(r)) {
-                                for target in &comb_targets {
-                                    if child_module.ports.iter().any(|p| p.name.name == *target) {
-                                        child_port_domain.insert(target.clone(), domain.clone());
-                                    }
-                                }
-                            }
-                        }
+                    for name in assigned {
+                        child_reg_domain.insert(name, domain.clone());
                     }
+                }
+            }
+        }
 
-                    // Input ports read in this seq block belong to this domain
+        // Comb-driven ports: the domains of the registers in the port's
+        // OWN transitive fan-in — not of everything its comb block reads.
+        let child_deps = Self::module_comb_deps(child_module);
+        for p in &child_module.ports {
+            if !child_deps.contains_key(&p.name.name) {
+                continue;
+            }
+            for reg in Self::comb_reg_fanin(&p.name.name, &child_deps, &child_reg_domain) {
+                child_port_domain
+                    .entry(p.name.name.clone())
+                    .or_default()
+                    .insert(child_reg_domain[&reg].clone());
+            }
+        }
+
+        // Reset ports: if there's only one, it's shared; skip domain assignment.
+        // Input ports read in a seq block belong to that block's domain
+        // (every such domain, when several seq blocks read the port).
+        for body_item in &child_module.body {
+            if let ModuleBodyItem::RegBlock(rb) = body_item {
+                if let Some(domain) = child_clk_domain.get(&rb.clock.name) {
                     let mut reads = HashSet::new();
                     Self::collect_stmt_reads(&rb.stmts, &mut reads);
                     for read_name in &reads {
@@ -7291,37 +7302,42 @@ impl<'a> TypeChecker<'a> {
                             .iter()
                             .any(|p| p.name.name == *read_name && p.direction == Direction::In)
                         {
-                            child_port_domain.insert(read_name.clone(), domain.clone());
+                            child_port_domain
+                                .entry(read_name.clone())
+                                .or_default()
+                                .insert(domain.clone());
                         }
                     }
                 }
             }
         }
 
-        // Now build the parent signal → domain map
-        // Include: registers, comb outputs, and ports (clocks map to their domain)
-        let mut parent_signal_domain: HashMap<String, String> = parent_reg_domain.clone();
-        for (clk_name, domain) in parent_clk_domain {
-            parent_signal_domain.insert(clk_name.clone(), domain.clone());
+        // Now build the parent signal → domains map
+        // Include: registers, clocks, and comb signals (comb targets and
+        // `let`s) by the domains of their own transitive register fan-in.
+        let mut parent_signal_domain: HashMap<String, BTreeSet<String>> = HashMap::new();
+        for (name, domain) in parent_reg_domain {
+            parent_signal_domain
+                .entry(name.clone())
+                .or_default()
+                .insert(domain.clone());
         }
-        // Comb blocks: if a comb output is driven from a single-domain register, it's in that domain
-        for body_item in &parent_module.body {
-            if let ModuleBodyItem::CombBlock(cb) = body_item {
-                let mut reads = HashSet::new();
-                Self::collect_comb_stmt_reads(&cb.stmts, &mut reads);
-                let mut targets = HashSet::new();
-                Self::collect_comb_stmt_targets(&cb.stmts, &mut targets);
-                // If all register reads are from the same domain, targets inherit that domain
-                let domains: HashSet<&String> = reads
-                    .iter()
-                    .filter_map(|r| parent_reg_domain.get(r))
-                    .collect();
-                if domains.len() == 1 {
-                    let domain = domains.into_iter().next().unwrap();
-                    for target in targets {
-                        parent_signal_domain.insert(target, domain.clone());
-                    }
-                }
+        for (clk_name, domain) in parent_clk_domain {
+            parent_signal_domain
+                .entry(clk_name.clone())
+                .or_default()
+                .insert(domain.clone());
+        }
+        let parent_deps = Self::module_comb_deps(parent_module);
+        for target in parent_deps.keys() {
+            if parent_reg_domain.contains_key(target) {
+                continue;
+            }
+            for reg in Self::comb_reg_fanin(target, &parent_deps, parent_reg_domain) {
+                parent_signal_domain
+                    .entry(target.clone())
+                    .or_default()
+                    .insert(parent_reg_domain[&reg].clone());
             }
         }
 
@@ -7376,33 +7392,43 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            // Get the child port's expected domain
-            let child_domain = match child_port_domain.get(port_name) {
+            // Get the child port's expected domains
+            let child_domains = match child_port_domain.get(port_name) {
                 Some(d) => d,
                 None => continue, // Can't determine port's domain; skip
             };
 
-            // Map child domain to parent domain via clock connections
-            // Find which parent clock is connected to the child clock in this domain
-            let expected_parent_domain =
-                inst_clk_mapping
-                    .iter()
-                    .find_map(|(child_clk, parent_domain)| {
-                        if child_clk_domain.get(child_clk) == Some(child_domain) {
-                            Some(parent_domain.as_str())
-                        } else {
-                            None
-                        }
-                    });
-
-            let expected_parent_domain = match expected_parent_domain {
-                Some(d) => d,
-                None => continue,
+            // Get the connected signal's domains in the parent
+            let Some(sig_name) = conn_signal.get(port_name) else {
+                continue;
+            };
+            let Some(sig_domains) = parent_signal_domain.get(sig_name) else {
+                continue;
             };
 
-            // Get the connected signal's domain in the parent
-            if let Some(sig_name) = conn_signal.get(port_name) {
-                if let Some(sig_domain) = parent_signal_domain.get(sig_name) {
+            // Conservative for multi-domain ports and signals: every
+            // (signal domain, port domain) pair that disagrees is a crossing
+            // and is reported; none is dropped because another pair agrees.
+            for child_domain in child_domains {
+                // Map child domain to parent domain via clock connections
+                // Find which parent clock is connected to the child clock in this domain
+                let expected_parent_domain =
+                    inst_clk_mapping
+                        .iter()
+                        .find_map(|(child_clk, parent_domain)| {
+                            if child_clk_domain.get(child_clk) == Some(child_domain) {
+                                Some(parent_domain.as_str())
+                            } else {
+                                None
+                            }
+                        });
+
+                let expected_parent_domain = match expected_parent_domain {
+                    Some(d) => d,
+                    None => continue,
+                };
+
+                for sig_domain in sig_domains {
                     if sig_domain != expected_parent_domain {
                         self.errors.push(CompileError::general(
                             &format!(
@@ -7559,37 +7585,6 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => {}
-        }
-    }
-
-    /// Collect all identifier names read in comb statements.
-    fn collect_comb_stmt_reads(stmts: &[Stmt], out: &mut HashSet<String>) {
-        for stmt in stmts {
-            match stmt {
-                Stmt::Assign(a) => Self::collect_expr_reads(&a.value, out),
-                Stmt::IfElse(ie) => {
-                    Self::collect_expr_reads(&ie.cond, out);
-                    Self::collect_comb_stmt_reads(&ie.then_stmts, out);
-                    Self::collect_comb_stmt_reads(&ie.else_stmts, out);
-                }
-                Stmt::Match(m) => {
-                    Self::collect_expr_reads(&m.scrutinee, out);
-                    for arm in &m.arms {
-                        Self::collect_comb_stmt_reads(&arm.body, out);
-                    }
-                }
-                Stmt::Log(l) => {
-                    for arg in &l.args {
-                        Self::collect_expr_reads(arg, out);
-                    }
-                }
-                Stmt::For(f) => {
-                    Self::collect_comb_stmt_reads(&f.body, out);
-                }
-                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
-                    unreachable!("seq-only Stmt variant inside comb-context walker")
-                }
-            }
         }
     }
 
