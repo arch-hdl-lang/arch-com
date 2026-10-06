@@ -187,6 +187,8 @@ enum E   { A, B, }
 ```
 
 - `SysDomain` is built-in — no `domain SysDomain end domain SysDomain` needed
+- `domain SysDomain freq_mhz: N` (top-level or in a package) sets the built-in's frequency and never needs `use`; conflicting `freq_mhz` re-declarations are an error. An undeclared `Clock<D>` is an implicit domain with no frequency
+- Package names are visible in the package's own file and in files that `use` it — nowhere else
 - `Bool` and `UInt<1>` are identical — freely assignable, bitwise ops on 1-bit return Bool
 - `Bit` is an alias for `UInt<1>`
 - No current `Future<T>` / `await` / user-visible `Token<T>` API. TLM concurrency is expressed with worker threads, `generate_for`, direct-call `fork/join` cohorts, and RHS-fork groups.

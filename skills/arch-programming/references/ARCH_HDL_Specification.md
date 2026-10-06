@@ -2126,6 +2126,13 @@ Every Clock signal in Arch carries a domain tag as part of its type. The compile
 
 **Built-in domain: `SysDomain`.** The domain `SysDomain` is always available without an explicit declaration. It is the conventional default clock domain. You may still declare `domain SysDomain freq_mhz: 200 end domain SysDomain` to set a specific frequency, but the domain name itself is pre-registered and can be used in `Clock<SysDomain>` without any domain block.
 
+**Domain name resolution.**
+
+- **Built-in.** `SysDomain` is visible in every source file. Declaring it, at the top level or inside a `package`, only supplies attributes such as `freq_mhz`, which replace the built-in defaults. A declaration never makes `SysDomain` less visible: it needs no `use`, even when the declaring package is not imported.
+- **Declared.** A top-level `domain` is visible file-wide. A domain declared inside a `package` follows package visibility (§29.2): it is visible in the file that declares the package and in files that `use` it. In any other file it is an error (*"undefined name"*).
+- **Re-declaration.** A domain may be declared more than once (multi-file projects commonly repeat one). The declarations merge: a declared `freq_mhz` fills in one an earlier declaration omitted. Two *different* `freq_mhz` values for the same domain are an error (*"conflicting `freq_mhz` for domain ..."*), never a silent first-wins.
+- **Implicit.** A `Clock<D>` naming a domain that is declared nowhere is accepted as an *implicit domain* with no attributes. It still takes full part in clock-domain tracking and CDC checking. It just has no `freq_mhz`, so for example the multi-clock simulation `tick()` driver, which needs every clock's frequency, is not generated.
+
 +-------------------------------------------------------------------------------+
 | *domains.arch*                                                                |
 |                                                                               |
@@ -9579,7 +9586,7 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 
 **29.1 The package Construct**
 
-A **package** groups related type definitions, constants, and functions into a reusable namespace. Packages follow the universal block grammar:
+A **package** groups related type definitions, constants, and functions into a reusable unit. Its names are published unqualified, so it is a grouping rather than a qualified namespace (§3.12). Visibility is still scoped to the declaring file and to files that `use` it (§29.2). Packages follow the universal block grammar:
 
 > **package** PkgName
 >
@@ -9633,6 +9640,8 @@ A consumer file imports a package with the **use** statement at file scope (befo
 > **use** PkgName;
 
 This makes all names defined inside the package available unqualified in the importing file. Multiple `use` statements are allowed.
+
+**Visibility rule.** A package's names are visible in exactly two places: the source file that declares the package, which needs no `use` (§3.12), and every file that has `use PkgName;`. In any other file they are undefined, even when the package's file is on the same command line. The only exception is the built-in domain `SysDomain`, which is visible everywhere even when a package declares it (§5.1).
 
 **29.3 File Resolution**
 

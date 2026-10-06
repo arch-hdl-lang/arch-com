@@ -8717,10 +8717,6 @@ end module MissingDomainUse
         "expected missing package import to reject `Payload`:\n{stderr}"
     );
     assert!(
-        stderr.matches("Payload").count() >= 2,
-        "expected both same-file and cross-file consumers without `use` to reject `Payload`:\n{stderr}"
-    );
-    assert!(
         stderr.contains("unknown function `pass`"),
         "expected missing package import to reject `pass`:\n{stderr}"
     );
@@ -8735,6 +8731,192 @@ end module MissingDomainUse
     assert!(
         stderr.contains("undefined") && stderr.contains("PkgDomain"),
         "expected missing package import to reject `PkgDomain`:\n{stderr}"
+    );
+
+    // A package is visible in its own file without `use` (spec §3.12/§29.2):
+    // `SameFileMissingUse` lives in Pkg.arch, so checking that file alone
+    // must succeed.
+    let same_file = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&pkg)
+        .current_dir(td.path())
+        .output()
+        .expect("run same-file check");
+    assert!(
+        same_file.status.success(),
+        "a package member must be visible in the file that declares the package:\n{}",
+        String::from_utf8_lossy(&same_file.stderr)
+    );
+}
+
+/// Write `files` into a fresh tempdir and run `arch check` on all of them.
+fn check_package_domain_files(files: &[(&str, &str)]) -> std::process::Output {
+    let td = tempfile::tempdir().expect("tempdir");
+    let paths: Vec<_> = files
+        .iter()
+        .map(|(name, src)| {
+            let path = td.path().join(name);
+            std::fs::write(&path, src).expect("write source");
+            path
+        })
+        .collect();
+    std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("check")
+        .args(&paths)
+        .current_dir(td.path())
+        .output()
+        .expect("run arch check")
+}
+
+const SYS_DOMAIN_CONSUMER: &str = r#"module Consumer
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= d;
+  end seq
+  comb
+    q = r;
+  end comb
+end module Consumer
+"#;
+
+#[test]
+fn test_package_declared_sys_domain_does_not_hide_builtin() {
+    // Declaring the built-in `SysDomain` inside a package only supplies its
+    // attributes; it must not make `SysDomain` invisible to a file that does
+    // not `use` the package (it is visible there with no declaration at all).
+    let pkg = "package Pkg\n  domain SysDomain\n    freq_mhz: 100\n  end domain SysDomain\nend package Pkg\n";
+    let out =
+        check_package_domain_files(&[("Pkg.arch", pkg), ("Consumer.arch", SYS_DOMAIN_CONSUMER)]);
+    assert!(
+        out.status.success(),
+        "package-declared SysDomain must stay visible without `use`:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let same_file = format!("{pkg}\n{SYS_DOMAIN_CONSUMER}");
+    let out = check_package_domain_files(&[("Same.arch", &same_file)]);
+    assert!(
+        out.status.success(),
+        "package-declared SysDomain must stay visible in the same file:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_same_file_package_domain_and_struct_visible_without_use() {
+    let src = r#"package Pkg
+  domain FastDomain
+    freq_mhz: 500
+  end domain FastDomain
+
+  struct Pair
+    x: UInt<4>;
+    y: UInt<4>;
+  end struct Pair
+end package Pkg
+
+module Consumer
+  port clk: in Clock<FastDomain>;
+  port a: in Pair;
+  port b: out Pair;
+  comb
+    b = a;
+  end comb
+end module Consumer
+"#;
+    let out = check_package_domain_files(&[("Consumer.arch", src)]);
+    assert!(
+        out.status.success(),
+        "same-file package members must be visible without `use`:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_conflicting_domain_freq_is_an_error() {
+    let a = "domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n";
+    let b = "package Pkg\n  domain SysDomain\n    freq_mhz: 300\n  end domain SysDomain\nend package Pkg\n";
+    let out = check_package_domain_files(&[
+        ("A.arch", a),
+        ("Pkg.arch", b),
+        ("Consumer.arch", SYS_DOMAIN_CONSUMER),
+    ]);
+    assert!(
+        !out.status.success(),
+        "conflicting freq_mhz must be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("conflicting `freq_mhz` for domain `SysDomain`"),
+        "expected a conflicting-frequency diagnostic:\n{stderr}"
+    );
+    // Repeating the same frequency stays legal.
+    let out = check_package_domain_files(&[
+        ("A.arch", a),
+        ("B.arch", a),
+        ("Consumer.arch", SYS_DOMAIN_CONSUMER),
+    ]);
+    assert!(
+        out.status.success(),
+        "re-declaring a domain with the same freq_mhz must be accepted:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_declared_sys_domain_freq_reaches_multi_clock_sim() {
+    // `domain SysDomain freq_mhz: N` sets the built-in's frequency (spec
+    // §5.1). With every clock frequency known, the sim model gets a
+    // generated `tick()` driver; a dropped override would suppress it.
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("Two.arch");
+    std::fs::write(
+        &src,
+        r#"domain SysDomain
+  freq_mhz: 200
+end domain SysDomain
+
+domain BDom
+  freq_mhz: 100
+end domain BDom
+
+module Two
+  port ca: in Clock<SysDomain>;
+  port cb: in Clock<BDom>;
+  port rst: in Reset<Sync>;
+  port x: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on ca rising
+    r <= r +% 1;
+  end seq
+  comb
+    x = r;
+  end comb
+end module Two
+"#,
+    )
+    .expect("write Two.arch");
+    let outdir = td.path().join("sim");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&src)
+        .arg("-o")
+        .arg(&outdir)
+        .current_dir(td.path())
+        .output()
+        .expect("run arch sim");
+    assert!(
+        out.status.success(),
+        "arch sim failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cpp = std::fs::read_to_string(outdir.join("VTwo.cpp")).expect("read VTwo.cpp");
+    assert!(
+        cpp.contains("void VTwo::tick()") && cpp.contains("ca: half-period = 2500 ps (200 MHz)"),
+        "SysDomain freq_mhz override must reach the multi-clock tick() driver:\n{cpp}"
     );
 }
 
