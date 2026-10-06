@@ -4,6 +4,8 @@ package PkgTest
   end domain SysDomain
 end package PkgTest
 
+use PkgTest;
+
 bus BusAxi4
   param ADDR_W: const = 64;
   param DATA_W: const = 64;
