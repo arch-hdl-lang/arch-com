@@ -256,8 +256,13 @@ impl<'a> TypeChecker<'a> {
                 let in_scope = scope
                     .map(|range| range.contains(&item.span().start))
                     .unwrap_or(self.file_scopes.is_empty());
+                // A package is visible in the file that declares it as well as
+                // in files that `use` it (spec §3.12, §29.2) — the same rule
+                // `type_alias::packages_for_span` applies to package aliases.
                 match item {
                     Item::Use(u) if in_scope => Some(u.name.name.clone()),
+                    Item::Package(p) if in_scope => Some(p.name.name.clone()),
+                    Item::ExternPackage(p) if in_scope => Some(p.name.name.clone()),
                     _ => None,
                 }
             })

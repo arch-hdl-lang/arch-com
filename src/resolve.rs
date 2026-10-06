@@ -440,15 +440,74 @@ impl SymbolTable {
     }
 }
 
+/// Domain names that are pre-registered and visible in every source file
+/// (spec §5.1). A declaration of one only supplies attributes; it never
+/// makes the name package-owned, so `use` visibility does not apply to it.
+pub const BUILTIN_DOMAINS: &[&str] = &["SysDomain"];
+
+/// Register a `domain` declaration (top level or inside a package).
+///
+/// Re-declaring a domain is allowed (multi-file projects commonly repeat
+/// one) and the attributes merge: a declared `freq_mhz` fills in one the
+/// existing entry lacks — this is how `domain SysDomain freq_mhz: N` sets the
+/// built-in's frequency — while two different declared frequencies for the
+/// same domain are an error rather than a silent first-wins.
+fn register_domain(table: &mut SymbolTable, errors: &mut Vec<CompileError>, d: &DomainDecl) {
+    let freq_mhz = d
+        .fields
+        .iter()
+        .find(|f| f.name.name == "freq_mhz")
+        .and_then(|f| {
+            if let ExprKind::Literal(LitKind::Dec(v)) = &f.value.kind {
+                Some(*v)
+            } else {
+                None
+            }
+        });
+    match table.globals.get_mut(&d.name.name) {
+        Some((Symbol::Domain(info), span)) => match (info.freq_mhz, freq_mhz) {
+            (None, Some(_)) => {
+                info.freq_mhz = freq_mhz;
+                *span = d.name.span;
+            }
+            (Some(prev), Some(new)) if prev != new => {
+                errors.push(CompileError::general(
+                    &format!(
+                        "conflicting `freq_mhz` for domain `{}`: {} here, {} in another declaration of it",
+                        d.name.name, new, prev
+                    ),
+                    d.name.span,
+                ));
+            }
+            _ => {}
+        },
+        Some(_) => errors.push(CompileError::duplicate(&d.name.name, d.name.span)),
+        None => {
+            table.globals.insert(
+                d.name.name.clone(),
+                (
+                    Symbol::Domain(DomainInfo {
+                        name: d.name.name.clone(),
+                        freq_mhz,
+                    }),
+                    d.name.span,
+                ),
+            );
+        }
+    }
+}
+
 pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError>> {
     let mut table = SymbolTable::new();
     let mut errors = Vec::new();
 
     // Record package ownership independently of registration below. ARCH
-    // packages publish bare names, but those names are visible only in source
-    // files that declare `use PackageName;`. Keeping the ownership metadata
-    // beside the existing flat table lets type checking enforce that boundary
-    // without changing codegen and simulation's resolved-symbol representation.
+    // packages publish bare names, but those names are visible only in the
+    // source file that declares the package and in files that declare
+    // `use PackageName;`. Built-in domains are never package-owned. Keeping
+    // the ownership metadata beside the existing flat table lets type checking
+    // enforce that boundary without changing codegen and simulation's
+    // resolved-symbol representation.
     for item in &source_file.items {
         match item {
             Item::Package(pkg) => {
@@ -463,6 +522,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     .chain(pkg.functions.iter().map(|x| &x.name.name))
                     .chain(pkg.params.iter().map(|x| &x.name.name))
                     .chain(pkg.aliases.iter().map(|x| &x.name.name))
+                    .filter(|name| !BUILTIN_DOMAINS.contains(&name.as_str()))
                 {
                     table
                         .package_members
@@ -484,17 +544,20 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
         }
     }
 
-    // Built-in domain: SysDomain is always available (can be overridden by user)
-    table.globals.insert(
-        "SysDomain".to_string(),
-        (
-            Symbol::Domain(DomainInfo {
-                name: "SysDomain".to_string(),
-                freq_mhz: None,
-            }),
-            Span { start: 0, end: 0 },
-        ),
-    );
+    // Built-in domains are always available; a user declaration supplies
+    // attributes such as `freq_mhz` (see `register_domain`).
+    for name in BUILTIN_DOMAINS {
+        table.globals.insert(
+            name.to_string(),
+            (
+                Symbol::Domain(DomainInfo {
+                    name: name.to_string(),
+                    freq_mhz: None,
+                }),
+                Span { start: 0, end: 0 },
+            ),
+        );
+    }
 
     // Build the set of names that have a real (non-interface) definition
     // in this compilation unit. Interface stubs from `.archi` files for
@@ -528,36 +591,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
             continue;
         }
         match item {
-            Item::Domain(d) => {
-                // Allow duplicate domain definitions (common in multi-file projects)
-                if let Some((Symbol::Domain(_), _)) = table.globals.get(&d.name.name) {
-                    // Same domain re-declared — silently accept
-                } else if table.globals.contains_key(&d.name.name) {
-                    errors.push(CompileError::duplicate(&d.name.name, d.name.span));
-                } else {
-                    let freq_mhz = d
-                        .fields
-                        .iter()
-                        .find(|f| f.name.name == "freq_mhz")
-                        .and_then(|f| {
-                            if let ExprKind::Literal(LitKind::Dec(v)) = &f.value.kind {
-                                Some(*v)
-                            } else {
-                                None
-                            }
-                        });
-                    table.globals.insert(
-                        d.name.name.clone(),
-                        (
-                            Symbol::Domain(DomainInfo {
-                                name: d.name.name.clone(),
-                                freq_mhz,
-                            }),
-                            d.name.span,
-                        ),
-                    );
-                }
-            }
+            Item::Domain(d) => register_domain(&mut table, &mut errors, d),
             Item::Struct(s) => {
                 if table.globals.contains_key(&s.name.name) {
                     errors.push(CompileError::duplicate(&s.name.name, s.name.span));
@@ -861,33 +895,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     );
                     // Register contained items as globals
                     for d in &pkg.domains {
-                        if let Some((Symbol::Domain(_), _)) = table.globals.get(&d.name.name) {
-                            // Same domain re-declared — silently accept
-                        } else if table.globals.contains_key(&d.name.name) {
-                            errors.push(CompileError::duplicate(&d.name.name, d.name.span));
-                        } else {
-                            let freq_mhz = d
-                                .fields
-                                .iter()
-                                .find(|f| f.name.name == "freq_mhz")
-                                .and_then(|f| {
-                                    if let ExprKind::Literal(LitKind::Dec(v)) = &f.value.kind {
-                                        Some(*v)
-                                    } else {
-                                        None
-                                    }
-                                });
-                            table.globals.insert(
-                                d.name.name.clone(),
-                                (
-                                    Symbol::Domain(DomainInfo {
-                                        name: d.name.name.clone(),
-                                        freq_mhz,
-                                    }),
-                                    d.name.span,
-                                ),
-                            );
-                        }
+                        register_domain(&mut table, &mut errors, d);
                     }
                     for e in &pkg.enums {
                         if table.globals.contains_key(&e.name.name) {
