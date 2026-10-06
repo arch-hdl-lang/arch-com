@@ -1,0 +1,25 @@
+//! Regression fixture for arch#1058: non-power-of-two FIFO DEPTH.
+//!
+//! DEPTH=3 latency-1 (registered first-word-fall-through) sync FIFO.
+//! Same pre-fix pow2 pointer assumption as the latency-0 path, exercised
+//! through the registered FWFT / BRAM-inference backend.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+fifo FifoCapD3L1
+  latency 1;
+  param DEPTH: const = 3;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+  port full: out Bool;
+  port empty: out Bool;
+end fifo FifoCapD3L1
