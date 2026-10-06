@@ -4093,20 +4093,17 @@ fn run_check_multi_opts_with_thread_map_and_params(
         apply_top_param_overrides(&mut parsed_ast, overrides)?;
     }
 
-    // Resolve module-scope `type Name = ...;` aliases by inlining them at
-    // every use site. Runs before elaboration so downstream passes see
-    // aliases as if hand-inlined.
+    // Elaborate (alias substitution, then generate expansion). The source
+    // file ranges must reach the alias pass so a package alias is substituted
+    // only in files that can see its package; an unscoped pass would inline
+    // it into files that never `use` the package.
     let source_file_scopes: Vec<std::ops::Range<usize>> = ms
         .segments
         .iter()
         .map(|(start, end, _, _)| *start..*end)
         .collect();
-    let parsed_ast =
-        arch::type_alias::resolve_type_aliases_with_file_scopes(parsed_ast, &source_file_scopes)
-            .map_err(|errs| ms.report_errors(errs))?;
-
-    // Elaborate (expand generate blocks)
-    let ast = elaborate::elaborate(parsed_ast).map_err(|errs| ms.report_errors(errs))?;
+    let ast = elaborate::elaborate_with_file_scopes(parsed_ast, &source_file_scopes)
+        .map_err(|errs| ms.report_errors(errs))?;
 
     // Expand `auto;` inside inst bodies into ordinary connections. Runs
     // here — after elaboration, before every lowering — because at this

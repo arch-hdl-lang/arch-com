@@ -335,6 +335,63 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// Reject package-only names (domains, structs/enums/buses, aliases, and
+    /// params in width expressions) that `typ` mentions but the current file
+    /// cannot see (spec §29.2). `check_module` gets this through
+    /// `resolve_type_expr`; the other constructs never resolve their port
+    /// types, so [`Self::check_item_port_visibility`] runs this instead.
+    fn check_hidden_package_type(&mut self, typ: &TypeExpr) {
+        match typ {
+            TypeExpr::Clock(ident) | TypeExpr::Named(ident) => {
+                if self.package_member_hidden(&ident.name) {
+                    self.errors
+                        .push(CompileError::undefined(&ident.name, ident.span));
+                }
+            }
+            TypeExpr::UInt(e) | TypeExpr::SInt(e) => self.check_hidden_package_expr(e),
+            TypeExpr::Vec(elem, size) => {
+                self.check_hidden_package_type(elem);
+                self.check_hidden_package_expr(size);
+            }
+            TypeExpr::ScaledVec(elem, size, scale) => {
+                self.check_hidden_package_type(elem);
+                self.check_hidden_package_expr(size);
+                self.check_hidden_package_type(scale);
+            }
+            _ => {}
+        }
+    }
+
+    /// Package visibility for the port boundary of a non-`module` construct:
+    /// `port` declarations, `ram` port-group signals, `ports[N]` arrays, and
+    /// `type` param defaults.
+    fn check_item_port_visibility(&mut self, item: &Item) {
+        if matches!(item, Item::Module(_)) {
+            return; // resolve_type_expr already enforces it for modules
+        }
+        let mut types: Vec<&TypeExpr> = item.ports().iter().map(|p| &p.ty).collect();
+        if let Item::Ram(r) = item {
+            types.extend(
+                r.port_groups
+                    .iter()
+                    .flat_map(|g| g.signals.iter().map(|p| &p.ty)),
+            );
+        }
+        types.extend(
+            item.port_arrays()
+                .into_iter()
+                .flat_map(|a| a.signals.iter().map(|p| &p.ty)),
+        );
+        for p in Self::item_params(item) {
+            if let ParamKind::Type(ty) = &p.kind {
+                self.check_hidden_package_type(ty);
+            }
+        }
+        for ty in types {
+            self.check_hidden_package_type(ty);
+        }
+    }
+
     fn check_hidden_package_expr(&mut self, expr: &Expr) {
         let mut names = HashSet::new();
         crate::comb_graph::collect_expr_idents(expr, &mut names);
@@ -364,6 +421,7 @@ impl<'a> TypeChecker<'a> {
                 &mut self.active_inst_output_nets,
                 Self::item_inst_output_nets(item),
             );
+            self.check_item_port_visibility(item);
             item.as_construct().typecheck(&mut self);
             self.active_params = saved_params;
             self.active_inst_output_nets = saved_nets;
