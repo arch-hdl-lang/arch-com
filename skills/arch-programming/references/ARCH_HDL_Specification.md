@@ -2695,6 +2695,8 @@ end thread Name
 
 **Multiple threads** in one module are declared independently; they all compile into the same `_ModuleName_threads` submodule and share one `always_ff` block to avoid multi-driver conflicts.
 
+That sharing is between threads only. A `reg` written by a `thread` must not also be written by a `seq` or `latch` block of the module (or driven by any other construct) — the thread's writes move into `_ModuleName_threads` while the `seq` block stays in the parent, so the two would be separate SV drivers. The single-driver rule applies (every signal has exactly one driver), and `arch check` reports a `has multiple drivers` error at the `seq` write. Give such a register one owner: write it from the threads only, or from one `seq` block only.
+
 **`generate_for` over threads:**
 
 ```

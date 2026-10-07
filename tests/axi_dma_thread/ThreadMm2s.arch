@@ -58,6 +58,8 @@ module ThreadMm2s
   // Control latches — owned by ArIssuer (reset via default when)
   reg total_xfers_r: UInt<16> reset rst => 0;
   reg burst_len_r:   UInt<8>  reset rst => 0;
+  // Run flag — owned by the run-control seq block below (single driver: a
+  // reg must not be written by both a thread and a seq block).
   reg active_r:      Bool     reset rst => false;
 
   // AR issuer state: xfer_ctr_r counts issued ARs; next_ar_addr_r is current address.
@@ -79,9 +81,13 @@ module ThreadMm2s
     push_data = r_data;
   end comb
 
-  // Completion handler — clears active when all responses received
+  // Run control — sets active on a start while idle (the same condition
+  // as the threads' `default when` soft-reset arm), clears it when all
+  // responses are received. The two are exclusive: all_done needs active_r.
   seq on clk rising
-    if all_done
+    if start and not active_r
+      active_r <= true;
+    elsif all_done
       active_r <= false;
     end if
   end seq
@@ -98,7 +104,6 @@ module ThreadMm2s
     default when start and not active_r
       total_xfers_r  <= total_xfers;
       burst_len_r    <= burst_len;
-      active_r       <= true;
       xfer_ctr_r     <= 0;
       next_ar_addr_r <= base_addr;
     end default
