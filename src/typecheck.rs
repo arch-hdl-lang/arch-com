@@ -7273,55 +7273,59 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Build the child module's port → domains map: the set of clock
-        // domains each port carries data in. Sets, not a single domain, so
-        // a port used in two domains keeps both — a single-valued map keeps
-        // whichever `insert` ran last, which makes detection depend on the
-        // order of seq blocks in the body.
-        let mut child_port_domain: HashMap<String, BTreeSet<String>> = HashMap::new();
+        // clock PORTS each port carries data on. We key by the child's clock
+        // *port name*, not its domain: two clock ports can share a declared
+        // domain yet be bound to different parent domains at the inst, so the
+        // domain alone cannot name a unique parent clock to map through (see
+        // #1064 — resolving a shared domain back to a parent clock was a
+        // `HashMap` coin-flip). Sets, not a single value, so a port used on
+        // two clocks keeps both — a single-valued map keeps whichever `insert`
+        // ran last, which makes detection depend on the order of seq blocks.
+        let mut child_port_clk: HashMap<String, BTreeSet<String>> = HashMap::new();
 
-        // Clock ports map to their own domain
-        for (clk_name, domain) in &child_clk_domain {
-            child_port_domain
+        // A clock port's own data clock is itself.
+        for clk_name in child_clk_domain.keys() {
+            child_port_clk
                 .entry(clk_name.clone())
                 .or_default()
-                .insert(domain.clone());
+                .insert(clk_name.clone());
         }
 
-        // Registers → the domain of the seq block that assigns them.
-        let mut child_reg_domain: HashMap<String, String> = HashMap::new();
+        // Registers → the clock port of the seq block that assigns them.
+        let mut child_reg_clk: HashMap<String, String> = HashMap::new();
         for body_item in &child_module.body {
             if let ModuleBodyItem::RegBlock(rb) = body_item {
-                if let Some(domain) = child_clk_domain.get(&rb.clock.name) {
+                if child_clk_domain.contains_key(&rb.clock.name) {
                     let mut assigned = HashSet::new();
                     Self::collect_stmt_targets(&rb.stmts, &mut assigned);
                     for name in assigned {
-                        child_reg_domain.insert(name, domain.clone());
+                        child_reg_clk.insert(name, rb.clock.name.clone());
                     }
                 }
             }
         }
 
-        // Comb-driven ports: the domains of the registers in the port's
+        // Comb-driven ports: the clock ports of the registers in the port's
         // OWN transitive fan-in — not of everything its comb block reads.
         let child_deps = Self::module_comb_deps(child_module);
         for p in &child_module.ports {
             if !child_deps.contains_key(&p.name.name) {
                 continue;
             }
-            for reg in Self::comb_reg_fanin(&p.name.name, &child_deps, &child_reg_domain) {
-                child_port_domain
+            for reg in Self::comb_reg_fanin(&p.name.name, &child_deps, &child_reg_clk) {
+                child_port_clk
                     .entry(p.name.name.clone())
                     .or_default()
-                    .insert(child_reg_domain[&reg].clone());
+                    .insert(child_reg_clk[&reg].clone());
             }
         }
 
         // Reset ports: if there's only one, it's shared; skip domain assignment.
-        // Input ports read in a seq block belong to that block's domain
-        // (every such domain, when several seq blocks read the port).
+        // Input ports read in a seq block belong to that block's clock
+        // (every such clock, when several seq blocks read the port).
         for body_item in &child_module.body {
             if let ModuleBodyItem::RegBlock(rb) = body_item {
-                if let Some(domain) = child_clk_domain.get(&rb.clock.name) {
+                if child_clk_domain.contains_key(&rb.clock.name) {
                     let mut reads = HashSet::new();
                     Self::collect_stmt_reads(&rb.stmts, &mut reads);
                     for read_name in &reads {
@@ -7330,10 +7334,10 @@ impl<'a> TypeChecker<'a> {
                             .iter()
                             .any(|p| p.name.name == *read_name && p.direction == Direction::In)
                         {
-                            child_port_domain
+                            child_port_clk
                                 .entry(read_name.clone())
                                 .or_default()
-                                .insert(domain.clone());
+                                .insert(rb.clock.name.clone());
                         }
                     }
                 }
@@ -7420,10 +7424,10 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            // Get the child port's expected domains
-            let child_domains = match child_port_domain.get(port_name) {
-                Some(d) => d,
-                None => continue, // Can't determine port's domain; skip
+            // Get the child port's sampling clock ports (sorted — BTreeSet).
+            let child_clks = match child_port_clk.get(port_name) {
+                Some(c) => c,
+                None => continue, // Can't determine port's clock; skip
             };
 
             // Get the connected signal's domains in the parent
@@ -7434,28 +7438,25 @@ impl<'a> TypeChecker<'a> {
                 continue;
             };
 
-            // Conservative for multi-domain ports and signals: every
-            // (signal domain, port domain) pair that disagrees is a crossing
+            // Resolve each sampling clock port to its (declared child domain,
+            // parent domain) directly — a single `get`, no iteration over the
+            // clock map, so the verdict is stable when two child clocks share
+            // a domain but bind to different parent domains (#1064). Collect
+            // the pairs into a sorted set so two distinct clock ports that map
+            // to the same parent domain do not emit a duplicate diagnostic.
+            let clk_pairs: BTreeSet<(&str, &str)> = child_clks
+                .iter()
+                .filter_map(|child_clk| {
+                    let child_domain = child_clk_domain.get(child_clk)?.as_str();
+                    let parent_domain = inst_clk_mapping.get(child_clk)?.as_str();
+                    Some((child_domain, parent_domain))
+                })
+                .collect();
+
+            // Conservative for multi-clock ports and signals: every
+            // (signal domain, port clock) pair that disagrees is a crossing
             // and is reported; none is dropped because another pair agrees.
-            for child_domain in child_domains {
-                // Map child domain to parent domain via clock connections
-                // Find which parent clock is connected to the child clock in this domain
-                let expected_parent_domain =
-                    inst_clk_mapping
-                        .iter()
-                        .find_map(|(child_clk, parent_domain)| {
-                            if child_clk_domain.get(child_clk) == Some(child_domain) {
-                                Some(parent_domain.as_str())
-                            } else {
-                                None
-                            }
-                        });
-
-                let expected_parent_domain = match expected_parent_domain {
-                    Some(d) => d,
-                    None => continue,
-                };
-
+            for (child_domain, expected_parent_domain) in &clk_pairs {
                 for sig_domain in sig_domains {
                     if sig_domain != expected_parent_domain {
                         self.errors.push(CompileError::general(

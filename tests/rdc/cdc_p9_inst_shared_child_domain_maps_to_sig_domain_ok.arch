@@ -1,0 +1,58 @@
+// P9 (ok): a child declares two clock ports in the SAME domain (`DC`) but the
+// parent binds them to DIFFERENT domains (clk_x<-DA, clk_y<-DB). Port `d` is
+// sampled on `clk_y`, which maps to the parent's DB. The connected signal `rb`
+// is a DB register, so there is NO clock crossing on `d`'s data path and the
+// design must type-check.
+//
+// Regression for #1064: `check_inst_cdc` resolved a child port's parent domain
+// by iterating a `HashMap` of clock ports to find the first whose *domain*
+// matched — nondeterministic when two clocks share a domain. The verdict flaked
+// between OK and a spurious crossing against DA. Keying by the specific clock
+// *port* `d` samples on (clk_y) makes the answer stable and correct.
+//
+// NOTE: whether binding two `Clock<DC>` ports to different parent domains should
+// itself be an error is a separate (maintainer) question, tracked on #1064; this
+// fixture only pins the data-connection check's determinism and correctness.
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+domain DC
+  freq_mhz: 300
+end domain DC
+module Sink
+  port clk_x: in Clock<DC>;
+  port clk_y: in Clock<DC>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg s: UInt<8> reset rst => 0;
+  reg t: UInt<8> reset rst => 0;
+  seq on clk_y rising
+    s <= d;
+  end seq
+  seq on clk_x rising
+    t <= t +% 1;
+  end seq
+  let q = s ^ t;
+end module Sink
+module Top
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port db: in UInt<8>;
+  port q: out UInt<8>;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_b rising
+    rb <= db;
+  end seq
+  inst s: Sink
+    clk_x <- clk_a;
+    clk_y <- clk_b;
+    rst <- rst;
+    d <- rb;
+    q -> q;
+  end inst s
+end module Top
