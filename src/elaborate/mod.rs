@@ -818,12 +818,26 @@ fn thread_stmt_span(stmt: &ThreadStmt) -> Span {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/// Single-source entry point: every package in `ast` is treated as being in
+/// the same file as every consumer. Multi-file callers must use
+/// [`elaborate_with_file_scopes`] so package visibility stays file-scoped.
 pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
-    // Substitute module-scope `type` aliases before any other pass sees the
-    // AST. Aliases are pure substitution — once resolved, downstream passes
-    // (typecheck / elaborate / codegen / sim) treat the AST as if the user
-    // had inlined the aliased types by hand.
-    let mut ast = crate::type_alias::resolve_type_aliases(ast)?;
+    elaborate_with_file_scopes(ast, &[])
+}
+
+/// `file_scopes` are the byte ranges of each original source file in a
+/// combined multi-file parse (empty for a single source).
+pub fn elaborate_with_file_scopes(
+    ast: SourceFile,
+    file_scopes: &[std::ops::Range<usize>],
+) -> Result<SourceFile, Vec<CompileError>> {
+    // Substitute `type` aliases before any other pass sees the AST. Aliases
+    // are pure substitution — once resolved, downstream passes (typecheck /
+    // elaborate / codegen / sim) treat the AST as if the user had inlined the
+    // aliased types by hand. A package alias is substituted only where its
+    // package is visible (spec §29.2); elsewhere the name stays unresolved
+    // and typecheck reports it as undefined.
+    let mut ast = crate::type_alias::resolve_type_aliases_with_file_scopes(ast, file_scopes)?;
 
     // Context-typed float literals (arch#622) + the BF16 constant-fold fixes
     // (arch#620/#623/#624): a bare float literal sitting in any known-BF16

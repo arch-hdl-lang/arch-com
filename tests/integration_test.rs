@@ -41862,3 +41862,123 @@ end synchronizer S
         );
     }
 }
+
+const VIS_PKG: &str = r#"package Q
+  domain QDom
+    freq_mhz: 100
+  end domain QDom
+
+  struct Pair
+    x: UInt<4>;
+    y: UInt<4>;
+  end struct Pair
+
+  type Word = UInt<8>;
+end package Q
+"#;
+
+/// A fifo whose clock domain and element type come from package `Q`.
+fn vis_fifo(dom: &str, elem: &str) -> String {
+    format!(
+        r#"fifo Fq
+  param DEPTH: const = 4;
+  param T: type = {elem};
+  port clk: in Clock<{dom}>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo Fq
+"#
+    )
+}
+
+#[test]
+fn test_package_alias_requires_use_across_files() {
+    // elaborate() used to re-run alias substitution without file scopes,
+    // substituting a package alias into a file that never `use`s it.
+    let consumer = "module Hc\n  port a: in Word;\n  port b: out Word;\n  comb\n    b = a;\n  end comb\nend module Hc\n";
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Hc.arch", consumer)]);
+    assert!(
+        !out.status.success(),
+        "package alias must not leak across files"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("undefined name: `Word`"),
+        "expected `Word` to be undefined without `use Q;`:\n{stderr}"
+    );
+    let with_use = format!("use Q;\n\n{consumer}");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Hc.arch", &with_use)]);
+    assert!(
+        out.status.success(),
+        "package alias must resolve with `use`:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_non_module_construct_ports_honor_package_visibility() {
+    // Only `module` used to resolve port types, so every other construct
+    // accepted package-only names from a file that never `use`s the package.
+    let fifo_dom = vis_fifo("QDom", "UInt<8>");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Fq.arch", &fifo_dom)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("undefined name: `QDom`"),
+        "fifo Clock<QDom> must be undefined without `use Q;`:\n{stderr}"
+    );
+    let fifo_ty = vis_fifo("SysDomain", "Pair");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Fq.arch", &fifo_ty)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("undefined name: `Pair`"),
+        "fifo `param T: type = Pair` must be undefined without `use Q;`:\n{stderr}"
+    );
+    let ram = r#"ram Rm
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 4;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports rd_port
+    en:   in Bool;
+    addr: in UInt<2>;
+    data: out Pair;
+  end ports rd_port
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<2>;
+    data: in T;
+  end ports wr_port
+end ram Rm
+"#;
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Rm.arch", ram)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("undefined name: `Pair`"),
+        "ram port-group `Pair` must be undefined without `use Q;`:\n{stderr}"
+    );
+
+    // With `use`, or with the package in the same file, all of it resolves.
+    let with_use = format!("use Q;\n\n{fifo_dom}");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Fq.arch", &with_use)]);
+    assert!(
+        out.status.success(),
+        "fifo must accept package names with `use`:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let same_file = format!("{VIS_PKG}\n{}", vis_fifo("QDom", "Pair"));
+    let out = check_package_domain_files(&[("Same.arch", &same_file)]);
+    assert!(
+        out.status.success(),
+        "fifo must accept same-file package names:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
