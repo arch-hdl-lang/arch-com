@@ -26105,6 +26105,67 @@ fn cdc_p8_inst_child_input_two_domains_fail() {
     }
 }
 
+// P9: a child with two clock ports in ONE declared domain, bound to two
+// DIFFERENT parent domains. `check_inst_cdc` must resolve each data port's
+// parent domain through the specific clock the port is sampled on — not by
+// searching a `HashMap` of clocks for the first whose domain matches, which was
+// a per-process coin flip (#1064).
+
+#[test]
+fn cdc_p9_inst_shared_child_domain_maps_to_sig_domain_ok() {
+    // `d` sampled on clk_y (-> parent DB); signal `rb` is DB: no crossing.
+    let src = std::fs::read_to_string(
+        "tests/rdc/cdc_p9_inst_shared_child_domain_maps_to_sig_domain_ok.arch",
+    )
+    .expect("read P9-ok");
+    assert_rdc_ok("P9-ok", &src);
+}
+
+#[test]
+fn cdc_p9_inst_shared_child_domain_crosses_fail() {
+    // Same shape, but `d` sampled on clk_x (-> parent DA); signal `rb` is DB:
+    // a real DA<-DB crossing, which must be reported.
+    let src =
+        std::fs::read_to_string("tests/rdc/cdc_p9_inst_shared_child_domain_crosses_fail.arch")
+            .expect("read P9-fail");
+    assert_rdc_fails(
+        "P9-fail",
+        &src,
+        &[
+            "CDC violation at instance `s`: signal `rb` (domain `DB`)",
+            "port `d` which operates in domain `DC` (mapped to parent domain `DA`)",
+        ],
+    );
+}
+
+#[test]
+fn cdc_p9_inst_shared_child_domain_verdict_is_deterministic() {
+    // `HashMap` iteration order is seeded per process, so a single in-process
+    // check cannot observe the #1064 flake — it only surfaces across separate
+    // processes. Invoke the compiler binary repeatedly and assert every run
+    // agrees. On the pre-fix binary the `_ok` design flipped between OK and a
+    // spurious crossing (observed ~50/50 over 30 runs); the fix pins it to OK.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let fixture = "tests/rdc/cdc_p9_inst_shared_child_domain_maps_to_sig_domain_ok.arch";
+    const RUNS: usize = 24;
+    let mut oks = 0usize;
+    for _ in 0..RUNS {
+        let out = std::process::Command::new(arch_bin)
+            .arg("check")
+            .arg(fixture)
+            .output()
+            .expect("run arch check");
+        if out.status.success() {
+            oks += 1;
+        }
+    }
+    assert_eq!(
+        oks, RUNS,
+        "#1064: inst-CDC verdict is not deterministic — {oks}/{RUNS} runs reported OK \
+         (expected all {RUNS}); the shared-domain child clock is being resolved by hash order"
+    );
+}
+
 #[test]
 fn cdc_p5_multibit_ff_synchronizer_warns() {
     // `kind ff` is a two-flop synchroniser: safe for a single bit, unsafe

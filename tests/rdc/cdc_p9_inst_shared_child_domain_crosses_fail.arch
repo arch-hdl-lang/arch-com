@@ -1,0 +1,52 @@
+// P9 (fail): same shape as the `_ok` sibling, but port `d` is now sampled on
+// `clk_x`, which the parent binds to DA. The connected signal `rb` is a DB
+// register, so `d`'s data path IS a real DA<-DB clock crossing and must be
+// rejected.
+//
+// Paired with the `_ok` fixture this proves the #1064 fix keys off the specific
+// sampling clock in BOTH directions: moving the `d` read from clk_y to clk_x
+// flips the verdict from clean to a crossing. On the pre-fix binary this
+// verdict was a `HashMap`-order coin flip (false negative on some runs).
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+domain DC
+  freq_mhz: 300
+end domain DC
+module Sink
+  port clk_x: in Clock<DC>;
+  port clk_y: in Clock<DC>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg s: UInt<8> reset rst => 0;
+  reg t: UInt<8> reset rst => 0;
+  seq on clk_x rising
+    s <= d;
+  end seq
+  seq on clk_y rising
+    t <= t +% 1;
+  end seq
+  let q = s ^ t;
+end module Sink
+module Top
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port db: in UInt<8>;
+  port q: out UInt<8>;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_b rising
+    rb <= db;
+  end seq
+  inst s: Sink
+    clk_x <- clk_a;
+    clk_y <- clk_b;
+    rst <- rst;
+    d <- rb;
+    q -> q;
+  end inst s
+end module Top
