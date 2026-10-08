@@ -789,6 +789,7 @@ end module M
 - `thread once` — FSM holds in terminal state instead of looping back to S0
 - `generate_for i in 0..N-1 / thread T_i … end thread T_i / end generate_for` — N identical threads
 - Multiple threads in one module share one `always_ff` — no multi-driver conflicts
+- A `reg` written by a thread must NOT also be written by a `seq`/`latch` block — multi-driver compile error (give it one owner)
 - Thread-driven `reg` declarations are **automatically** lifted to the `_ModuleName_threads` submodule
 
 **Lock arbiter policy** selected via `mutex<...>` / `semaphore<N, ...>` on the `resource` decl:

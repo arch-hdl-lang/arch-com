@@ -33258,6 +33258,170 @@ fn has_multi_driver_error(source: &str, signal: &str) -> bool {
     }
 }
 
+// ── Issue #1063: inst output vs seq / latch / let drivers ─────────────────
+// `seq`/`latch` targets are compared only against `inst` outputs (seq-vs-seq
+// stays deferred, see `signal_flow::collect_module_drivers`); a `let` is a
+// continuous driver like a `comb` block.
+
+/// Child module shared by the #1063 tests: one registered output `oa`, one
+/// input `ib`.
+const MD1063_SRC: &str = r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+module Src
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port ib: in UInt<8>;
+  port oa: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= r +% ib;
+  end seq
+  let oa = r;
+end module Src
+"#;
+
+fn md1063_top(decl_and_driver: &str, conn: &str) -> String {
+    format!(
+        r#"{MD1063_SRC}
+module Top
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port xb: in UInt<8>;
+  port q: out UInt<8>;
+{decl_and_driver}
+  inst s: Src
+    clk <- clk;
+    rst <- rst;
+    {conn}
+  end inst s
+  let q = cb;
+end module Top
+"#
+    )
+}
+
+#[test]
+fn test_multi_driver_inst_output_and_seq_errors() {
+    let src = md1063_top(
+        "  reg cb: UInt<8> reset rst => 0;\n  seq on clk rising\n    cb <= xb;\n  end seq",
+        "ib <- xb;\n    oa -> cb;",
+    );
+    assert!(
+        has_multi_driver_error(&src, "cb"),
+        "inst output + seq write on one reg is two SV drivers (#1063)"
+    );
+}
+
+#[test]
+fn test_multi_driver_inst_output_and_let_errors() {
+    let src = md1063_top("  let cb: UInt<8> = xb;", "ib <- xb;\n    oa -> cb;");
+    assert!(
+        has_multi_driver_error(&src, "cb"),
+        "inst output + `let` on one name is two continuous drivers (#1063)"
+    );
+}
+
+#[test]
+fn test_multi_driver_inst_output_and_latch_errors() {
+    let src = md1063_top(
+        "  reg cb: UInt<8>;\n  latch on en\n    cb <= xb;\n  end latch",
+        "ib <- xb;\n    oa -> cb;",
+    );
+    assert!(
+        has_multi_driver_error(&src, "cb"),
+        "inst output + latch write on one reg is two SV drivers (#1063)"
+    );
+}
+
+#[test]
+fn test_multi_driver_arrow_into_child_input_is_not_a_driver() {
+    // `ib -> cb` names a child INPUT: the SV port map `.ib(cb)` only reads
+    // `cb`, so the seq block stays its single driver. (The arrow/direction
+    // mismatch itself is #1026's to reject, not the multi-driver check's.)
+    let src = md1063_top(
+        "  reg cb: UInt<8> reset rst => 0;\n  seq on clk rising\n    cb <= xb;\n  end seq\n  wire w: UInt<8>;",
+        "ib -> cb;\n    oa -> w;",
+    );
+    let r = typecheck_source(&src);
+    assert!(
+        r.is_ok(),
+        "`->` into a child input port must not count as a driver: {:?}",
+        r.err()
+    );
+}
+
+#[test]
+fn test_multi_driver_thread_and_seq_same_reg_errors() {
+    // A reg written by a `thread` AND a separate `seq` block is illegal (one
+    // driver per signal). Thread lowering moves the thread's writes into the
+    // generated `_<Mod>_threads` child, so without this check the emitted SV
+    // drives the reg from the child's output and the parent's always_ff.
+    let source = r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+module M
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port stop: in Bool;
+  port busy: out Bool;
+  reg active_r: Bool reset rst => false;
+  seq on clk rising
+    if stop
+      active_r <= false;
+    end if
+  end seq
+  thread T on clk rising, rst high
+    wait until go;
+    active_r <= true;
+  end thread T
+  let busy = active_r;
+end module M
+"#;
+    assert!(
+        has_multi_driver_error(source, "active_r"),
+        "thread + seq co-driving one reg must be a multi-driver error"
+    );
+}
+
+#[test]
+fn test_multi_driver_two_threads_same_reg_no_error() {
+    // Control: two THREADS sharing a reg is legal — both lower into the one
+    // `_<Mod>_threads` child and share its always_ff.
+    let source = r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+module M
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port stop: in Bool;
+  port busy: out Bool;
+  reg active_r: Bool reset rst => false;
+  thread A on clk rising, rst high
+    wait until go;
+    active_r <= true;
+  end thread A
+  thread B on clk rising, rst high
+    wait until stop;
+    active_r <= false;
+  end thread B
+  let busy = active_r;
+end module M
+"#;
+    let r = typecheck_source(source);
+    assert!(
+        r.is_ok(),
+        "two threads sharing a reg is legal: {:?}",
+        r.err()
+    );
+}
+
 /// Repro C2: two separate `comb` blocks driving the same output wire.
 /// Each `comb` becomes a distinct `always_comb` in SV — a genuine multi-driver.
 #[test]

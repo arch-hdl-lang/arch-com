@@ -11,6 +11,27 @@ use crate::lexer::Span;
 /// and target) of a bus wire have `ConnectDir::Output` connections but
 /// drive *disjoint* sets of flat signals, so no real conflict exists.
 fn is_bus_port_in_child(module_name: &str, port_name: &str, source: &SourceFile) -> bool {
+    child_port(module_name, port_name, source)
+        .map(|p| p.bus_info.is_some())
+        .unwrap_or(false)
+}
+
+/// Returns true when the named module/fsm in `source` declares `port_name`
+/// as an INPUT.  An `->` connection to such a port drives nothing in the
+/// emitted SV (the port map is just a read of the parent signal), so it
+/// must not count as a driver.  The arrow/direction mismatch itself is a
+/// separate, currently unchecked defect (issue #1026 row 3).
+fn is_input_port_in_child(module_name: &str, port_name: &str, source: &SourceFile) -> bool {
+    child_port(module_name, port_name, source)
+        .map(|p| p.bus_info.is_none() && p.direction == Direction::In)
+        .unwrap_or(false)
+}
+
+fn child_port<'a>(
+    module_name: &str,
+    port_name: &str,
+    source: &'a SourceFile,
+) -> Option<&'a PortDecl> {
     source
         .items
         .iter()
@@ -20,13 +41,24 @@ fn is_bus_port_in_child(module_name: &str, port_name: &str, source: &SourceFile)
             _ => None,
         })
         .and_then(|ports| ports.iter().find(|p| p.name.name == port_name))
-        .map(|p| p.bus_info.is_some())
-        .unwrap_or(false)
+}
+
+/// What kind of block a [`DriveEntry`] comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DriveKind {
+    /// A `comb` block or a `let` binding — a continuous driver.
+    Comb,
+    /// An `inst` output connection — a continuous driver.
+    Inst,
+    /// A `seq` or `latch` block. Compared ONLY against `Inst` drivers; see
+    /// [`check_multi_driver`].
+    Seq,
 }
 
 /// One block-level drive record for a signal.
 pub struct DriveEntry {
     pub span: Span,
+    pub kind: DriveKind,
 }
 
 /// Extracts the integer value of a compile-time-constant literal index.
@@ -229,27 +261,51 @@ pub fn collect_module_drivers(
     for item in &m.body {
         // Collect signals driven by this block (one entry per signal —
         // deduplicates repeated assignments inside the same block).
-        let block_targets: HashMap<String, Span> = match item {
+        let (kind, block_targets): (DriveKind, HashMap<String, Span>) = match item {
             ModuleBodyItem::CombBlock(b) => {
                 let mut t = HashMap::new();
                 collect_stmts(&b.stmts, &mut t);
-                t
+                (DriveKind::Comb, t)
             }
-            // RegBlock (seq) multi-driver checking is deferred: the TLM
-            // target-thread inline lowering generates multiple RegBlocks that
-            // legitimately share register assignments (gated by state
-            // conditions), so a naive count-of-writers check produces false
-            // positives here.  The C-seq repro from issue #375 needs a
-            // follow-up PR that can distinguish user-written from
-            // compiler-generated blocks before this check is safe to enable.
-            ModuleBodyItem::RegBlock(_) => HashMap::new(),
-            // Latch blocks are similarly deferred.
-            ModuleBodyItem::LatchBlock(_) => HashMap::new(),
+            // A `let` is a continuous assignment of its name(s).
+            ModuleBodyItem::LetBinding(lb) => {
+                let mut t = HashMap::new();
+                if lb.destructure_fields.is_empty() {
+                    t.insert(lb.name.name.clone(), lb.span);
+                } else {
+                    for f in &lb.destructure_fields {
+                        t.insert(f.name.clone(), lb.span);
+                    }
+                }
+                (DriveKind::Comb, t)
+            }
+            // RegBlock (seq) targets are recorded as `Seq` drivers, which
+            // `check_multi_driver` compares only against `inst` outputs.
+            // Seq-vs-seq checking stays deferred: the TLM target-thread
+            // inline lowering generates multiple RegBlocks that legitimately
+            // share register assignments (gated by state conditions), so a
+            // naive count-of-writers check produces false positives.  The
+            // C-seq repro from issue #375 needs a follow-up that can
+            // distinguish user-written from compiler-generated blocks.  An
+            // `inst` output on a seq-driven signal, by contrast, is never
+            // compiler-generated sharing: it is always two drivers in the SV
+            // (`always_ff` + port map) — issue #1063.
+            ModuleBodyItem::RegBlock(rb) => {
+                let mut t = HashMap::new();
+                collect_stmts(&rb.stmts, &mut t);
+                (DriveKind::Seq, t)
+            }
+            // Latch blocks: same treatment as seq blocks.
+            ModuleBodyItem::LatchBlock(lb) => {
+                let mut t = HashMap::new();
+                collect_stmts(&lb.stmts, &mut t);
+                (DriveKind::Seq, t)
+            }
             // Thread items are only present at typecheck time when threads
             // have NOT been lowered (e.g. `--thread-sim parallel` mode).
             // Two threads driving the same signal is intentional (the FSM
             // combines them into one always_ff), so skip this context too.
-            ModuleBodyItem::Thread(_) => HashMap::new(),
+            ModuleBodyItem::Thread(_) => continue,
             ModuleBodyItem::Inst(inst) => {
                 let mut t = HashMap::new();
                 for conn in &inst.connections {
@@ -280,17 +336,23 @@ pub fn collect_module_drivers(
                             ) {
                                 continue;
                             }
+                            if is_input_port_in_child(
+                                &inst.module_name.name,
+                                &conn.port_name.name,
+                                source,
+                            ) {
+                                continue;
+                            }
                             t.entry(name).or_insert(conn.span);
                         }
                     }
                 }
-                t
+                (DriveKind::Inst, t)
             }
             // The items below don't generate drive edges in the parent module.
             ModuleBodyItem::RegDecl(_)
             | ModuleBodyItem::WireDecl(_)
             | ModuleBodyItem::PipeRegDecl(_)
-            | ModuleBodyItem::LetBinding(_)
             | ModuleBodyItem::Generate(_)
             | ModuleBodyItem::Resource(_)
             | ModuleBodyItem::Assert(_)
@@ -300,7 +362,10 @@ pub fn collect_module_drivers(
         };
 
         for (name, span) in block_targets {
-            drivers.entry(name).or_default().push(DriveEntry { span });
+            drivers
+                .entry(name)
+                .or_default()
+                .push(DriveEntry { span, kind });
         }
     }
 
@@ -310,7 +375,11 @@ pub fn collect_module_drivers(
 /// Check for multi-driver conflicts.
 ///
 /// Returns one `CompileError::MultipleDrivers` per signal that is driven
-/// by two or more distinct blocks.  Signals annotated `shared(or)` or
+/// by two or more distinct continuous blocks (`comb`, `let`, `inst`
+/// output), or by a `seq`/`latch` block AND an `inst` output.  Seq/latch
+/// drivers are not compared with each other (deferred, see
+/// `collect_module_drivers`) nor with `comb`/`let` (a comb write to a `reg`
+/// is rejected separately by the typechecker).  Signals annotated `shared(or)` or
 /// `shared(and)` on the enclosing module's port list are exempt — they are
 /// intentionally multi-driven with compiler-synthesized reduction logic.
 pub fn check_multi_driver(
@@ -326,16 +395,33 @@ pub fn check_multi_driver(
 
     let mut errors: Vec<CompileError> = Vec::new();
     for (name, entries) in drivers {
-        if entries.len() < 2 {
-            continue;
-        }
         if shared.contains(name.as_str()) {
             continue;
         }
-        errors.push(CompileError::MultipleDrivers {
-            name: name.clone(),
-            span: span_to_source_span(entries[1].span),
-        });
+        let continuous: Vec<&DriveEntry> = entries
+            .iter()
+            .filter(|e| e.kind != DriveKind::Seq)
+            .collect();
+        let report_span = if continuous.len() >= 2 {
+            Some(continuous[1].span)
+        } else if entries.iter().any(|e| e.kind == DriveKind::Inst) {
+            // Seq/latch target that an `inst` output also drives: report at
+            // the seq/latch write. That is always user-written, whereas the
+            // inst may be compiler-generated (a lowered `thread` lives in a
+            // `_<Module>_threads` child, whose inst has no source span).
+            entries
+                .iter()
+                .find(|e| e.kind == DriveKind::Seq)
+                .map(|e| e.span)
+        } else {
+            None
+        };
+        if let Some(span) = report_span {
+            errors.push(CompileError::MultipleDrivers {
+                name: name.clone(),
+                span: span_to_source_span(span),
+            });
+        }
     }
     errors.sort_by_key(|e| {
         if let CompileError::MultipleDrivers { span, .. } = e {
