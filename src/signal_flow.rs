@@ -158,6 +158,113 @@ fn inst_conn_driver_name(expr: &Expr) -> Option<String> {
     })
 }
 
+/// Resolve one `inst` output connection to the parent signal name it drives,
+/// returning `(driver_key, span)`, or `None` when the connection drives
+/// nothing in the parent module: a non-output connection, a declared
+/// bus/struct wire shared by design, a bus port, or a child INPUT port
+/// reached with `->` (the SV port map only reads the parent signal there).
+///
+/// Shared by the module-scope `inst` walk and the `generate_for` walk so both
+/// apply exactly the same exemptions (#929).
+fn inst_output_driver(
+    inst_module_name: &str,
+    conn: &Connection,
+    named_wire_names: &HashSet<&str>,
+    source: &SourceFile,
+) -> Option<(String, Span)> {
+    if conn.direction != ConnectDir::Output {
+        return None;
+    }
+    let name = inst_conn_driver_name(&conn.signal)?;
+    // Skip connections to explicitly-declared bus/struct wires — driven by
+    // multiple inst items by design.  Match on the BASE name (the skip-set is
+    // keyed by the bare declaration name, but `name` may carry a const-index
+    // suffix like `link[0]`).
+    if lhs_base_name(&conn.signal)
+        .as_deref()
+        .map(|b| named_wire_names.contains(b))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    if is_bus_port_in_child(inst_module_name, &conn.port_name.name, source) {
+        return None;
+    }
+    if is_input_port_in_child(inst_module_name, &conn.port_name.name, source) {
+        return None;
+    }
+    Some((name, conn.span))
+}
+
+/// Build the module's const params mapped to their default integer values,
+/// evaluated at the declaration defaults — the single point in parameter
+/// space at which each design is type-checked (see issue #969).  Params are
+/// evaluated in declaration order so a later default may reference an earlier
+/// param.  Non-integer / type / defaultless params are simply absent.
+fn param_default_values(m: &ModuleDecl) -> HashMap<String, i64> {
+    let mut vals: HashMap<String, i64> = HashMap::new();
+    for p in &m.params {
+        if let Some(def) = &p.default {
+            if let Some(v) = crate::elaborate::try_eval_i64(def, &vals) {
+                vals.insert(p.name.name.clone(), v);
+            }
+        }
+    }
+    vals
+}
+
+/// Number of iterations of `gf` evaluated at the module's default params, or
+/// `None` when either range bound is not integer-evaluable there.  The ARCH
+/// `for` range is inclusive, so `0..N-1` is `N` iterations.
+fn generate_for_iter_count(gf: &GenerateFor, params: &HashMap<String, i64>) -> Option<u64> {
+    let s = crate::elaborate::try_eval_i64(&gf.start, params)?;
+    let e = crate::elaborate::try_eval_i64(&gf.end, params)?;
+    if e >= s {
+        Some((e - s + 1) as u64)
+    } else {
+        Some(0)
+    }
+}
+
+/// True when `expr` names something that varies with `loop_var` — i.e. the
+/// loop variable appears anywhere in it.  Used to tell a per-iteration-
+/// distinct `generate_for` target (`b -> gnt[i]`, N distinct elements, one
+/// driver each) from a target that names the SAME net on every iteration
+/// (`b -> y`, N drivers on one net).
+///
+/// Deliberately biased toward "varies": any unrecognized expression shape
+/// returns `true`, so the multi-driver check never *reports* on a target it
+/// could not fully analyze (a conservative false-negative, never a false
+/// positive that would reject a legal per-element fan-out).
+fn target_mentions_loop_var(expr: &Expr, loop_var: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(n) => n == loop_var,
+        ExprKind::SynthIdent(n, _) => n == loop_var,
+        ExprKind::Literal(_) | ExprKind::Bool(_) => false,
+        ExprKind::Index(base, idx) => {
+            target_mentions_loop_var(base, loop_var) || target_mentions_loop_var(idx, loop_var)
+        }
+        ExprKind::BitSlice(base, a, b) => {
+            target_mentions_loop_var(base, loop_var)
+                || target_mentions_loop_var(a, loop_var)
+                || target_mentions_loop_var(b, loop_var)
+        }
+        ExprKind::PartSelect(base, a, b, _) => {
+            target_mentions_loop_var(base, loop_var)
+                || target_mentions_loop_var(a, loop_var)
+                || target_mentions_loop_var(b, loop_var)
+        }
+        ExprKind::FieldAccess(base, _) => target_mentions_loop_var(base, loop_var),
+        ExprKind::LatencyAt(base, _) => target_mentions_loop_var(base, loop_var),
+        ExprKind::Binary(_, l, r) => {
+            target_mentions_loop_var(l, loop_var) || target_mentions_loop_var(r, loop_var)
+        }
+        ExprKind::Unary(_, e) => target_mentions_loop_var(e, loop_var),
+        // Any other shape: assume it varies per iteration (safe — see above).
+        _ => true,
+    }
+}
+
 /// Collect every distinct signal name driven by `stmts`, storing the
 /// span of the first assignment to each name.
 fn collect_stmts(stmts: &[Stmt], out: &mut HashMap<String, Span>) {
@@ -258,6 +365,10 @@ pub fn collect_module_drivers(
         })
         .collect();
 
+    // Const-param defaults, for evaluating a surviving `generate_for` range at
+    // the design's checked point in parameter space (see the Generate arm).
+    let param_defaults = param_default_values(m);
+
     for item in &m.body {
         // Collect signals driven by this block (one entry per signal —
         // deduplicates repeated assignments inside the same block).
@@ -309,51 +420,75 @@ pub fn collect_module_drivers(
             ModuleBodyItem::Inst(inst) => {
                 let mut t = HashMap::new();
                 for conn in &inst.connections {
-                    if conn.direction == ConnectDir::Output {
-                        if let Some(name) = inst_conn_driver_name(&conn.signal) {
-                            // Skip connections to explicitly-declared bus/struct
-                            // wires — these are driven by multiple inst items by
-                            // design.  Match on the BASE name: `name` may carry a
-                            // constant-index suffix (`link[0]`), but the skip-set
-                            // is keyed by the bare declaration name (`link`).
-                            let base = lhs_base_name(&conn.signal);
-                            if base
-                                .as_deref()
-                                .map(|b| named_wire_names.contains(b))
-                                .unwrap_or(false)
-                            {
-                                continue;
-                            }
-                            // Skip connections where the child port is a bus
-                            // port — both initiator and target instances connect
-                            // their bus ports as Output to the same (possibly
-                            // implicit) bus wire, driving disjoint subsets of
-                            // its flat signals.
-                            if is_bus_port_in_child(
-                                &inst.module_name.name,
-                                &conn.port_name.name,
-                                source,
-                            ) {
-                                continue;
-                            }
-                            if is_input_port_in_child(
-                                &inst.module_name.name,
-                                &conn.port_name.name,
-                                source,
-                            ) {
-                                continue;
-                            }
-                            t.entry(name).or_insert(conn.span);
-                        }
+                    if let Some((name, span)) =
+                        inst_output_driver(&inst.module_name.name, conn, &named_wire_names, source)
+                    {
+                        t.entry(name).or_insert(span);
                     }
                 }
                 (DriveKind::Inst, t)
+            }
+            // A `generate_for` that survives elaboration as an SV genvar loop
+            // (shape-stable inst body + param-dependent range — see
+            // `elaborate::expand_generate_for`) carries `inst` output drivers
+            // that the flat walk above never sees.  Collect them here (#929,
+            // the residual `generate_for` corner of #375):
+            //
+            // - A connection whose parent-side target does NOT vary with the
+            //   loop variable drives the SAME net on every iteration, so an
+            //   N-iteration loop is N drivers of one net.  When N >= 2 at the
+            //   default params, that is a self-conflict reported at the
+            //   connection line (two `Inst` entries make `check_multi_driver`
+            //   fire); when N is 1 (or the count is not evaluable) it is a
+            //   single driver that still collides with any module-scope driver
+            //   of the same net.
+            // - A connection indexed by the loop variable (`b -> gnt[i]`)
+            //   names a distinct element each iteration: one driver per
+            //   element, recorded once at the base so it collides only with a
+            //   DIFFERENT block driving the same name (the same conservatism
+            //   the variable-index handling already applies).
+            //
+            // `generate_if` never survives elaboration (the taken arm is
+            // inlined, the other dropped), so only the `For` variant matters.
+            ModuleBodyItem::Generate(GenerateDecl::For(gf)) => {
+                let iters = generate_for_iter_count(gf, &param_defaults);
+                for gi in &gf.items {
+                    if let GenItem::Inst(inst) = gi {
+                        for conn in &inst.connections {
+                            let Some((name, span)) = inst_output_driver(
+                                &inst.module_name.name,
+                                conn,
+                                &named_wire_names,
+                                source,
+                            ) else {
+                                continue;
+                            };
+                            let varies = target_mentions_loop_var(&conn.signal, &gf.var.name);
+                            let self_conflict = !varies && iters.map(|n| n >= 2).unwrap_or(false);
+                            let list = drivers.entry(name).or_default();
+                            list.push(DriveEntry {
+                                span,
+                                kind: DriveKind::Inst,
+                            });
+                            if self_conflict {
+                                // Same net driven on >= 2 iterations: record a
+                                // second continuous driver so the conflict is
+                                // reported even with no module-scope driver.
+                                list.push(DriveEntry {
+                                    span,
+                                    kind: DriveKind::Inst,
+                                });
+                            }
+                        }
+                    }
+                }
+                continue;
             }
             // The items below don't generate drive edges in the parent module.
             ModuleBodyItem::RegDecl(_)
             | ModuleBodyItem::WireDecl(_)
             | ModuleBodyItem::PipeRegDecl(_)
-            | ModuleBodyItem::Generate(_)
+            | ModuleBodyItem::Generate(GenerateDecl::If(_))
             | ModuleBodyItem::Resource(_)
             | ModuleBodyItem::Assert(_)
             | ModuleBodyItem::Function(_)
