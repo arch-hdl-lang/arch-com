@@ -33422,6 +33422,243 @@ end module M
     );
 }
 
+// ── Issue #929: multi-driver through a surviving `generate_for` genvar loop ──
+// An inst-bearing `generate_for` with a param-dependent range is preserved as
+// an SV genvar `for` loop (not unrolled at elaboration). Its inst-output
+// connections are drivers that the module-scope walk never saw before this
+// fix. A connection whose target does NOT vary with the loop var drives the
+// same net every iteration (N drivers); one indexed by the loop var names a
+// distinct element each iteration (one driver per element).
+
+/// Child used by the generate_for multi-driver tests: a registered pass of
+/// `en`/`y`. Shaped like issue #929's `GCell`.
+const GEN929_SRC: &str = r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+module GCell
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port y: out UInt<8>;
+  reg acc: UInt<8> reset rst => 0;
+  seq on clk rising
+    if en
+      acc <= (acc + 1).trunc<8>();
+    end if
+  end seq
+  comb
+    y = acc;
+  end comb
+end module GCell
+module PassThrough
+  port a: in  Bool;
+  port b: out Bool;
+  comb
+    b = a;
+  end comb
+end module PassThrough
+"#;
+
+#[test]
+fn test_multi_driver_genfor_inst_output_self_conflict_errors() {
+    // #929 canonical repro: N=3 instances in a genvar loop all connect
+    // `y -> y`, so the single wire `y` has three SV drivers. The range is
+    // param-dependent (preserved as genvar) and evaluates to 3 iterations at
+    // the default N, which is >= 2 — a self-conflict with no outside driver.
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenMultiDrvTop
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out UInt<8>;
+  wire y: UInt<8>;
+  generate_for i in 0..N-1
+    inst cell_i: GCell
+      clk <- clk;
+      rst <- rst;
+      en <- en;
+      y -> y;
+    end inst cell_i
+  end generate_for
+  comb
+    dout = y;
+  end comb
+end module GenMultiDrvTop
+"#
+    );
+    assert!(
+        has_multi_driver_error(&source, "y"),
+        "N gen-insts driving one wire is N SV drivers (#929)"
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_inst_output_and_seq_errors() {
+    // A genvar-loop inst output (`y -> o`, not loop-var-indexed) collides with
+    // a module-scope `seq` driver of the same reg: always_ff + genvar port map.
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenSeqCollide
+  param N: const = 2;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port reg o: out UInt<8> reset rst => 0;
+  seq on clk rising
+    o <= acc_in;
+  end seq
+  wire acc_in: UInt<8>;
+  comb
+    acc_in = 0;
+  end comb
+  generate_for i in 0..N-1
+    inst cell_i: GCell
+      clk <- clk;
+      rst <- rst;
+      en <- en;
+      y -> o;
+    end inst cell_i
+  end generate_for
+end module GenSeqCollide
+"#
+    );
+    assert!(
+        has_multi_driver_error(&source, "o"),
+        "genvar-loop inst output + module-scope seq on one reg is two SV drivers (#929)"
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_inst_output_and_comb_errors() {
+    // Same, but the colliding module-scope driver is a `comb` block.
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenCombCollide
+  param N: const = 2;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out UInt<8>;
+  wire w: UInt<8>;
+  comb
+    w = 0;
+    dout = w;
+  end comb
+  generate_for i in 0..N-1
+    inst cell_i: GCell
+      clk <- clk;
+      rst <- rst;
+      en <- en;
+      y -> w;
+    end inst cell_i
+  end generate_for
+end module GenCombCollide
+"#
+    );
+    assert!(
+        has_multi_driver_error(&source, "w"),
+        "genvar-loop inst output + module-scope comb on one wire is two SV drivers (#929)"
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_distinct_vec_elements_no_error() {
+    // Regression lock (examples/generate_for.arch shape): each iteration drives
+    // a DISTINCT Vec element `gnt[i]` — N drivers on N distinct nets, legal.
+    // Must NOT be flagged.
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenDistinctTop
+  param N: const = 2;
+  port req: in  Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- req[i];
+      b -> gnt[i];
+    end inst pt_i
+  end generate_for
+end module GenDistinctTop
+"#
+    );
+    let r = typecheck_source(&source);
+    assert!(
+        r.is_ok(),
+        "distinct `gnt[i]` per iteration is one driver per element, legal: {:?}",
+        r.err()
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_single_iteration_no_error() {
+    // A param-dependent range that evaluates to ONE iteration at the default
+    // param (M=1 → 0..0) is preserved as genvar but is a single driver — no
+    // outside driver, so it must pass (checked at the design's default point
+    // in parameter space, #969).
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenSingleTop
+  param M: const = 1;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out UInt<8>;
+  wire y: UInt<8>;
+  generate_for i in 0..M-1
+    inst cell_i: GCell
+      clk <- clk;
+      rst <- rst;
+      en <- en;
+      y -> y;
+    end inst cell_i
+  end generate_for
+  comb
+    dout = y;
+  end comb
+end module GenSingleTop
+"#
+    );
+    let r = typecheck_source(&source);
+    assert!(
+        r.is_ok(),
+        "single-iteration genvar loop with no outside driver is legal: {:?}",
+        r.err()
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_distinct_plus_outside_same_base_errors() {
+    // `gnt[i]` distinct per iteration, but a module-scope comb ALSO drives
+    // `gnt[0]` — the genvar loop drives gnt[0] via pt_0, so gnt[0] has two
+    // real drivers. (A variable loop-var index conservatively aliases the
+    // whole vector, matching the existing variable-index handling.)
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenDistinctOutsideTop
+  param N: const = 2;
+  port a: in Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- a[i];
+      b -> gnt[i];
+    end inst pt_i
+  end generate_for
+  comb
+    gnt[0] = a[0];
+  end comb
+end module GenDistinctOutsideTop
+"#
+    );
+    assert!(
+        has_multi_driver_error(&source, "gnt"),
+        "genvar `gnt[i]` fan-out + module-scope comb on `gnt[0]` double-drives gnt[0] (#929)"
+    );
+}
+
 /// Repro C2: two separate `comb` blocks driving the same output wire.
 /// Each `comb` becomes a distinct `always_comb` in SV — a genuine multi-driver.
 #[test]
@@ -41319,28 +41556,26 @@ module GTop
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port en: in Bool;
-  port dout: out UInt<8>;
-
-  wire y: UInt<8>;
+  port dout: out Vec<UInt<8>, N>;
 
   generate_for i in 0..N-1
     inst cell_i: GCell
-      y -> y;
+      y -> dout[i];
       auto;
     end inst cell_i
   end generate_for
-
-  comb
-    dout = y;
-  end comb
 end module GTop
 ";
+    // Each iteration drives a DISTINCT element `dout[i]` — a legal N-way
+    // fan-out. (The earlier form drove one scalar wire `y -> y` on every
+    // iteration, which is N drivers on one net — the #929 multi-driver this
+    // test unintentionally relied on; now a compile error.)
     let sv = compile_to_sv(src);
     assert!(
         sv.contains(".clk(clk)") && sv.contains(".rst(rst)") && sv.contains(".en(en)"),
         "{sv}"
     );
-    assert!(sv.contains(".y(y)"), "{sv}");
+    assert!(sv.contains(".y(dout[i])"), "{sv}");
 }
 
 /// `auto` is a contextual keyword, not a reserved word: a port genuinely
