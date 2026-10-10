@@ -1664,6 +1664,8 @@ fn expand_generate_for(
         .any(|item| matches!(item, GenItem::TlmConnect(_)));
     let has_inst_items = gf.items.iter().any(|item| matches!(item, GenItem::Inst(_)));
     let has_wire_items = gf.items.iter().any(|item| matches!(item, GenItem::Wire(_)));
+    let has_comb_items = gf.items.iter().any(|item| matches!(item, GenItem::Comb(_)));
+    let has_seq_items = gf.items.iter().any(|item| matches!(item, GenItem::Seq(_)));
     let range_depends_on_param = expr_references_param(&gf.start, &param_names)
         || expr_references_param(&gf.end, &param_names);
 
@@ -1707,10 +1709,24 @@ fn expand_generate_for(
     //     module's ports themselves are not Vec-of-bus. In that safe case
     //     SV emits `gen_i.foo_i.port(arr[i])` cleanly; sim codegen runs
     //     its own local unroll pass to keep both backends in sync.
+    //   - comb / seq items: never preserve. There is no genvar
+    //     `always_comb` / `always_ff` emitter on the preserved-loop path
+    //     (SV codegen `emit_generate` only handles `inst`; the `comb`/`seq`
+    //     arm is `unreachable!`), so a param-dependent comb-only / seq-only
+    //     body — or a mixed body carrying any comb/seq alongside a
+    //     shape-stable inst — used to be preserved and then panicked at
+    //     build (#1071). Unrolling here routes every backend through the
+    //     one tested path AND lets the Reading-B single-driver check below
+    //     run: a scalar LHS (`y = a` across N iterations) is N drivers of
+    //     one net and is now rejected with the loop-index diagnostic
+    //     instead of crashing; an indexed LHS (`y[i] = a`) unrolls to N
+    //     distinct-element drivers and compiles.
     let body_preservable = !has_port_items
         && !has_thread_items
         && !has_connect_items
         && !has_wire_items
+        && !has_comb_items
+        && !has_seq_items
         && (!has_inst_items || inst_items_shape_stable);
 
     if range_depends_on_param && body_preservable {

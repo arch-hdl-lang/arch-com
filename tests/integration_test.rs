@@ -33659,6 +33659,267 @@ end module GenDistinctOutsideTop
     );
 }
 
+// ── #1071: comb/seq-bearing generate_for with a param-dependent range ─────
+// Such a body used to be PRESERVED as an SV genvar loop (its items are not in
+// the `body_preservable` exclusion) and then hit `unreachable!` in codegen —
+// `emit_generate` has no genvar `always_comb`/`always_ff` emitter. These
+// bodies now always take the unroll path, so (a) every backend sees one flat
+// AST and (b) the Reading-B single-driver check applies. Crash → diagnostic
+// on every path; one path (indexed comb) gets a conservative pre-existing
+// diagnostic, tracked separately.
+
+/// Run elaboration only and return its errors formatted, or "" on success.
+/// The #1071 Reading-B rejection is raised inside `expand_generate_for`
+/// (elaboration), before the type checker runs, so `typecheck_source` (which
+/// `.expect("elaborate")`s) would panic on it — hence this dedicated helper.
+fn gen1071_elaborate_err(source: &str) -> String {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    match elaborate::elaborate(ast) {
+        Ok(_) => String::new(),
+        Err(errs) => errs
+            .iter()
+            .map(|e| format!("{e:?}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[test]
+fn test_genfor_1071_scalar_comb_only_diagnosed_not_panics() {
+    // #1071 filed repro (comb-only). The LHS `y = a` is a SCALAR write, so N
+    // iterations drive the SAME net — a genuine single-driver violation. The
+    // filed issue's "valid source, should compile" claim is wrong for this
+    // shape: before the fix `arch check` passed (the preserve path skips
+    // Reading-B) and `arch build` panicked; now it unrolls and Reading-B
+    // rejects it at elaboration with the loop-index diagnostic. A diagnostic,
+    // never a crash.
+    let src = r#"
+module GenCombOnly
+  param N: const = 3;
+  port a: in Bool;
+  port dout: out Bool;
+  wire y: Bool;
+  generate_for i in 0..N-1
+    comb
+      y = a;
+    end comb
+  end generate_for
+  comb
+    dout = y;
+  end comb
+end module GenCombOnly
+"#;
+    let err = gen1071_elaborate_err(src);
+    assert!(
+        err.contains("indexed by the loop variable"),
+        "scalar comb-only generate_for must be diagnosed (Reading-B), not panic: {err}"
+    );
+}
+
+#[test]
+fn test_genfor_1071_scalar_seq_only_diagnosed_not_panics() {
+    // #1071 filed repro (seq-only), scalar LHS `y <= a` — same as above.
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenSeqOnly
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port dout: out UInt<8>;
+  reg y: UInt<8> reset rst => 0;
+  generate_for i in 0..N-1
+    seq on clk rising
+      y <= a;
+    end seq
+  end generate_for
+  comb
+    dout = y;
+  end comb
+end module GenSeqOnly
+"#
+    );
+    let err = gen1071_elaborate_err(&src);
+    assert!(
+        err.contains("indexed by the loop variable"),
+        "scalar seq-only generate_for must be diagnosed (Reading-B), not panic: {err}"
+    );
+}
+
+#[test]
+fn test_genfor_1071_indexed_seq_unrolls_no_genvar() {
+    // The valid form the issue meant: an INDEXED seq LHS `y[i] <= a[i]` over a
+    // module-scope Vec reg. Previously preserved→panic; now unrolls to one
+    // `always_ff` per iteration, each driving a distinct element, no genvar.
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenSeqIdx
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port a: in Vec<UInt<8>, N>;
+  port dout: out Vec<UInt<8>, N>;
+  reg y: Vec<UInt<8>, N> reset rst => 0;
+  generate_for i in 0..N-1
+    seq on clk rising
+      y[i] <= a[i];
+    end seq
+  end generate_for
+  comb
+    for k in 0..N-1
+      dout[k] = y[k];
+    end for
+  end comb
+end module GenSeqIdx
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        !sv.contains("genvar"),
+        "seq-bearing generate_for must unroll, not preserve a genvar loop:\n{sv}"
+    );
+    assert!(
+        sv.matches("always_ff").count() >= 3,
+        "expected one always_ff per unrolled iteration (N=3):\n{sv}"
+    );
+    assert!(
+        sv.contains("y[0]") && sv.contains("y[1]") && sv.contains("y[2]"),
+        "each iteration drives a distinct Vec element:\n{sv}"
+    );
+}
+
+#[test]
+fn test_genfor_1071_mixed_inst_and_indexed_seq_unrolls() {
+    // Shape-stable inst (preservable on its own) + indexed seq in one body.
+    // The seq item forces the whole loop to unroll; the inst unrolls with it
+    // (losing the compact genvar form) and the design compiles. Was
+    // preserved → codegen panic.
+    let src = format!(
+        r#"{GEN929_SRC}
+module MixedGen
+  param N: const = 2;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port a: in Vec<Bool, N>;
+  port bufout: out Vec<Bool, N>;
+  reg acc: Vec<Bool, N> reset rst => false;
+  port accout: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    inst b_i: PassThrough
+      a <- a[i];
+      b -> bufout[i];
+    end inst b_i
+    seq on clk rising
+      acc[i] <= a[i];
+    end seq
+  end generate_for
+  comb
+    for k in 0..N-1
+      accout[k] = acc[k];
+    end for
+  end comb
+end module MixedGen
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        !sv.contains("genvar"),
+        "a mixed body carrying a seq item must unroll the whole loop:\n{sv}"
+    );
+    assert!(
+        sv.contains("b_0") && sv.contains("b_1"),
+        "inst items unroll to b_0/b_1 alongside the seq:\n{sv}"
+    );
+}
+
+#[test]
+fn test_genfor_1071_indexed_comb_only_diagnosed_not_panics() {
+    // Indexed comb-only body unrolls to N comb blocks each driving a distinct
+    // element `y[i]`. `signal_flow` keys comb drivers by BASE name and cannot
+    // yet distinguish `y[0]` from `y[1]`, so it reports a conservative,
+    // PRE-EXISTING multi-driver — the same rejection a hand-written set of
+    // per-element comb blocks already gets, with no generate_for involved
+    // (see `test_multi_driver_distinct_comb_elements_is_preexisting_1071`).
+    // The #1071 fix only guarantees a DIAGNOSTIC here, never a codegen panic.
+    // Flip to "compiles" if/when the comb-element driver-tracking ruling
+    // (#1073) lands; the idiomatic form today is one `comb` block with a
+    // `for k` loop.
+    let src = r#"
+module GenCombIdx
+  param N: const = 3;
+  port a: in Vec<Bool, N>;
+  port y: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    comb
+      y[i] = a[i];
+    end comb
+  end generate_for
+end module GenCombIdx
+"#;
+    assert!(
+        has_multi_driver_error(src, "y"),
+        "indexed comb-only generate_for hits the pre-existing comb-element multi-driver check, not a panic"
+    );
+}
+
+#[test]
+fn test_multi_driver_distinct_comb_elements_is_preexisting_1071() {
+    // Baseline for the test above: the distinct-element comb rejection has
+    // nothing to do with generate_for. Three hand-written comb blocks driving
+    // `y[0]`/`y[1]`/`y[2]` are rejected the same way. Documents that the
+    // #1071 indexed-comb limitation is inherited, not introduced.
+    let src = r#"
+module HandComb
+  param N: const = 3;
+  port a: in Vec<Bool, N>;
+  port y: out Vec<Bool, N>;
+  comb
+    y[0] = a[0];
+  end comb
+  comb
+    y[1] = a[1];
+  end comb
+  comb
+    y[2] = a[2];
+  end comb
+end module HandComb
+"#;
+    assert!(
+        has_multi_driver_error(src, "y"),
+        "distinct-element comb multi-driver is pre-existing and independent of generate_for"
+    );
+}
+
+#[test]
+fn test_genfor_1071_inst_only_param_range_still_preserves_genvar() {
+    // Guard: the #1071 comb/seq unroll must NOT disturb inst-only
+    // preservation. An inst-only generate_for with a param-dependent range
+    // still emits a compact SV genvar loop (the examples/generate_for.arch
+    // shape).
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenInstOnly
+  param N: const = 2;
+  port req: in Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- req[i];
+      b -> gnt[i];
+    end inst pt_i
+  end generate_for
+end module GenInstOnly
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        sv.contains("genvar"),
+        "inst-only param-range generate_for must still preserve the genvar loop:\n{sv}"
+    );
+}
+
 /// Repro C2: two separate `comb` blocks driving the same output wire.
 /// Each `comb` becomes a distinct `always_comb` in SV — a genuine multi-driver.
 #[test]
