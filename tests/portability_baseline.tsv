@@ -292,7 +292,7 @@ tests/axi_dma_thread/S2mmFifo.arch	iverilog	OK	-
 tests/axi_dma_thread/S2mmFifo.arch	verilator	OK	-
 tests/axi_dma_thread/ThreadAxiReadBeatInterleave.arch	iverilog	OK	-
 tests/axi_dma_thread/ThreadAxiReadBeatInterleave.arch	verilator	OK	-
-tests/axi_dma_thread/ThreadMm2s.arch	iverilog	FAIL	SV:73: sorry: constant selects in always_* processes are not currently supported (all bits will be included).
+tests/axi_dma_thread/ThreadMm2s.arch	iverilog	OK	-
 tests/axi_dma_thread/ThreadMm2s.arch	verilator	OK	-
 tests/axi_dma_thread/ThreadS2mm.arch	iverilog	OK	-
 tests/axi_dma_thread/ThreadS2mm.arch	verilator	OK	-
