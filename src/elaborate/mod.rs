@@ -1666,7 +1666,10 @@ fn expand_generate_for(
     let has_wire_items = gf.items.iter().any(|item| matches!(item, GenItem::Wire(_)));
     let has_comb_items = gf.items.iter().any(|item| matches!(item, GenItem::Comb(_)));
     let has_seq_items = gf.items.iter().any(|item| matches!(item, GenItem::Seq(_)));
-    let has_assert_items = gf.items.iter().any(|item| matches!(item, GenItem::Assert(_)));
+    let has_assert_items = gf
+        .items
+        .iter()
+        .any(|item| matches!(item, GenItem::Assert(_)));
     let range_depends_on_param = expr_references_param(&gf.start, &param_names)
         || expr_references_param(&gf.end, &param_names);
 
