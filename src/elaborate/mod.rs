@@ -1666,6 +1666,7 @@ fn expand_generate_for(
     let has_wire_items = gf.items.iter().any(|item| matches!(item, GenItem::Wire(_)));
     let has_comb_items = gf.items.iter().any(|item| matches!(item, GenItem::Comb(_)));
     let has_seq_items = gf.items.iter().any(|item| matches!(item, GenItem::Seq(_)));
+    let has_assert_items = gf.items.iter().any(|item| matches!(item, GenItem::Assert(_)));
     let range_depends_on_param = expr_references_param(&gf.start, &param_names)
         || expr_references_param(&gf.end, &param_names);
 
@@ -1721,12 +1722,25 @@ fn expand_generate_for(
     //     one net and is now rejected with the loop-index diagnostic
     //     instead of crashing; an indexed LHS (`y[i] = a`) unrolls to N
     //     distinct-element drivers and compiles.
+    //   - assert items: never preserve. `emit_generate` has no genvar SVA
+    //     emitter either — the preserved-loop `Assert` arm silently dropped
+    //     the property, so an assert-only (or assert + shape-stable-inst)
+    //     body over a param range emitted an empty `gen_i` loop and lost
+    //     every assertion with no diagnostic. The spec documents `assert`
+    //     inside `generate_for` as a first-class generated element (§19.4:
+    //     "ports, instances, registers, connections, or assertions"), and a
+    //     constant-range assert body already unrolls to one concurrent SVA
+    //     per iteration — only the param-range path diverged. Unrolling here
+    //     substitutes the loop index into both the assertion label (via the
+    //     `_<var>` suffix convention) and its expression, so param- and
+    //     constant-range bodies now emit identical SVA.
     let body_preservable = !has_port_items
         && !has_thread_items
         && !has_connect_items
         && !has_wire_items
         && !has_comb_items
         && !has_seq_items
+        && !has_assert_items
         && (!has_inst_items || inst_items_shape_stable);
 
     if range_depends_on_param && body_preservable {

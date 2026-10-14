@@ -33920,6 +33920,134 @@ end module GenInstOnly
     );
 }
 
+// ── #1072 follow-up: assert-bearing generate_for over a param range ───────
+// An `assert` item was NOT in the `body_preservable` exclusion, so a
+// param-dependent assert-only (or assert + shape-stable-inst) body was
+// PRESERVED as a genvar loop and codegen's `Assert` arm silently DROPPED the
+// property — an empty `gen_i` loop with every assertion lost and no
+// diagnostic. A constant range already unrolled and emitted the SVA, so only
+// the param path diverged. `assert` now forces unroll like comb/seq: one
+// concurrent SVA per iteration, the loop-var suffix uniquifying each label.
+// Matches the spec's documented `assert`-in-`generate_for` element (§19.4).
+
+#[test]
+fn test_genfor_assert_param_range_unrolls_to_sva() {
+    // Assert-only body over `0..N-1`. Before the fix: preserved → silently
+    // dropped (0 SVA). After: unrolled → one SVA per iteration, labels
+    // a_bnd_0/1/2, no genvar.
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenAssertParam
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port din: in Vec<UInt<8>, N>;
+  port dout: out Vec<UInt<8>, N>;
+  generate_for i in 0..N-1
+    assert a_bnd_i: din[i] < 200;
+  end generate_for
+  comb
+    for k in 0..N-1
+      dout[k] = din[k];
+    end for
+  end comb
+end module GenAssertParam
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        !sv.contains("genvar"),
+        "assert-bearing param-range generate_for must unroll, not preserve a genvar loop:\n{sv}"
+    );
+    assert!(
+        sv.matches("assert property").count() == 3,
+        "expected one concurrent SVA per iteration (N=3); the property was silently dropped before the #1072 follow-up:\n{sv}"
+    );
+    assert!(
+        sv.contains("a_bnd_0") && sv.contains("a_bnd_1") && sv.contains("a_bnd_2"),
+        "the loop-var suffix must uniquify each unrolled assertion label:\n{sv}"
+    );
+}
+
+#[test]
+fn test_genfor_assert_mixed_inst_unrolls_with_sva() {
+    // Shape-stable inst (preservable on its own) + assert in one body. The
+    // assert item forces the whole loop to unroll; the inst unrolls with it
+    // (losing the compact genvar form) and both per-iteration SVAs emit.
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenAssertMixed
+  param N: const = 2;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port req: in Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+  port din: in Vec<UInt<8>, N>;
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- req[i];
+      b -> gnt[i];
+    end inst pt_i
+    assert a_bnd_i: din[i] < 200;
+  end generate_for
+end module GenAssertMixed
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        !sv.contains("genvar"),
+        "a body carrying an assert item must unroll the whole loop (inst loses genvar form):\n{sv}"
+    );
+    assert!(
+        sv.matches("assert property").count() == 2,
+        "both per-iteration SVAs must be emitted:\n{sv}"
+    );
+    assert!(
+        sv.contains("pt_0") && sv.contains("pt_1"),
+        "inst items unroll to pt_0/pt_1 alongside the asserts:\n{sv}"
+    );
+}
+
+#[test]
+fn test_genfor_assert_param_and_const_range_emit_identical_sva() {
+    // The core of the bug: a constant range already unrolled and emitted the
+    // SVA; only the param-dependent range diverged (silently dropping it).
+    // After the fix both ranges emit the same SVA count.
+    let mk = |range: &str| {
+        format!(
+            r#"{GEN929_SRC}
+module GenAssertRange
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port din: in Vec<UInt<8>, 3>;
+  port dout: out Vec<UInt<8>, 3>;
+  generate_for i in {range}
+    assert a_bnd_i: din[i] < 200;
+  end generate_for
+  comb
+    for k in 0..2
+      dout[k] = din[k];
+    end for
+  end comb
+end module GenAssertRange
+"#
+        )
+    };
+    let sv_param = compile_to_sv(&mk("0..N-1"));
+    let sv_const = compile_to_sv(&mk("0..2"));
+    assert_eq!(
+        sv_param.matches("assert property").count(),
+        sv_const.matches("assert property").count(),
+        "param-range and constant-range assert generate_for must emit the same SVA count"
+    );
+    assert_eq!(
+        sv_param.matches("assert property").count(),
+        3,
+        "both ranges must emit one SVA per iteration (N=3)"
+    );
+}
+
 /// Repro C2: two separate `comb` blocks driving the same output wire.
 /// Each `comb` becomes a distinct `always_comb` in SV — a genuine multi-driver.
 #[test]

@@ -4622,9 +4622,9 @@ impl<'a> Codegen<'a> {
                         GenItem::Wire(_) => {
                             unreachable!("wire GenItems should have been unrolled by elaboration")
                         }
-                        GenItem::Assert(_) => {
-                            // SVA inside generate for: not yet supported in SV codegen (SVA needs static clock ref)
-                        }
+                        GenItem::Assert(_) => unreachable!(
+                            "assert GenItems should have been unrolled by elaboration"
+                        ),
                     }
                 }
                 self.indent -= 1;
