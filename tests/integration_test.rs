@@ -41392,6 +41392,55 @@ end module Scope
 }
 
 #[test]
+fn test_undefined_comb_lhs_target_rejected_1074_case3() {
+    // #1074 case 3: a bare-identifier `comb` assignment *target* that names no
+    // declared signal (`ww = din;`, a typo for `w`) used to pass `arch check`
+    // and emit `assign ww = ...;` referencing a 1-bit implicit SV net — the
+    // seq RHS path resolved its target but the comb LHS path only looked the
+    // name up in `local_types` and silently skipped resolution. The #748 test
+    // above already covers the comb *if-condition* and *seq RHS* value
+    // positions; this pins the comb LHS-target position it omitted.
+    let source = r#"
+module CombLhsTypo
+  port din: in UInt<8>;
+  port o: out UInt<8>;
+  wire w: UInt<8>;
+  comb
+    ww = din;
+    o = w;
+  end comb
+end module CombLhsTypo
+"#;
+    let errs = typecheck_errors(source)
+        .expect_err("an undefined comb LHS target must not typecheck (#1074 case 3)");
+    assert!(
+        errs.iter().any(|e| e.contains("ww")),
+        "the undefined comb LHS target `ww` must be reported, got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_legal_comb_lhs_targets_still_resolve_1074_case3() {
+    // Guard against over-rejection from the case-3 fix: every legal bare-ident
+    // comb target — an output port and a declared `wire` — must still resolve
+    // cleanly (they live in the module symbol scope even when absent from the
+    // width-typed `local_types` map).
+    let source = r#"
+module CombLhsLegal
+  port din: in UInt<8>;
+  port o: out UInt<8>;
+  wire w: UInt<8>;
+  comb
+    w = din;
+    o = w;
+  end comb
+end module CombLhsLegal
+"#;
+    typecheck_errors(source)
+        .expect("a `wire` and an output port are legal bare-ident comb targets");
+}
+
+#[test]
 fn test_param_and_enum_variant_still_resolve_748() {
     // Guards the two legal fallbacks the pre-#748 `else` branch was covering:
     // a `param` reference (generic width) and a bare enum variant.

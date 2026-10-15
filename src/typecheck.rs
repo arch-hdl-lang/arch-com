@@ -3589,6 +3589,21 @@ impl<'a> TypeChecker<'a> {
                     if is_indexed {
                         None
                     } else {
+                        // #1074 case 3: resolve the bare-identifier target so a
+                        // genuinely-undeclared name (`ww = din;`) is reported,
+                        // mirroring the seq path below. Before this, a comb LHS
+                        // name absent from `local_types` silently skipped
+                        // resolution, so `arch check` passed and codegen emitted
+                        // `assign ww = ...;` referencing a 1-bit implicit net.
+                        // `resolve_expr_type` only pushes `undefined name` for a
+                        // name that is neither in `local_types` nor resolvable in
+                        // the construct's symbol scope (ports/regs/lets/wires,
+                        // #748); a legal wire or output-port target resolves
+                        // cleanly. The width type still comes from `local_types`
+                        // (a scope-resolvable-but-untyped name yields the
+                        // `Ty::Error` poison, so the width check stays skipped
+                        // exactly as before for those).
+                        let _ = self.resolve_expr_type(&a.target, module_name, local_types);
                         local_types.get(&target_name).cloned()
                     }
                 } else {
