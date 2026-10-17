@@ -8024,6 +8024,26 @@ impl<'a> Codegen<'a> {
                 if let Some(v) = self.loop_var_subst.get(name) {
                     return v.to_string();
                 }
+                // A bare rvalue name that is not a declared signal in this
+                // construct may be an enum variant used by its short name
+                // (`mode <= Run`, `mode == Run`). The SV enum typedef
+                // canonicalizes variant names to uppercase, and the qualified
+                // `Enum::Variant` form does the same (see emit_pattern and the
+                // ExprKind::EnumVariant arm). A bare reference left in its
+                // original case mismatches the declared member, so the emitted
+                // SV fails to elaborate (Verilator: "Can't find definition of
+                // variable 'Run'"). Uppercase it to match. Mirrors typecheck's
+                // resolution order — a declared signal always wins, so the
+                // enum-variant lowering is gated on the name not resolving to a
+                // signal in this scope (arch#1031).
+                if self.ident_decl_type(name).is_none()
+                    && self.symbols.globals.values().any(|(sym, _)| {
+                        matches!(sym, Symbol::Enum(info)
+                            if info.variants.iter().any(|v| v == name))
+                    })
+                {
+                    return name.to_uppercase();
+                }
                 name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
