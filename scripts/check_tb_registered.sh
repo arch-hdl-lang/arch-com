@@ -2,7 +2,12 @@
 # check_tb_registered.sh — every arch-sim testbench must be in the sim manifest.
 #
 # Usage:
-#   scripts/check_tb_registered.sh          # check the whole tests/ tree
+#   scripts/check_tb_registered.sh              # check the working tree
+#   scripts/check_tb_registered.sh --rev <rev>  # check a commit's contents
+#
+# `--rev` reads the file list and manifest from git instead of the working
+# tree, so only committed files count (untracked or uncommitted edits are
+# ignored). The pre-push hook uses it to check exactly what is being pushed.
 #
 # Rationale (arch-hdl-lang/arch-com#799): a `*_tb.cpp` that no harness runs is
 # invisible. It keeps compiling in a reviewer's head and nowhere else, so when
@@ -52,6 +57,28 @@ cd "$REPO_ROOT"
 
 MANIFEST="tests/arch_sim_manifest.json"
 
+REV=""
+case "${1:-}" in
+  "") ;;
+  --rev)
+    REV="${2:?check_tb_registered: --rev needs a revision}"
+    git rev-parse --verify -q "$REV^{commit}" >/dev/null \
+      || { echo "check_tb_registered: not a commit: $REV" >&2; exit 2; }
+    ;;
+  *) echo "usage: $0 [--rev <rev>]" >&2; exit 2 ;;
+esac
+
+# Every regular file under tests/, one path per line — from the working tree,
+# or from commit $REV. (Symlinks are excluded in both modes, matching
+# `find -type f`.)
+list_test_files() {
+  if [[ -n "$REV" ]]; then
+    git ls-tree -r "$REV" -- tests | awk -F'\t' '$1 ~ /^10064[47] blob / {print $2}'
+  else
+    find tests -type f
+  fi
+}
+
 # Which testbenches this check governs. See the SCOPE note in the header before
 # widening this to include 'tb_*.cpp'.
 SCAN_GLOB='*_tb.cpp'
@@ -82,19 +109,33 @@ allowlisted() {
   return 1
 }
 
-if [[ ! -f "$MANIFEST" ]]; then
-  echo "check_tb_registered: $MANIFEST not found" >&2
-  exit 2
+if [[ -n "$REV" ]]; then
+  manifest_json="$(git show "$REV:$MANIFEST" 2>/dev/null)" \
+    || { echo "check_tb_registered: $MANIFEST not found in $REV" >&2; exit 2; }
+else
+  [[ -f "$MANIFEST" ]] || { echo "check_tb_registered: $MANIFEST not found" >&2; exit 2; }
+  manifest_json="$(cat "$MANIFEST")"
 fi
+
+all_files="$(list_test_files | LC_ALL=C sort)"
+# The governed testbenches: basenames matching SCAN_GLOB.
+scan_files() {
+  local f
+  while IFS= read -r f; do
+    if [[ -n "$f" && "${f##*/}" == $SCAN_GLOB ]]; then
+      printf '%s\n' "$f"
+    fi
+  done <<<"$all_files"
+}
 
 # tb_files entries from the manifest, one per line.
 registered="$(python3 -c '
 import json, sys
-data = json.load(open(sys.argv[1]))
+data = json.load(sys.stdin)
 for entry in data.get("entries", []):
     for tb in entry.get("tb_files", []):
         print(tb)
-' "$MANIFEST" | sort -u)"
+' <<<"$manifest_json" | sort -u)"
 
 unregistered=()
 while IFS= read -r tb; do
@@ -102,7 +143,7 @@ while IFS= read -r tb; do
   grep -qxF "$tb" <<<"$registered" && continue
   allowlisted "$tb" && continue
   unregistered+=("$tb")
-done < <(find tests -name "$SCAN_GLOB" -type f | sort)
+done < <(scan_files)
 
 # A manifest entry pointing at a file that no longer exists is the same rot in
 # the other direction, and makes the regression run fail confusingly. This half
@@ -111,7 +152,7 @@ done < <(find tests -name "$SCAN_GLOB" -type f | sort)
 missing=()
 while IFS= read -r tb; do
   [[ -z "$tb" ]] && continue
-  [[ -f "$tb" ]] || missing+=("$tb")
+  grep -qxF "$tb" <<<"$all_files" || missing+=("$tb")
 done <<<"$registered"
 
 status=0
@@ -159,7 +200,7 @@ if (( ${#missing[@]} > 0 )); then
 fi
 
 if (( status == 0 )); then
-  total="$(find tests -name "$SCAN_GLOB" -type f | wc -l | tr -d ' ')"
+  total="$(scan_files | wc -l | tr -d ' ')"
   echo "check_tb_registered: OK — all $total '$SCAN_GLOB' testbench(es) accounted for" \
        "($((total - ${#ALLOWLIST[@]})) registered in $MANIFEST, ${#ALLOWLIST[@]} allowlisted)."
 fi
