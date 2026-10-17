@@ -90,6 +90,12 @@ and `claude/*` branches: it warns on overlap at push time but **never blocks**
 (bypass with `--no-verify`, or `CLAIM_CHECK_SKIP=1` to skip just the claim
 scan). Delete-only pushes (`git push --delete`) skip the hook entirely.
 
+The same hook also runs a **blocking** rustfmt check on every branch, mirroring
+the `rustfmt` CI job: it format-checks the pushed commit's contents (not your
+working tree) for each `.rs` file the push changes, with the pinned toolchain.
+Fix with `cargo fmt --all` and recommit; bypass one push with
+`FMT_CHECK_SKIP=1`. It warns and skips if rustfmt is not installed.
+
 ## Fix-PR lifecycle (finish work you start)
 
 The repo finds bugs faster than it books them. Two audits (2026-07) showed the
