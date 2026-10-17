@@ -1,0 +1,24 @@
+// arch#1031 facet 1 regression: an enum variant referenced by its bare
+// short name (`mode <= Run`, `mode == Run`) must lower to the resolved
+// ordinal in `arch sim`, not the bare identifier. The emitted C++ enum
+// constants are prefixed (`Mode_Run`), so a bare reference was an
+// undeclared identifier and the sim C++ failed to compile.
+enum Mode
+  Idle, Run
+end enum Mode
+
+module SimEnumBareVariant
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port out_run: out Bool;
+  reg mode: Mode reset rst => Idle;
+  seq on clk rising
+    if go
+      mode <= Run;
+    end if
+  end seq
+  comb
+    out_run = mode == Run;
+  end comb
+end module SimEnumBareVariant

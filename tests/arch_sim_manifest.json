@@ -668,6 +668,24 @@
       "tb_files": [
         "tests/sim_loop_var_slice_hoist_pack_tb.cpp"
       ]
+    },
+    {
+      "name": "sim_enum_bare_variant",
+      "arch_files": [
+        "tests/sim_enum_bare_variant.arch"
+      ],
+      "tb_files": [
+        "tests/sim_enum_bare_variant_tb.cpp"
+      ]
+    },
+    {
+      "name": "sim_enum_let_type",
+      "arch_files": [
+        "tests/sim_enum_let_type.arch"
+      ],
+      "tb_files": [
+        "tests/sim_enum_let_type_tb.cpp"
+      ]
     }
   ]
 }

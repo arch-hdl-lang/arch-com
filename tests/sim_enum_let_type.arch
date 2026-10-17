@@ -1,0 +1,18 @@
+// arch#1031 facet 2 regression: a `let` whose declared type is an enum
+// declares a `_let_m` storage member of that named type, so the emitted
+// per-module header must pull in VStructs.h (where the enum type is
+// defined). The include scan previously covered reg/wire/port decls but
+// not `let`, so the header referenced an undeclared type and the sim C++
+// failed to compile.
+enum Mode
+  Idle, Run
+end enum Mode
+
+module SimEnumLetType
+  port sel: in Bool;
+  port out_run: out Bool;
+  let m: Mode = sel ? Run : Idle;
+  comb
+    out_run = m == Run;
+  end comb
+end module SimEnumLetType

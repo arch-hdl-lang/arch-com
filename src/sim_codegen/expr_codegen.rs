@@ -499,6 +499,27 @@ impl<'a> Ctx<'a> {
             // reads / writes `port_name[i]` lowered to `port_name[0]` —
             // referencing a name that doesn't exist in the C++ class.
             format!("_{name}")
+        } else if !is_lhs {
+            // A bare rvalue name that matched no declared signal above may be
+            // an enum variant referenced by its short name (`mode <= Run`,
+            // `mode == Run`). SV puts variants in the surrounding scope so the
+            // bare name elaborates there, but the emitted C++ enum constants
+            // are prefixed (`Mode_Run`), so the bare name is an undeclared
+            // identifier and the sim C++ fails to compile (arch#1031). Emit
+            // the resolved ordinal instead — identical to the explicit
+            // `ExprKind::EnumVariant` lowering, and consistent with typecheck's
+            // resolution order, where a declared signal always wins and the
+            // enum variant is only the final fallback. Iterate enum names in
+            // sorted order so a (rare, otherwise-ill-formed) cross-enum
+            // variant-name collision resolves deterministically.
+            let mut enum_names: Vec<&String> = self.enum_map.keys().collect();
+            enum_names.sort();
+            for en in enum_names {
+                if let Some((_, ord)) = self.enum_map[en].iter().find(|(n, _)| n == name) {
+                    return ord.to_string();
+                }
+            }
+            name.to_string()
         } else {
             name.to_string()
         }
