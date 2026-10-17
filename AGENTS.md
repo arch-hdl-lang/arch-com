@@ -23,7 +23,9 @@ Run `scripts/setup_hooks.sh` in local clones to install the versioned hooks
 (`core.hooksPath=.githooks`). The `pre-push` hook blocks pushes from `codex/*`
 branches when the review marker is missing or stale, and on every branch when a
 pushed `.rs` file is not rustfmt-formatted (`cargo fmt --all` to fix;
-`FMT_CHECK_SKIP=1` to bypass one push). The `pre-commit` hook
+`FMT_CHECK_SKIP=1` to bypass one push), or when a pushed `*_tb.cpp` is missing
+from `tests/arch_sim_manifest.json` (`TB_CHECK_SKIP=1` to bypass). The
+`pre-commit` hook
 refuses commits in the shared **primary** checkout (so concurrent agents don't
 share one working tree) — work in your own linked worktree
 (`git worktree add ../arch-wt-<name> -b <branch>`). No branch is exempt;

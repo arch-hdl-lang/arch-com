@@ -69,6 +69,35 @@ fmt_check() {
 }
 fmt_check
 
+# Blocking testbench-registration check, mirroring the `tb-registered` CI
+# workflow: every `*_tb.cpp` in the pushed commit must be in
+# tests/arch_sim_manifest.json (or the script's ALLOWLIST), and every manifest
+# tb_files path must exist. Runs scripts/check_tb_registered.sh --rev on each
+# pushed commit, so only committed files count. Skip with TB_CHECK_SKIP=1.
+tb_check() {
+  [[ "${TB_CHECK_SKIP:-0}" == 1 ]] && return 0
+  local script=scripts/check_tb_registered.sh entry local_sha _remote_sha
+  if [[ ! -x "$script" ]] || ! command -v python3 >/dev/null 2>&1; then
+    echo "pre-push: $script or python3 unavailable; skipping testbench check" >&2
+    return 0
+  fi
+  for entry in "${pushed[@]}"; do
+    read -r local_sha _remote_sha <<<"$entry"
+    # The allowlist lives in the script itself; if the pushed commit carries a
+    # different version of it than this checkout, the verdict would be wrong.
+    if ! git show "$local_sha:$script" 2>/dev/null | cmp -s - "$script"; then
+      echo "pre-push: $script differs between ${local_sha:0:8} and this checkout; skipping testbench check" >&2
+      continue
+    fi
+    if ! "$script" --rev "$local_sha" >/dev/null; then
+      echo "  (pre-push: ${local_sha:0:8} would fail CI's \`tb registered\` check." >&2
+      echo "   Bypass for this push only: TB_CHECK_SKIP=1 git push ...)" >&2
+      return 1
+    fi
+  done
+}
+tb_check
+
 branch="$(git branch --show-current)"
 
 # Advisory duplicate-work check (never blocks). Skip with CLAIM_CHECK_SKIP=1.
