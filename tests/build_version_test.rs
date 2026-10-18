@@ -61,6 +61,26 @@ fn provenance_tracks_clean_dirty_staged_restored_and_worktree_heads() {
         build_version::version(&wt, "0.72.5"),
         build_version::version(&root, "0.72.5")
     );
+    // After `git pack-refs` the branch ref has no loose file. Every watched
+    // path must still exist (cargo treats a missing one as changed and would
+    // rerun build.rs on every build), and refs/heads must be watched so the
+    // loose ref reappearing on the next commit or reset triggers a rebuild.
+    git(&root, &["pack-refs", "--all"]);
+    let watches = build_version::watch_paths(&root);
+    for path in &watches {
+        assert!(
+            path.exists(),
+            "watched path does not exist: {}",
+            path.display()
+        );
+    }
+    let heads = root.join(".git/refs/heads").canonicalize().unwrap();
+    assert!(
+        watches
+            .iter()
+            .any(|p| p.canonicalize().ok().as_deref() == Some(heads.as_path())),
+        "packed branch ref: refs/heads not watched in {watches:?}"
+    );
     let archive = root.join("source-archive");
     fs::create_dir(&archive).unwrap();
     assert_eq!(

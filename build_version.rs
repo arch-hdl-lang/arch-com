@@ -27,9 +27,20 @@ pub fn version(root: &Path, semver: &str) -> String {
         return format!("{semver} (git unknown)");
     };
     // Like git describe --dirty, this covers staged/unstaged tracked changes.
-    let dirty = git(root, &["status", "--porcelain", "--untracked-files=no"])
-        .map(|s| !s.is_empty())
-        .unwrap_or(true);
+    // --no-optional-locks: never refresh (rewrite) the index from a build
+    // script; a rewrite would retrigger the `index` watch and can contend
+    // with the user's own git commands for index.lock.
+    let dirty = git(
+        root,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        ],
+    )
+    .map(|s| !s.is_empty())
+    .unwrap_or(true);
     format!(
         "{semver} (git {commit}{})",
         if dirty { "+dirty" } else { "" }
@@ -58,7 +69,16 @@ pub fn watch_paths(root: &Path) -> Vec<PathBuf> {
                 &reference,
             ],
         ) {
-            paths.push(PathBuf::from(path));
+            // A packed ref (after `git gc` / `pack-refs`) has no loose file,
+            // and cargo treats a missing watched path as changed: it would
+            // rerun the build script on every build. Watch the nearest
+            // existing ancestor directory instead. Cargo scans a watched
+            // directory, so the loose ref reappearing on the next commit or
+            // reset still triggers a rebuild (`packed-refs` is watched above).
+            let path = PathBuf::from(path);
+            if let Some(existing) = path.ancestors().find(|p| p.exists()) {
+                paths.push(existing.to_path_buf());
+            }
         }
     }
     // Re-evaluate dirty state on tracked edits/restores, even without a commit.
