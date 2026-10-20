@@ -1970,6 +1970,24 @@ fn main() -> miette::Result<()> {
                         continue;
                     }
                     if let Some(content) = arch::interface::emit_interface(item) {
+                        // The `.archi` is read as its own file, so it must
+                        // carry the package imports its port/param types use
+                        // (#1086; visibility enforced since #1065).
+                        let uses = arch::interface::interface_uses(
+                            item,
+                            &ast.items,
+                            &file_scopes,
+                            &content,
+                        );
+                        let content = if uses.is_empty() {
+                            content
+                        } else {
+                            let mut s: String =
+                                uses.iter().map(|p| format!("use {p};\n")).collect();
+                            s.push('\n');
+                            s.push_str(&content);
+                            s
+                        };
                         let name = &item.as_construct().name().name;
                         // Write .archi next to the .sv output
                         let archi_dir = files[0]
