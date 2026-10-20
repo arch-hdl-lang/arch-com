@@ -1651,6 +1651,21 @@ impl<'a> Codegen<'a> {
                 // Resolve mangled SV name (mirrors emit_expr_str's
                 // FunctionCall arm).
                 let sv_name = self.fn_call_sv_name(name, expr);
+                // What a bound call site is rewritten to. Plain `shared`: the
+                // harness output. `shared(when EXPR)`: one SV text for every
+                // parameter value, `(EXPR) ? harness : inline call`, which
+                // synthesis folds once the parameter is known (the unused
+                // harness or inline copy then has no readers). The inline text
+                // is emitted before this site is registered, so it is the
+                // ordinary call (nested shared args already rewritten).
+                let rewrite = match &fd.shared_when {
+                    Some(cond) => format!(
+                        "(({}) ? __shared_{sv_name}_out : {})",
+                        self.emit_expr_str(cond),
+                        self.emit_expr_str(expr)
+                    ),
+                    None => format!("__shared_{sv_name}_out"),
+                };
                 let key = (sv_name.clone(), reg.to_string());
                 let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
 
@@ -1679,8 +1694,7 @@ impl<'a> Codegen<'a> {
                     }
                     // Identical args — merge by recording this call
                     // site for rewrite without adding another mux entry.
-                    self.shared_call_sites
-                        .insert(expr.span.start, format!("__shared_{sv_name}_out"));
+                    self.shared_call_sites.insert(expr.span.start, rewrite);
                     return;
                 }
                 // New entry: record args + rewrite this call site.
@@ -1689,8 +1703,7 @@ impl<'a> Codegen<'a> {
                     arg_strs,
                     args: args.clone(),
                 });
-                self.shared_call_sites
-                    .insert(expr.span.start, format!("__shared_{sv_name}_out"));
+                self.shared_call_sites.insert(expr.span.start, rewrite);
             }
             ExprKind::Binary(_, a, b) => {
                 self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls);

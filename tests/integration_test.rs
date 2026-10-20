@@ -6410,6 +6410,172 @@ end module MacShare
     );
 }
 
+/// `shared(when EXPR) function`: whether a function is shared is chosen by a
+/// constant over the module's params, so one design can share an operator on
+/// one target (ASIC area) and inline it on another (an FPGA whose hard
+/// multiplier absorbs the copies). The emitter keeps a single SV text for
+/// every param value: each bound call site selects between the harness output
+/// and the ordinary inline call.
+const SHARE_WHEN_SRC: &str = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module MacShareWhen
+  param SHARE: const = 1;
+  port clk: in Clock<D>;
+  port rst: in Reset<Async, Low>;
+  port a: in UInt<16>;
+  port b: in UInt<16>;
+  port q: out UInt<34>;
+  reg acc: UInt<34> reset rst => 0;
+
+  shared(when SHARE == 1) function Mac(x: UInt<16>, y: UInt<16>, accum: UInt<34>) -> UInt<34>
+    return accum +% (x.zext<34>() *% y.zext<34>());
+  end function Mac
+
+  thread t on clk rising, rst low
+    acc <= Mac(a, b, acc);
+    wait 1 cycle;
+    acc <= Mac(a, a, acc);
+  end thread t
+
+  let q = acc;
+end module MacShareWhen
+"#;
+
+#[test]
+fn shared_when_rewrites_each_bound_call_site_to_a_param_select() {
+    let sv = compile_to_sv(SHARE_WHEN_SRC);
+    assert!(
+        sv.contains("__shared_Mac_16_16_34_out"),
+        "expected the shared harness (it is always emitted):\n{sv}"
+    );
+    let selects: Vec<&str> = sv
+        .lines()
+        .filter(|l| l.contains("((SHARE == 1) ? __shared_Mac_16_16_34_out : Mac_16_16_34("))
+        .collect();
+    assert_eq!(
+        selects.len(),
+        2,
+        "expected both call sites rewritten to the param select:\n{sv}"
+    );
+    assert!(
+        sv.contains("#(.SHARE(SHARE)) _threads"),
+        "the condition's param must reach the `_threads` submodule:\n{sv}"
+    );
+}
+
+#[test]
+fn shared_when_condition_folds_to_shared_or_inline_structure_in_yosys() {
+    // After constant folding, SHARE == 1 must leave exactly the plain-`shared`
+    // structure and SHARE == 0 exactly the plain-`function` one -- no harness
+    // logic survives the false branch. Cell types are compared before any
+    // operator-sharing optimisation could merge the inline copies.
+    if std::process::Command::new("yosys")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: yosys not available");
+        return;
+    }
+    let td = tempfile::tempdir().unwrap();
+    let cells = |tag: &str, src: &str, share: u32| -> Vec<(String, u32)> {
+        let sv_path = td.path().join(format!("{tag}.sv"));
+        std::fs::write(&sv_path, compile_to_sv(src)).unwrap();
+        let script = format!(
+            "read_verilog -sv {}; hierarchy -top MacShareWhen -chparam SHARE {share}; \
+             proc; flatten; opt_expr; opt_clean -purge; stat",
+            sv_path.display()
+        );
+        let out = std::process::Command::new("yosys")
+            .args(["-p", &script])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut cells: Vec<(String, u32)> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split_whitespace();
+                let n = f.next()?.parse::<u32>().ok()?;
+                let ty = f.next()?;
+                (ty.starts_with('$') && f.next().is_none()).then(|| (ty.to_string(), n))
+            })
+            .collect();
+        cells.sort();
+        cells
+    };
+    let muls = |c: &[(String, u32)]| c.iter().find(|(t, _)| t == "$mul").map_or(0, |(_, n)| *n);
+    let shared = cells(
+        "shared",
+        &SHARE_WHEN_SRC.replace("shared(when SHARE == 1) function", "shared function"),
+        1,
+    );
+    let plain = cells(
+        "plain",
+        &SHARE_WHEN_SRC.replace("shared(when SHARE == 1) function", "function"),
+        0,
+    );
+    let when1 = cells("when1", SHARE_WHEN_SRC, 1);
+    let when0 = cells("when0", SHARE_WHEN_SRC, 0);
+    assert_eq!(
+        muls(&when1),
+        1,
+        "SHARE=1 must fold to one shared multiplier"
+    );
+    assert_eq!(
+        muls(&when0),
+        2,
+        "SHARE=0 must fold to the two inline multipliers"
+    );
+    assert_eq!(
+        when1, shared,
+        "SHARE=1 must fold to the plain-`shared` netlist"
+    );
+    assert_eq!(when0, plain, "SHARE=0 must leave no harness logic behind");
+}
+
+#[test]
+fn shared_when_condition_must_be_a_one_bit_constant_over_module_params() {
+    let not_param = SHARE_WHEN_SRC.replace("shared(when SHARE == 1)", "shared(when a == 1)");
+    let errs = typecheck_errors(&not_param).unwrap_err().join("\n");
+    assert!(
+        errs.contains("may only reference params of module `MacShareWhen`: `a` is not a param"),
+        "{errs}"
+    );
+    assert_eq!(
+        errs.matches("shared(when ...)").count(),
+        1,
+        "reported once:\n{errs}"
+    );
+
+    let wide = SHARE_WHEN_SRC.replace("shared(when SHARE == 1)", "shared(when SHARE)");
+    let errs = typecheck_errors(&wide).unwrap_err().join("\n");
+    assert!(
+        errs.contains("condition on function `Mac` must be 1 bit"),
+        "{errs}"
+    );
+
+    let one_bit_param = SHARE_WHEN_SRC
+        .replace("param SHARE: const = 1;", "param SHARE[0:0]: const = 1;")
+        .replace("shared(when SHARE == 1)", "shared(when SHARE)");
+    assert!(
+        typecheck_errors(&one_bit_param).is_ok(),
+        "a 1-bit param is accepted as is"
+    );
+
+    let top_level = "shared(when 1'b1) function Inc(x: UInt<8>) -> UInt<8>\n  return x +% 8'd1;\nend function Inc\n";
+    let errs = typecheck_errors(top_level).unwrap_err().join("\n");
+    assert!(
+        errs.contains("only allowed on a function declared inside a module"),
+        "{errs}"
+    );
+}
+
 #[test]
 fn test_native_pipeline_includes_shared_function_definitions() {
     let source = r#"

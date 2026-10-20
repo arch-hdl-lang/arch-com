@@ -409,6 +409,7 @@ impl<'a> TypeChecker<'a> {
         // whose divisor is a reducible constant. Catches bad param defaults, etc.
         // Runs before per-item checks so reported errors sort naturally.
         self.check_const_div_zero();
+        self.check_shared_when_conditions();
         for item in self.source.items.clone().iter() {
             self.active_uses = self.uses_for_span(item.span());
             // A package's own declarations can refer to sibling members
@@ -816,6 +817,84 @@ impl<'a> TypeChecker<'a> {
                     .to_string(),
                 span: span_to_source_span(sp),
             });
+        }
+    }
+
+    /// `shared(when EXPR) function`: EXPR picks per parameter value whether
+    /// the function is shared, so it must be a 1-bit constant over the
+    /// enclosing module's params. A top-level or package function has no
+    /// module params to refer to, so the form is rejected there.
+    fn check_shared_when_conditions(&mut self) {
+        let items = self.source.items.clone();
+        // Thread lowering clones a module's functions into its generated
+        // `_threads` submodule; report each source condition once.
+        let mut reported: HashSet<(usize, usize)> = HashSet::new();
+        for item in &items {
+            match item {
+                Item::Function(f) => self.reject_shared_when_outside_module(f),
+                Item::Package(pkg) => {
+                    for f in &pkg.functions {
+                        self.reject_shared_when_outside_module(f);
+                    }
+                }
+                Item::Module(m) => {
+                    let params: HashSet<String> =
+                        m.params.iter().map(|p| p.name.name.clone()).collect();
+                    for it in &m.body {
+                        let ModuleBodyItem::Function(f) = it else {
+                            continue;
+                        };
+                        let Some(cond) = &f.shared_when else { continue };
+                        if !reported.insert((cond.span.start, cond.span.end)) {
+                            continue;
+                        }
+                        let mut idents = HashSet::new();
+                        crate::comb_graph::collect_expr_idents(cond, &mut idents);
+                        let mut not_params: Vec<String> =
+                            idents.into_iter().filter(|i| !params.contains(i)).collect();
+                        not_params.sort();
+                        if let Some(name) = not_params.first() {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`shared(when ...)` on function `{}` may only reference \
+                                     params of module `{}`: `{}` is not a param",
+                                    f.name.name, m.name.name, name
+                                ),
+                                cond.span,
+                            ));
+                            continue;
+                        }
+                        // Params type as generic here (`Ty::Error`), so decide
+                        // 1-bit-ness from the expression's shape instead.
+                        if !shared_when_is_one_bit(cond, &m.params) {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`shared(when ...)` condition on function `{}` must be 1 bit: \
+                                     a comparison or logical expression (e.g. \
+                                     `shared(when SHARE == 1)`), a Bool literal, or a 1-bit param",
+                                    f.name.name
+                                ),
+                                cond.span,
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn reject_shared_when_outside_module(&mut self, f: &FunctionDecl) {
+        if let Some(cond) = &f.shared_when {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "`shared(when ...)` is only allowed on a function declared inside a \
+                     module (its condition is evaluated against that module's params); \
+                     `{}` is a top-level or package function",
+                    f.name.name
+                ),
+                cond.span,
+            ));
         }
     }
 
@@ -11523,4 +11602,48 @@ pub fn linklist_num_heads(l: &crate::ast::LinklistDecl) -> u32 {
 /// ceil_log2 for u32. Compatibility shim — delegates to [`crate::width::clog2`].
 pub fn clog2_u32(n: u32) -> u32 {
     crate::width::clog2(n as u64)
+}
+
+/// Whether a `shared(when ...)` condition is 1 bit by construction:
+/// comparisons, logical/reduction operators and Bool literals always are,
+/// and a bare param is when declared 1 bit wide (`[0:0]`, `Bool`, `UInt<1>`).
+fn shared_when_is_one_bit(e: &Expr, params: &[ParamDecl]) -> bool {
+    let lit_u32 = |x: &Expr| match &x.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v)) => Some(*v),
+        _ => None,
+    };
+    match &e.kind {
+        ExprKind::Binary(op, _, _) => matches!(
+            op,
+            BinOp::Eq
+                | BinOp::Neq
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Lte
+                | BinOp::Gte
+                | BinOp::And
+                | BinOp::Or
+        ),
+        ExprKind::Unary(op, inner) => match op {
+            UnaryOp::Not | UnaryOp::RedAnd | UnaryOp::RedOr | UnaryOp::RedXor => true,
+            UnaryOp::BitNot => shared_when_is_one_bit(inner, params),
+            UnaryOp::Neg => false,
+        },
+        ExprKind::Bool(_) => true,
+        ExprKind::Literal(LitKind::Sized(w, _)) => *w == 1,
+        ExprKind::Ident(name) => params.iter().any(|p| {
+            p.name.name == *name
+                && match &p.kind {
+                    ParamKind::WidthConst(hi, lo) => {
+                        matches!((lit_u32(hi), lit_u32(lo)), (Some(h), Some(l)) if h == l)
+                    }
+                    ParamKind::Logic(TypeExpr::Bool) | ParamKind::Logic(TypeExpr::Bit) => true,
+                    ParamKind::Logic(TypeExpr::UInt(w)) => lit_u32(w) == Some(1),
+                    _ => false,
+                }
+        }),
+        _ => false,
+    }
 }
