@@ -1,7 +1,13 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-09-28
-> Compiler version: 0.72.6
+> Last updated: 2026-10-20
+> Compiler version: 0.73.0
+>
+> **0.73.0 release highlights:**
+> - **`shared(when EXPR) function`** (PR #1088) — chooses operator sharing per parameter: `EXPR` is a 1-bit constant over the module's params. Each bound call site emits `((EXPR) ? __shared_<SVNAME>_out : <SVNAME>(args))`, which folds to exactly the plain-`shared` netlist when true and the plain-`function` netlist when false (Yosys-tested). One source, per-target synthesis choice.
+> - **Package/domain scoping** (PR #1062, maintainer-approved) — built-in `SysDomain` never hidden; same-file package members visible without `use`; `domain ... freq_mhz` applied, conflicting values an error. **Package aliases and non-module port types no longer leak across files** (PR #1065) — add the missing `use`. `.archi` stubs now carry the `use` lines their types need (PR #1087).
+> - **SV miscompiles fixed** — non-power-of-two `fifo` DEPTH (#1061), async reset in handshake/pulse `synchronizer` (#1051), bare enum-variant references in sim+SV (#1081), `assert` dropped inside param-ranged `generate_for` (#1077), comb/seq-only `generate_for` panic (#1072).
+> - **Stricter checks** — per-target CDC fan-in at comb->seq and `inst` boundaries, module-scope `let` included, deterministic verdict (#1055, #1059, #1060, #1066); multi-driver through `inst` outputs and genvar loops (#1067, #1070); undeclared bare `comb` target (#1080). See the [v0.73.0 release notes](../docs/release-notes/v0.73.0.md).
 >
 > **0.72.6 release highlights:**
 > - **Reset kind and polarity are honored by `pipe_reg` and `linklist`** (PRs #1043, #1044) — both emitters hard-coded `always_ff @(posedge clk)` + `if (rst)`. On a `Reset<Async, Low>` port that **inverted the reset**: a module-scope `pipe_reg` chain was cleared every normal cycle (a constant-zero delay line), and a `linklist` re-initialized its free list every cycle and never on reset. Both are live miscompiles, fixed for all four `Kind x Level` combinations. #1043 also gives the `guard`-contract `_<reg>_written` shadow flop the design's reset kind, and scopes a Verilator `SYNCASYNCNET` waiver to each auto-SVA `translate_off` region, since `disable iff` counts as a synchronous reset use. Together these clear arch-ibex's SoC lint.
