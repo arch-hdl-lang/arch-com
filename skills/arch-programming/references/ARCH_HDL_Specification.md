@@ -9789,9 +9789,12 @@ arguments, share the one instance.
 **Any call site that does not bind is silently inlined.** There is no
 diagnostic — see the warning below.
 
-**Emitted SV.** One `function automatic` body, `__shared_<NAME>_in_<arg>`
-and `__shared_<NAME>_out` wires, and an `always_comb` that decodes the
-thread state onto the operand wires. The function body itself is still
+**Emitted SV.** One `function automatic` body, `__shared_<SVNAME>_in_<arg>`
+and `__shared_<SVNAME>_out` wires, and an `always_comb` that decodes the
+thread state onto the operand wires. `<SVNAME>` is the emitted (type-mangled)
+function name, not the source name: `MacRes` with arguments
+`Bool, UInt<16>, Bool, UInt<16>, UInt<34>` emits as `MacRes_b_16_b_16_34`, so
+its output wire is `__shared_MacRes_b_16_b_16_34_out`. The function body itself is still
 emitted (unused function definitions synthesise to nothing); what
 changes is that call sites read `__shared_<NAME>_out` instead of calling
 it.
@@ -9803,7 +9806,8 @@ it.
 > case. The one `CompileWarning` in the implementation (same state,
 > different args) is pushed to `SvCodegen::warnings`, which **no caller
 > reads**, so it never reaches the user either. The only way to confirm
-> sharing is to inspect the emitted SV for `__shared_<NAME>_out`, or to
+> sharing is to inspect the emitted SV for wires starting `__shared_<NAME>_`
+> (the full name carries the argument types, see above), or to
 > count operator instances after synthesis. This is how a 2026-05-11
 > change (per-thread state-name localparams) silently disabled sharing
 > on arch-ibex's multiplier for four months — four multipliers where one
@@ -9828,6 +9832,43 @@ shared function MacRes(sign_a: Bool, op_a16: UInt<16>,
   ...
 end function MacRes
 ```
+
+**Choosing per parameter: `shared(when EXPR)`.** Because the better choice
+depends on the target, sharing can be made conditional on a module parameter:
+
+```
+module ibex_multdiv_fast
+  param ShareMac[0:0]: const = 1'b1;
+  ...
+  shared(when ShareMac) function MacRes(...) -> UInt<34>
+    ...
+  end function MacRes
+```
+
+The function is shared when `EXPR` is true and inlined when it is false, with
+the same binding rules as `shared`. `EXPR` must be a 1-bit constant over the
+enclosing module's params: a comparison or logical expression
+(`shared(when SHARE == 1)`), a Bool or 1-bit literal, or a bare param declared
+1 bit wide (`param X[0:0]`, `Bool`, `UInt<1>`). It may not reference ports,
+signals or anything other than that module's params, and the form is only
+allowed on a function declared inside a module (a top-level or package
+function has no module params to test). Violations are compile errors.
+
+Because the module's SV keeps its params symbolic (one SV module for every
+param value, overridable with `#(...)` or a synthesis tool's `chparam`), the
+emitter writes **both** structures: the shared harness as above, and every
+bound call site as `((EXPR) ? __shared_<SVNAME>_out : <SVNAME>(args))`. Once
+the param is known, synthesis folds the select and removes whichever form has
+no readers. The result equals plain `shared` when `EXPR` is true and plain
+`function` when it is false. Semantics are identical either way, as for
+`shared`.
+
+Measured on arch-ibex `ibex_multdiv_fast` (17×17 MAC, nine call sites), the
+whole design: inlined instead of shared is **−489 LUT4 on ECP5** (16,608 →
+16,119; one hard `MULT18X18D` in both, fmax unchanged within seed noise) but
+**+28,877 µm² on sky130** (1,819,558 → 1,848,435 µm² at synthesis). So the
+two targets want opposite settings, which is what `shared(when ...)` lets one
+source express.
 
 See also `shared(or)` / `shared(and)` in the thread chapter — a
 different feature that happens to use the same word: those resolve
