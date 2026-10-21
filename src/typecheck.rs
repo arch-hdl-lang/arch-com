@@ -1545,7 +1545,10 @@ impl<'a> TypeChecker<'a> {
                     local_types.insert(p.name.name.clone(), ty);
                     driven.insert(p.name.name.clone());
                 }
-                ModuleBodyItem::Inst(inst) => self.check_inst_decl(inst, &mut driven),
+                ModuleBodyItem::Inst(inst) => {
+                    self.check_inst_decl(inst, &mut driven);
+                    self.check_inst_connection_types(inst, &m.name.name, &local_types);
+                }
                 ModuleBodyItem::WireDecl(w) => {
                     self.check_snake_case(&w.name);
                     let ty = self.resolve_type_expr(&w.ty, &m.name.name, &local_types);
@@ -8530,6 +8533,178 @@ impl<'a> TypeChecker<'a> {
                     site_span,
                 ));
             }
+        }
+    }
+
+    /// Effective const values of an inst target's params: inst-site
+    /// overrides (evaluated against the enclosing construct's params), else
+    /// the target's own defaults, resolved in declaration order so derived
+    /// params see earlier values. Unresolvable params are left out.
+    fn inst_target_param_vals(&self, inst: &InstDecl) -> HashMap<String, i64> {
+        let mut target_vals: HashMap<String, i64> = HashMap::new();
+        let Some(target_item) = self.find_item_by_name(&inst.module_name.name) else {
+            return target_vals;
+        };
+        let mut enclosing_vals: HashMap<String, i64> = HashMap::new();
+        for ap in &self.active_params {
+            if let Some(def) = &ap.default {
+                if let Some(v) = crate::elaborate::try_eval_i64(def, &enclosing_vals) {
+                    enclosing_vals.insert(ap.name.name.clone(), v);
+                }
+            }
+        }
+        for tp in Self::item_params(target_item) {
+            let effective = match inst
+                .param_assigns
+                .iter()
+                .find(|pa| pa.name.name == tp.name.name && pa.ty.is_none())
+            {
+                Some(pa) => crate::elaborate::try_eval_i64(&pa.value, &enclosing_vals),
+                None => tp
+                    .default
+                    .as_ref()
+                    .and_then(|d| crate::elaborate::try_eval_i64(d, &target_vals)),
+            };
+            if let Some(v) = effective {
+                target_vals.insert(tp.name.name.clone(), v);
+            }
+        }
+        target_vals
+    }
+
+    /// A child port's type with its widths evaluated under the inst's
+    /// effective params, for the shapes the connection check compares.
+    /// `None` = not comparable here (param-dependent width, bus, named
+    /// type, ...): the check then stays silent rather than guess.
+    fn inst_port_ty(ty: &TypeExpr, vals: &HashMap<String, i64>) -> Option<Ty> {
+        let width = |w: &Expr| {
+            crate::elaborate::try_eval_i64(w, vals)
+                .filter(|n| *n > 0)
+                .map(|n| n as u32)
+        };
+        Some(match ty {
+            TypeExpr::UInt(w) => Ty::UInt(width(w)?),
+            TypeExpr::SInt(w) => Ty::SInt(width(w)?),
+            TypeExpr::Bool | TypeExpr::Bit => Ty::Bool,
+            TypeExpr::Reset(k, l) => Ty::Reset(*k, *l),
+            TypeExpr::Vec(t, n) => Ty::Vec(Box::new(Self::inst_port_ty(t, vals)?), width(n)?),
+            _ => return None,
+        })
+    }
+
+    /// The definite mismatch between a child port type and the parent-side
+    /// signal type, if any, as a short reason. Same rule as `auto;`
+    /// (spec §"auto-connect": width, signedness, `Vec` length, reset kind or
+    /// polarity), except clock domains: an explicit clock connection rebinds
+    /// the child's domain (spec "Clock domain rebind is not a crossing").
+    fn inst_conn_mismatch(port: &Ty, sig: &Ty) -> Option<&'static str> {
+        match (port, sig) {
+            (Ty::Reset(k1, l1), Ty::Reset(k2, l2)) if k1 != k2 || l1 != l2 => {
+                Some("reset kind/polarity differs")
+            }
+            (Ty::UInt(a), Ty::UInt(b)) | (Ty::SInt(a), Ty::SInt(b)) if a != b => {
+                Some("widths differ")
+            }
+            (Ty::UInt(_), Ty::SInt(_)) | (Ty::SInt(_), Ty::UInt(_)) => Some("signedness differs"),
+            (Ty::UInt(w), Ty::Bool) | (Ty::Bool, Ty::UInt(w)) if *w != 1 => Some("widths differ"),
+            (Ty::Vec(t1, n1), Ty::Vec(t2, n2)) => {
+                if n1 != n2 {
+                    Some("`Vec` lengths differ")
+                } else {
+                    Self::inst_conn_mismatch(t1, t2)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Type conformance of explicit `inst` port connections (#737, #738).
+    /// Spec: "Every assignment, port connection, and arithmetic result is
+    /// width-checked at compile time. There is no implicit truncation,
+    /// zero-extension, or sign-extension anywhere in the language." A
+    /// reset-typed port additionally keeps its kind and polarity: re-typing
+    /// a reset at a boundary is written `rst <- r as Reset<K, P>`, the form
+    /// `auto;` already demands. Only definite mismatches are reported: a
+    /// param-dependent or otherwise unresolvable type on either side is
+    /// skipped. Typing the parent-side expression must not add diagnostics
+    /// of its own (inst connection RHS checking is #1026's scope), so any
+    /// it produces are discarded and the connection is then skipped.
+    pub(crate) fn check_inst_connection_types(
+        &mut self,
+        inst: &InstDecl,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+    ) {
+        // Compiler-generated constructs (`_<Mod>_threads`, `_arb_...` from
+        // thread/TLM lowering) are wired by the compiler, not the user; their
+        // connections are checked at the source construct, not here.
+        if inst.module_name.name.starts_with('_') {
+            return;
+        }
+        let Some(ports) = self.child_ports(&inst.module_name.name) else {
+            return;
+        };
+        let vals = self.inst_target_param_vals(inst);
+        for conn in &inst.connections {
+            // A compile-time constant (literals and params only, e.g. `1`,
+            // `HEAD_DIM`, `DEPTH - 1`) is context-typed, as everywhere else
+            // (`q <= 0;`): it takes the port's width. Whether its value fits
+            // is the sized-literal-fit question (#1052), not conformance.
+            let mut idents = HashSet::new();
+            crate::comb_graph::collect_expr_idents(&conn.signal, &mut idents);
+            if idents
+                .iter()
+                .all(|n| self.active_params.iter().any(|p| &p.name.name == n))
+            {
+                continue;
+            }
+            let Some(port) = ports
+                .iter()
+                .find(|p| p.name.name == conn.port_name.name && p.bus_info.is_none())
+            else {
+                continue;
+            };
+            let Some(port_ty) = Self::inst_port_ty(&port.ty, &vals) else {
+                continue;
+            };
+            let (n_err, n_warn) = (self.errors.len(), self.warnings.len());
+            let sig_ty = self.resolve_expr_type(&conn.signal, module_name, local_types);
+            let clean = self.errors.len() == n_err;
+            self.errors.truncate(n_err);
+            self.warnings.truncate(n_warn);
+            if !clean || matches!(sig_ty, Ty::Error | Ty::Todo) {
+                continue;
+            }
+            let Some(reason) = Self::inst_conn_mismatch(&port_ty, &sig_ty) else {
+                continue;
+            };
+            let hint = match &port_ty {
+                Ty::Reset(..) => format!(
+                    "; if the reset really is re-typed here, say so: `{} <- {} as {}`",
+                    conn.port_name.name,
+                    crate::interface::expr_str(&conn.signal),
+                    port_ty.display()
+                ),
+                Ty::UInt(w) | Ty::SInt(w) => format!(
+                    "; there is no implicit extension or truncation — convert explicitly \
+                     (`.zext<{w}>()`, `.sext<{w}>()`, `.trunc<{w}>()` or `.resize<{w}>()`)"
+                ),
+                _ => String::new(),
+            };
+            self.errors.push(CompileError::general(
+                &format!(
+                    "inst `{}`: {} on port `{}` of `{}`: port is {}, connected `{}` is {}{}",
+                    inst.name.name,
+                    reason,
+                    conn.port_name.name,
+                    inst.module_name.name,
+                    port_ty.display(),
+                    crate::interface::expr_str(&conn.signal),
+                    sig_ty.display(),
+                    hint
+                ),
+                conn.span,
+            ));
         }
     }
 

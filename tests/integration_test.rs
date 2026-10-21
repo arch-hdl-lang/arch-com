@@ -42985,3 +42985,223 @@ end ram Rm
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// #737 / #738: explicit `inst` connections are type-checked like `auto;`
+/// fills. Child under test; the parent is built per case by `conn_parent`.
+const CONN_CHILD: &str = r#"
+domain ADom
+end domain ADom
+
+domain BDom
+end domain BDom
+
+module ConnChild
+  param W: const = 8;
+  port clk: in Clock<ADom>;
+  port rst: in Reset<Sync, High>;
+  port d: in UInt<W>;
+  port s: in SInt<8>;
+  port v: in Vec<UInt<4>, 4>;
+  port q: out UInt<W>;
+  comb
+    q = d;
+  end comb
+end module ConnChild
+"#;
+
+/// A parent whose ports carry the given types, wired to `ConnChild` with the
+/// given connection lines (and optional `param` override line).
+fn conn_parent(clk: &str, rst: &str, d: &str, q: &str, param: &str, conns: &str) -> String {
+    format!(
+        "{CONN_CHILD}
+module ConnParent
+  port clk: in {clk};
+  port rst: in {rst};
+  port d: in {d};
+  port sd: in SInt<8>;
+  port ud: in UInt<8>;
+  port v4: in Vec<UInt<4>, 4>;
+  port v2: in Vec<UInt<4>, 2>;
+  port q: out {q};
+  inst c: ConnChild
+{param}{conns}
+  end inst c
+end module ConnParent
+"
+    )
+}
+
+const CONN_OK: &str = "    clk <- clk;
+    rst <- rst;
+    d <- d;
+    s <- sd;
+    v <- v4;
+    q -> q;
+";
+
+fn conn_errs(src: &str) -> String {
+    match typecheck_errors(src) {
+        Ok(()) => String::new(),
+        Err(e) => e.join("\n"),
+    }
+}
+
+#[test]
+fn inst_connection_types_matching_and_legal_rebinds_pass() {
+    let base = |clk: &str, conns: &str| {
+        conn_parent(clk, "Reset<Sync, High>", "UInt<8>", "UInt<8>", "", conns)
+    };
+    assert_eq!(conn_errs(&base("Clock<ADom>", CONN_OK)), "", "exact match");
+    // Spec "Clock domain rebind is not a crossing": the connected clock
+    // fixes the instance's domain, so a different domain is not a mismatch.
+    assert_eq!(
+        conn_errs(&base("Clock<BDom>", CONN_OK)),
+        "",
+        "clock domain rebind"
+    );
+    // An unsized literal is context-typed, as in `q <= 0;`.
+    let lit = CONN_OK.replace("d <- d;", "d <- 3;");
+    assert_eq!(conn_errs(&base("Clock<ADom>", &lit)), "", "unsized literal");
+    // So is a constant expression over params (`len <- HEAD_DIM;`).
+    let konst = base("Clock<ADom>", &CONN_OK.replace("d <- d;", "d <- K - 1;")).replacen(
+        "module ConnParent\n",
+        "module ConnParent\n  param K: const = 3;\n",
+        1,
+    );
+    assert!(konst.contains("param K"), "{konst}");
+    assert_eq!(conn_errs(&konst), "", "param constant expression");
+    // An explicit conversion makes the widths agree.
+    let src = conn_parent(
+        "Clock<ADom>",
+        "Reset<Sync, High>",
+        "UInt<4>",
+        "UInt<8>",
+        "",
+        &CONN_OK.replace("d <- d;", "d <- d.zext<8>();"),
+    );
+    assert_eq!(conn_errs(&src), "", "explicit .zext");
+}
+
+#[test]
+fn inst_connection_reset_kind_or_polarity_mismatch_is_an_error() {
+    // #737: an async active-low reset into a sync active-high port used to
+    // pass check and Verilator alike -- functionally inverted reset.
+    let src = conn_parent(
+        "Clock<ADom>",
+        "Reset<Async, Low>",
+        "UInt<8>",
+        "UInt<8>",
+        "",
+        CONN_OK,
+    );
+    let errs = conn_errs(&src);
+    assert!(
+        errs.contains("reset kind/polarity differs on port `rst` of `ConnChild`")
+            && errs.contains("`rst <- rst as Reset<Sync, High>`"),
+        "{errs}"
+    );
+    // The stated re-type is the override, as for `auto;`.
+    let cast = CONN_OK.replace("rst <- rst;", "rst <- rst as Reset<Sync, High>;");
+    let src = conn_parent(
+        "Clock<ADom>",
+        "Reset<Async, Low>",
+        "UInt<8>",
+        "UInt<8>",
+        "",
+        &cast,
+    );
+    assert_eq!(conn_errs(&src), "", "explicit `as Reset<...>`");
+}
+
+#[test]
+fn inst_connection_width_signedness_and_vec_length_must_match() {
+    // #738, spec: "Every assignment, port connection, and arithmetic result
+    // is width-checked at compile time."
+    let ok = "Reset<Sync, High>";
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<4>",
+        "UInt<8>",
+        "",
+        CONN_OK,
+    ));
+    assert!(
+        errs.contains(
+            "widths differ on port `d` of `ConnChild`: port is UInt<8>, connected `d` is UInt<4>"
+        ) && errs.contains(".zext<8>()"),
+        "input width:\n{errs}"
+    );
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<8>",
+        "UInt<4>",
+        "",
+        CONN_OK,
+    ));
+    assert!(
+        errs.contains(
+            "widths differ on port `q` of `ConnChild`: port is UInt<8>, connected `q` is UInt<4>"
+        ),
+        "output width:\n{errs}"
+    );
+    let signed = CONN_OK.replace("s <- sd;", "s <- ud;");
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<8>",
+        "UInt<8>",
+        "",
+        &signed,
+    ));
+    assert!(
+        errs.contains("signedness differs on port `s`"),
+        "signedness:\n{errs}"
+    );
+    let short = CONN_OK.replace("v <- v4;", "v <- v2;");
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<8>",
+        "UInt<8>",
+        "",
+        &short,
+    ));
+    assert!(
+        errs.contains("`Vec` lengths differ on port `v`"),
+        "vec length:\n{errs}"
+    );
+}
+
+#[test]
+fn inst_connection_width_uses_the_inst_param_override() {
+    let ok = "Reset<Sync, High>";
+    let w4 = "    param W = 4;\n";
+    assert_eq!(
+        conn_errs(&conn_parent(
+            "Clock<ADom>",
+            ok,
+            "UInt<4>",
+            "UInt<4>",
+            w4,
+            CONN_OK
+        )),
+        "",
+        "W = 4 makes the UInt<4> connections exact"
+    );
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<8>",
+        "UInt<8>",
+        w4,
+        CONN_OK,
+    ));
+    assert!(
+        errs.contains(
+            "widths differ on port `d` of `ConnChild`: port is UInt<4>, connected `d` is UInt<8>"
+        ),
+        "the override, not the default, sets the port width:\n{errs}"
+    );
+}
