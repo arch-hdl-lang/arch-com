@@ -243,3 +243,47 @@ fn archi_carries_package_imports_for_its_port_types() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// Same contract as `archi_carries_package_imports_for_its_port_types`, for a
+/// package **param** (a package-scoped constant, spec §29.1) used in a port
+/// width. `interface_uses` must enumerate package params alongside the other
+/// member kinds, so a stub whose only package reference is `UInt<WIDTH>` still
+/// carries `use TestPkg;`. Without params in the member list the stub shipped
+/// no `use`, leaving the package name undefined in the stub's own scope — the
+/// same shape as #1086, differing only in which member kind is referenced.
+#[test]
+fn archi_carries_package_imports_for_its_param_typed_ports() {
+    let root = repo_root();
+    let tmp = std::env::temp_dir().join(format!("arch_archi_param_uses_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("mkdir");
+    std::fs::copy(root.join("examples/TestPkg.arch"), tmp.join("TestPkg.arch"))
+        .expect("copy package");
+    // Port width is the only reference into TestPkg (no enum/struct/function).
+    std::fs::write(
+        tmp.join("WChild.arch"),
+        "use TestPkg;\n\nmodule WChild\n  port a: in UInt<WIDTH>;\n  \
+         port out: out UInt<4>;\n  comb out = a.trunc<4>(); end comb\n\
+         end module WChild\n",
+    )
+    .expect("write child");
+    let out = Command::new(arch())
+        .current_dir(&tmp)
+        .args(["build", "WChild.arch", "-o", "WChild.sv"])
+        .output()
+        .expect("run arch");
+    assert!(
+        out.status.success(),
+        "child build failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stub = std::fs::read_to_string(tmp.join("WChild.archi")).expect("read stub");
+    assert!(
+        stub.starts_with("use TestPkg;\n"),
+        "the stub's port `a: in UInt<WIDTH>` references package param `WIDTH`, so the \
+         stub needs `use TestPkg;`:\n{stub}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
