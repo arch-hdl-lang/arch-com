@@ -21,10 +21,10 @@ pub fn emit_interface(item: &Item) -> Option<String> {
 /// package (spec §3.12, enforced since #1065). A `.archi` is loaded as its own
 /// file, so it must carry the imports its interface text depends on: every
 /// package the item's source file imports or declares whose member names
-/// (domains, enums, structs, buses, aliases, functions; an extern package's
-/// types) appear in `content`. Packages the interface never mentions are left
-/// out so a consumer is not made to import them. Sorted for deterministic
-/// output.
+/// (domains, enums, structs, buses, aliases, functions, params; an extern
+/// package's types) appear in `content`. Packages the interface never mentions
+/// are left out so a consumer is not made to import them. Sorted for
+/// deterministic output.
 pub fn interface_uses(
     item: &Item,
     items: &[Item],
@@ -65,6 +65,7 @@ pub fn interface_uses(
                     .chain(p.buses.iter().map(|b| b.name.name.as_str()))
                     .chain(p.aliases.iter().map(|a| a.name.name.as_str()))
                     .chain(p.functions.iter().map(|f| f.name.name.as_str()))
+                    .chain(p.params.iter().map(|pp| pp.name.name.as_str()))
                     .collect::<Vec<_>>(),
                 Item::ExternPackage(p) if p.name.name == pkg => {
                     p.types.iter().map(|t| t.name.as_str()).collect()
