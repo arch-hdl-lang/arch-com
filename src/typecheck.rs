@@ -1676,6 +1676,16 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 ModuleBodyItem::Thread(t) => {
+                    // Lowering normally rejects this; under --thread-sim
+                    // parallel it is skipped, so check it here too.
+                    let reset_ty = m
+                        .ports
+                        .iter()
+                        .find(|p| p.name.name == t.reset.name)
+                        .map(|p| &p.ty);
+                    if let Some(e) = crate::elaborate::thread_reset_level_mismatch(t, reset_ty) {
+                        self.errors.push(e);
+                    }
                     // Under --thread-sim parallel, lower_threads is skipped,
                     // so threads survive to typecheck. Mark thread-driven
                     // signals (CombAssign + SeqAssign LHS) as driven so the

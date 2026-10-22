@@ -2686,6 +2686,7 @@ end thread Name
 - `Name` — optional; auto-named `thread`, `thread1`, … if omitted
 - `on clk rising` — clock port name and edge (`rising` or `falling`)
 - `, rst high` — reset port name and active level (`high` or `low`)
+  - The level must match the reset port's declared polarity: a `Reset<K, High>` port needs `rst high`, and a `Reset<K, Low>` port needs `rst low`. A contradicting clause is a compile error. It would hold the thread in reset during normal operation and release it during reset, so either the clause or the port declaration is wrong. There is no override in the clause. A reset that really changes polarity is re-typed where it enters the module, at the parent's `inst` connection: `rst <- rst_n as Reset<Sync, High>;` (§4.3 "Connection types"). This applies to every thread form, including TLM target threads (`thread s.read(addr) on clk rising, rst high`). The reset *kind* (`Sync`/`Async`) always comes from the port. A reset named by a non-`Reset` signal declares no polarity and is not checked.
 - `default when cond … end default` — optional soft-reset clause (see §7a.4)
 - Body is a sequence of statements (see §7a.2)
 

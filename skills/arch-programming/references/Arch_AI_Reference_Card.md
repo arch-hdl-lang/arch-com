@@ -782,7 +782,7 @@ end module M
 | `if/else` (no waits) | Same-state conditional comb/seq | No |
 
 **Rules:**
-- `thread Name on clk rising, rst high` — clock edge and reset polarity required
+- `thread Name on clk rising, rst high` — clock edge and reset polarity required. The level must match the reset port's declared polarity (`Reset<K, Low>` ⇒ `rst low`); a mismatch is a compile error (fix the clause or the port; re-type a reset only at an `inst` connection with `as Reset<K, P>`)
 - `default comb … end default` must appear **before** the thread body; it may drive only comb outputs, not signals also assigned with `<=`
 - `default when cond … end default` must appear **before** the thread body; only seq assigns inside
 - `lock` blocks must **not** be nested — compile error (mutual exclusion guarantee)
