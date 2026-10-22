@@ -77,7 +77,7 @@ module ThreadS2mm
   resource done_ch: mutex<priority>;
 
   generate_for i in 0..NUM_OUTSTANDING-1
-    thread WriteReq_i on clk rising, rst low
+    thread WriteReq_i on clk rising, rst high
       //! Per-ID write transaction. Body shape:
       //!   (1) `wait until start` — block until the host kicks off a run.
       //!   (2) `fork`-`join` of two locked branches that issue AW and W

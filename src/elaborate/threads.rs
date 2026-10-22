@@ -183,6 +183,55 @@ pub fn lower_threads_with_opts(
 /// All threads become per-thread state machines within one module.
 /// Shared registers, lock arbitration, and output muxing are all
 /// handled internally — no multi-driver issues.
+/// A thread's reset clause names the reset port and its active level
+/// (`on clk rising, rst low`). When that port is declared `Reset<K, L>`, the
+/// clause's level must be `L`: a thread that treats an active-high reset as
+/// active-low sits in reset during normal operation and runs during reset.
+/// Either the clause or the port declaration is wrong, so this is an error
+/// rather than an implicit re-type (spec §7a.1). A reset named by a
+/// non-`Reset` signal declares no polarity and is not checked here.
+pub fn thread_reset_level_mismatch(
+    t: &ThreadBlock,
+    reset_ty: Option<&TypeExpr>,
+) -> Option<CompileError> {
+    let Some(TypeExpr::Reset(kind, level)) = reset_ty else {
+        return None;
+    };
+    if *level == t.reset_level {
+        return None;
+    }
+    let word = |l: ResetLevel| match l {
+        ResetLevel::High => "high",
+        ResetLevel::Low => "low",
+    };
+    let cap = |l: ResetLevel| match l {
+        ResetLevel::High => "High",
+        ResetLevel::Low => "Low",
+    };
+    let kind = match kind {
+        ResetKind::Sync => "Sync",
+        ResetKind::Async => "Async",
+    };
+    let who = t
+        .name
+        .as_ref()
+        .map(|n| format!("thread `{}`", n.name))
+        .unwrap_or_else(|| "thread".to_string());
+    let rst = &t.reset.name;
+    Some(CompileError::general(
+        &format!(
+            "{who}: reset clause `{rst} {clause}` contradicts port `{rst}: Reset<{kind}, \
+             {port_ty}>`, which is active-{port} — either the clause is wrong (write `{rst} \
+             {port}`) or the port declaration is wrong (declare it `Reset<{kind}, {other}>`)",
+            clause = word(t.reset_level),
+            port_ty = cap(*level),
+            port = word(*level),
+            other = cap(t.reset_level),
+        ),
+        t.reset.span,
+    ))
+}
+
 fn lower_module_threads(
     m: ModuleDecl,
     opts: &ThreadLowerOpts,
@@ -232,6 +281,7 @@ fn lower_module_threads(
     };
     let _reg_map = build_module_reg_map(&m);
     let mut errors: Vec<CompileError> = Vec::new();
+    let mut level_errors: Vec<CompileError> = Vec::new();
 
     // Collect threads and non-thread body items
     let mut threads: Vec<(String, ThreadBlock)> = Vec::new();
@@ -300,6 +350,11 @@ fn lower_module_threads(
                         t.span,
                     )]);
                 }
+                if let Some(e) =
+                    thread_reset_level_mismatch(&t, type_map.get(&t.reset.name).map(|si| &si.ty))
+                {
+                    level_errors.push(e);
+                }
                 let name = t.name.as_ref().map(|n| n.name.clone()).unwrap_or_else(|| {
                     let n = if thread_idx == 0 {
                         "thread".to_string()
@@ -322,6 +377,10 @@ fn lower_module_threads(
             }
             other => new_body.push(other),
         }
+    }
+
+    if !level_errors.is_empty() {
+        return Err(level_errors);
     }
 
     if threads.is_empty() {

@@ -47,7 +47,9 @@ use params::{
 // call site (`main.rs`, `tests/integration_test.rs`,
 // `tests/param_where_constraints.rs`) keeps resolving unchanged.
 mod threads;
-pub use threads::{lower_threads, lower_threads_with_opts, ThreadLowerOpts};
+pub use threads::{
+    lower_threads, lower_threads_with_opts, thread_reset_level_mismatch, ThreadLowerOpts,
+};
 
 // TLM (`tlm_method`) lowering: bus-initiator/target `tlm_connect` sugar
 // (`lower_tlm_connects`), `thread port.method(...)` target-body lowering

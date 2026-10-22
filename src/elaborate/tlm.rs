@@ -1763,6 +1763,27 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
     for it in ast.items {
         match it {
             Item::Module(mut m) => {
+                // Target threads are rewritten here, not by `lower_threads`,
+                // so their reset clause is checked against the port here.
+                for item in &m.body {
+                    if let ModuleBodyItem::Thread(t) = item {
+                        let is_target = t.tlm_target.is_some()
+                            || t.implement
+                                .as_ref()
+                                .is_some_and(|b| b.kind == TlmImplementKind::Target);
+                        if !is_target {
+                            continue;
+                        }
+                        let reset_ty = m
+                            .ports
+                            .iter()
+                            .find(|p| p.name.name == t.reset.name)
+                            .map(|p| &p.ty);
+                        if let Some(e) = super::thread_reset_level_mismatch(t, reset_ty) {
+                            errors.push(e);
+                        }
+                    }
+                }
                 // Build port → bus_name map for this module.
                 let (port_buses, port_methods) = specialize_tlm_methods_for_module_ports(
                     &m,

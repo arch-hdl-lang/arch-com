@@ -43205,3 +43205,98 @@ fn inst_connection_width_uses_the_inst_param_override() {
         "the override, not the default, sets the port width:\n{errs}"
     );
 }
+
+/// A thread's reset clause must agree with its reset port's declared
+/// polarity (spec §7a.1). Base: active-low async port, `rst low` clause.
+const THREAD_RST_SRC: &str = r#"
+module ThrRst
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port go: in Bool;
+  port done: out Bool;
+  reg cnt: UInt<4> reset rst => 0;
+  thread Worker on clk rising, rst low
+    wait until go;
+    cnt <= cnt +% 1;
+  end thread Worker
+  comb
+    done = cnt == 3;
+  end comb
+end module ThrRst
+"#;
+
+/// Run the thread pipeline the CLI runs (TLM target rewrite, initiator
+/// calls, then `lower_threads`) and return its errors, if any.
+fn lower_thread_errors(source: &str) -> String {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let ast = elaborate::elaborate(parser.parse_source_file().expect("parse error"))
+        .expect("elaborate error");
+    let lowered = elaborate::lower_tlm_target_threads(ast)
+        .and_then(elaborate::lower_tlm_initiator_calls)
+        .and_then(elaborate::lower_threads);
+    match lowered {
+        Ok(_) => String::new(),
+        Err(errs) => errs
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[test]
+fn thread_reset_clause_matching_the_port_polarity_is_accepted() {
+    assert_eq!(lower_thread_errors(THREAD_RST_SRC), "");
+    assert!(typecheck_errors(THREAD_RST_SRC).is_ok());
+    let high = THREAD_RST_SRC
+        .replace("Reset<Async, Low>", "Reset<Sync, High>")
+        .replace("rst low", "rst high");
+    assert_eq!(lower_thread_errors(&high), "");
+}
+
+#[test]
+fn thread_reset_clause_contradicting_the_port_polarity_is_an_error() {
+    // The thread would sit in reset during normal operation and run during
+    // reset. Either the clause or the port is wrong; there is no override.
+    let bad = THREAD_RST_SRC.replace("rst low", "rst high");
+    let want = "thread `Worker`: reset clause `rst high` contradicts port \
+                `rst: Reset<Async, Low>`, which is active-low";
+    // Lowering path (check / build / default sim).
+    let errs = lower_thread_errors(&bad);
+    assert!(errs.contains(want), "lowering:\n{errs}");
+    assert!(
+        errs.contains("write `rst low`") && errs.contains("`Reset<Async, High>`"),
+        "{errs}"
+    );
+    // Unlowered path (`--thread-sim parallel` skips lower_threads).
+    let errs = typecheck_errors(&bad).unwrap_err().join("\n");
+    assert!(errs.contains(want), "typecheck:\n{errs}");
+}
+
+#[test]
+fn tlm_target_thread_reset_clause_must_match_the_port_polarity() {
+    let src = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Target
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s: target Mem;
+          reg value: UInt<64> reset rst => 0;
+          thread s.read(addr) on clk rising, rst low
+            return value;
+          end thread s.read
+        end module Target
+    ";
+    let errs = lower_thread_errors(src);
+    assert!(
+        errs.contains("reset clause `rst low` contradicts port `rst: Reset<Sync, High>`"),
+        "{errs}"
+    );
+    assert_eq!(lower_thread_errors(&src.replace("rst low", "rst high")), "");
+}
