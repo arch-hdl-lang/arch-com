@@ -495,6 +495,8 @@ inst u: Name
 end inst u
 ```
 
+**Connection types** are checked like assignments. Width, signedness, `Vec` length and reset kind/polarity must match the port, evaluated with the inst's `param` overrides. Convert explicitly (`d <- x.zext<8>();`) and re-type a reset explicitly (`rst <- rst_n as Reset<Sync, High>;`). Two exceptions: a clock of another domain rebinds the instance (legal), and an unsized literal takes the port's width.
+
 **`auto;`** connects each still-unconnected child port to the identically-named in-scope signal (ports, `reg`/`wire`/`let`/`pipe_reg`, flattened bus fields, `ports[N]` groups, whole buses). Explicit connections always win, wherever they sit relative to the directive. It is a pure desugar — the emitted SV is identical to writing the lines by hand; `--explain-auto` prints the expansion. **No name match is an error** (never a dangling port, never a silently-created net), and a definite type mismatch — width, signedness, `Vec` length, reset kind/polarity, clock domain — is an error too; param-dependent widths defer to the normal checks. `auto` stays a legal identifier: only a bare `auto;` inside an inst body is the directive.
 
 Hierarchical refs **FORBIDDEN**: `inst_name.port` is a compile error. Connect outputs with `-> wire` and use `wire` in enclosing scope.
