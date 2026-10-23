@@ -16105,6 +16105,13 @@ fn test_tlm_indexed_target_response_lock_uses_resource_policy() {
         sv.contains("module _arb_MemTarget_read_rsp"),
         "response lock should synthesize a policy arbiter module:\n{sv}"
     );
+    // #1091: the `Reset<Sync>` port must give the synthesized TLM-target
+    // response arbiter synchronous flops, not the old hard-coded async reset.
+    assert!(
+        !sv.contains("posedge clk or posedge rst")
+            && !sv.contains("posedge clk or negedge rst"),
+        "Reset<Sync> TLM target must emit a synchronous response arbiter:\n{sv}"
+    );
     // Round-robin pointer-advance shape inside the synthesized
     // `_arb_MemTarget_read_rsp` arbiter module — uses the bare
     // `grant_requester` port. The bare `rr_ptr_r + 1` form was incorrect
@@ -21402,6 +21409,79 @@ fn test_lock_arbiter_emits_hold_latch_user_arbiter_does_not() {
     assert!(
         !user_sv.contains("hold_valid_r") && !user_sv.contains("request_release"),
         "user-declared arbiter must keep transactional grant semantics:\n{user_sv}"
+    );
+}
+
+// #1091: the synthesized lock arbiter inherits BOTH the reset kind and level
+// from the merged module's reset port. It used to hard-code the kind to Async,
+// so a `Reset<Sync>` design got asynchronous arbiter flops beside synchronous
+// `_threads` logic — a reset-methodology mismatch, silent in check and
+// Verilator. For every Kind x Level, the `_arb_*` sensitivity list must match
+// the port.
+#[test]
+fn test_lock_arbiter_reset_kind_matches_the_port() {
+    // Helper: a two-thread lock design parameterized by the reset type text.
+    fn lock_src(reset_ty: &str, clause: &str) -> String {
+        format!(
+            r#"
+        module LockKind
+          port clk: in Clock<SysDomain>;
+          port rst: in {reset_ty};
+          port go: in Bool;
+          port busy: out Bool;
+
+          resource pool: mutex<round_robin>;
+
+          thread once T0 on clk rising, {clause}
+            lock pool
+              busy = 1;
+              wait until go;
+              busy = 0;
+            end lock pool
+          end thread T0
+
+          thread once T1 on clk rising, {clause}
+            lock pool
+              wait until go;
+            end lock pool
+          end thread T1
+        end module LockKind
+    "#
+        )
+    }
+
+    // Sync, active-high: arbiter must NOT have any async reset edge.
+    let sync_high = compile_to_sv(&lock_src("Reset<Sync, High>", "rst high"));
+    assert!(
+        sync_high.contains("module _arb_LockKind_pool"),
+        "expected synthesized arbiter:\n{sync_high}"
+    );
+    assert!(
+        !sync_high.contains("posedge clk or posedge rst")
+            && !sync_high.contains("posedge clk or negedge rst"),
+        "Reset<Sync> design must emit a synchronous arbiter, not an async one:\n{sync_high}"
+    );
+
+    // Sync, active-low: still synchronous (no edge-sensitive reset).
+    let sync_low = compile_to_sv(&lock_src("Reset<Sync, Low>", "rst low"));
+    assert!(
+        !sync_low.contains("posedge clk or posedge rst")
+            && !sync_low.contains("posedge clk or negedge rst"),
+        "Reset<Sync, Low> design must emit a synchronous arbiter:\n{sync_low}"
+    );
+
+    // Async, active-high: arbiter keeps its async reset (posedge rst).
+    let async_high = compile_to_sv(&lock_src("Reset<Async, High>", "rst high"));
+    assert!(
+        async_high.contains("always_ff @(posedge clk or posedge rst)"),
+        "Reset<Async, High> design must keep async arbiter flops:\n{async_high}"
+    );
+
+    // Async, active-low: async reset on negedge.
+    let async_low = compile_to_sv(&lock_src("Reset<Async, Low>", "rst low"));
+    assert!(
+        async_low.contains("always_ff @(posedge clk or negedge rst)"),
+        "Reset<Async, Low> design must keep async arbiter flops (negedge):\n{async_low}"
     );
 }
 
