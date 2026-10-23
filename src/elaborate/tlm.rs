@@ -1936,7 +1936,12 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                 }
                 let mut extra_items: Vec<Item> = Vec::new();
                 for ((_port, _method), group) in indexed_target_groups {
-                    match lower_indexed_tlm_target_group(&m.name.name, group, &resource_decls, &m.ports) {
+                    match lower_indexed_tlm_target_group(
+                        &m.name.name,
+                        group,
+                        &resource_decls,
+                        &m.ports,
+                    ) {
                         Ok((items, mut extras)) => {
                             new_body.extend(items);
                             extra_items.append(&mut extras);

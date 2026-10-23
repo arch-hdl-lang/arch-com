@@ -16108,8 +16108,7 @@ fn test_tlm_indexed_target_response_lock_uses_resource_policy() {
     // #1091: the `Reset<Sync>` port must give the synthesized TLM-target
     // response arbiter synchronous flops, not the old hard-coded async reset.
     assert!(
-        !sv.contains("posedge clk or posedge rst")
-            && !sv.contains("posedge clk or negedge rst"),
+        !sv.contains("posedge clk or posedge rst") && !sv.contains("posedge clk or negedge rst"),
         "Reset<Sync> TLM target must emit a synchronous response arbiter:\n{sv}"
     );
     // Round-robin pointer-advance shape inside the synthesized

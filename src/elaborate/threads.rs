@@ -485,7 +485,12 @@ fn lower_module_threads(
             comb_deps: None,
             span: sp,
         });
-        (t.clock.name.clone(), t.reset.name.clone(), rk, t.reset_level)
+        (
+            t.clock.name.clone(),
+            t.reset.name.clone(),
+            rk,
+            t.reset_level,
+        )
     };
 
     // Collect lock signal names (internal, not ports)
