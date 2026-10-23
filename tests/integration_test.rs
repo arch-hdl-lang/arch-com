@@ -21482,6 +21482,33 @@ fn test_lock_arbiter_reset_kind_matches_the_port() {
         async_low.contains("always_ff @(posedge clk or negedge rst)"),
         "Reset<Async, Low> design must keep async arbiter flops (negedge):\n{async_low}"
     );
+
+    // The core #1091 invariant: the synthesized arbiter's clocking must MATCH
+    // the merged `_threads` module beside it, not merely be internally
+    // consistent. Extract the first `always_ff @(...)` sensitivity list of each
+    // module and require equality for every Kind x Level.
+    fn first_always_ff(sv: &str, module_marker: &str) -> String {
+        let after = sv
+            .split_once(module_marker)
+            .unwrap_or_else(|| panic!("module `{module_marker}` not found:\n{sv}"))
+            .1;
+        // Stop at the next module boundary so we read this module's own flop.
+        let body = after.split("\nmodule ").next().unwrap_or(after);
+        let at = body
+            .find("always_ff @(")
+            .unwrap_or_else(|| panic!("no always_ff in `{module_marker}`:\n{sv}"));
+        let rest = &body[at..];
+        let end = rest.find(')').map(|i| i + 1).unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+    for sv in [&sync_high, &sync_low, &async_high, &async_low] {
+        let arb = first_always_ff(sv, "module _arb_LockKind_pool");
+        let threads = first_always_ff(sv, "module _LockKind_threads");
+        assert_eq!(
+            arb, threads,
+            "synthesized arbiter clocking must match the `_threads` module:\n{sv}"
+        );
+    }
 }
 
 #[test]
