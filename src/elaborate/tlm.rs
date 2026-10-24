@@ -1182,19 +1182,61 @@ fn tlm_bus_field(bus: &str, field: &str, span: Span) -> Expr {
     )
 }
 
-/// Zero literal matching a synthesized reg's declared type: float types get
-/// a typed +0.0 (all-zero bits in FP32/BF16/FP8E4M3/FP8E5M2), everything
-/// else the integer 0.
+/// Zero/default expression matching a synthesized reg's declared type.
+///
+/// Float types get a typed +0.0 (all-zero bits in every supported narrow
+/// format).  Scale types do not both have a zero encoding: E8M0's zero code
+/// is the smallest positive scale, so use the representation of 1.0 for a
+/// valid reset/default value; UE4M3 does have a zero encoding but using its
+/// conversion keeps this helper type-correct without teaching integer
+/// literals about scale types.
 fn tlm_zero_for_type(ty: &TypeExpr, span: Span) -> Expr {
+    if let TypeExpr::SInt(width) = ty {
+        return Expr::new(
+            ExprKind::MethodCall(
+                Box::new(Expr::new(
+                    ExprKind::Signed(Box::new(Expr::new(
+                        ExprKind::Literal(LitKind::Dec(0)),
+                        span,
+                    ))),
+                    span,
+                )),
+                Ident::new("resize".to_string(), span),
+                vec![(*width.clone())],
+            ),
+            span,
+        );
+    }
     let fmt = match ty {
         TypeExpr::FP32 => Some(FloatLitFmt::Fp32),
         TypeExpr::BF16 => Some(FloatLitFmt::Bf16),
         TypeExpr::FP8E4M3 => Some(FloatLitFmt::E4m3),
         TypeExpr::FP8E5M2 => Some(FloatLitFmt::E5m2),
+        TypeExpr::FP4E2M1 => Some(FloatLitFmt::E2m1),
+        TypeExpr::FP6E2M3 => Some(FloatLitFmt::E2m3),
+        TypeExpr::FP6E3M2 => Some(FloatLitFmt::E3m2),
         _ => None,
     };
     match fmt {
         Some(f) => Expr::new(ExprKind::Literal(LitKind::TypedFloat(f, 0)), span),
+        None if matches!(ty, TypeExpr::E8M0 | TypeExpr::UE4M3) => {
+            let method = if matches!(ty, TypeExpr::E8M0) {
+                "to_e8m0"
+            } else {
+                "to_ue4m3"
+            };
+            Expr::new(
+                ExprKind::MethodCall(
+                    Box::new(Expr::new(
+                        ExprKind::Literal(LitKind::Float(1.0f64.to_bits())),
+                        span,
+                    )),
+                    Ident::new(method.to_string(), span),
+                    Vec::new(),
+                ),
+                span,
+            )
+        }
         None => Expr::new(ExprKind::Literal(LitKind::Dec(0)), span),
     }
 }

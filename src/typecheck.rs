@@ -4709,7 +4709,8 @@ impl<'a> TypeChecker<'a> {
                 &inner.kind,
                 ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
             )
-        );
+        ) || matches!(&then_expr.kind, ExprKind::Signed(inner) | ExprKind::Unsigned(inner)
+            if matches!(&inner.kind, ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))));
         let else_is_unsized_int = matches!(
             &else_expr.kind,
             ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
@@ -4722,7 +4723,8 @@ impl<'a> TypeChecker<'a> {
                 &inner.kind,
                 ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
             )
-        );
+        ) || matches!(&else_expr.kind, ExprKind::Signed(inner) | ExprKind::Unsigned(inner)
+            if matches!(&inner.kind, ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))));
         let bool_uint1_pair = matches!(
             (&then_ty, &else_ty),
             (Ty::Bool, Ty::UInt(1)) | (Ty::UInt(1), Ty::Bool)
