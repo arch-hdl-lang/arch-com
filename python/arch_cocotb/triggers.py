@@ -268,7 +268,12 @@ def _to_ps(duration, units, step_ps=1000):
 
 def _unit_ps(units, step_ps=1000):
     """Return the picosecond scale for a cocotb time unit."""
-    unit = "step" if units is None else str(units).lower().rstrip("s")
+    unit = "step" if units is None else str(units).lower()
+    # Check exact spellings first: ``s`` is the SI abbreviation for seconds,
+    # so stripping its trailing ``s`` would turn a valid unit into empty text.
+    if unit in _TIME_UNIT_PS:
+        return _TIME_UNIT_PS[unit]
+    unit = unit.rstrip("s")
     if unit == "step":
         return Decimal(step_ps)
     if unit not in _TIME_UNIT_PS:

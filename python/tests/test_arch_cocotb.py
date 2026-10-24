@@ -6,6 +6,7 @@ import unittest
 import cocotb
 from arch_cocotb.dut import ArchDUT
 from arch_cocotb.simulator import ArchSimulator
+from arch_cocotb.triggers import _to_ps, _unit_ps
 from cocotb.clock import Clock
 from cocotb.queue import Queue, QueueEmpty, QueueFull
 from cocotb.triggers import (
@@ -166,6 +167,23 @@ def run_native(test_body):
 
 
 class TimingTests(unittest.TestCase):
+    def test_timer_unit_normalization_preserves_seconds_abbreviation(self):
+        self.assertEqual(_to_ps(1, "s"), 1_000_000_000_000)
+        self.assertEqual(_to_ps(1, "S"), 1_000_000_000_000)
+        for unit in ("fs", "ps", "ns", "us", "ms", "sec", "step"):
+            self.assertEqual(_unit_ps(unit.upper()), _unit_ps(unit))
+            self.assertEqual(_unit_ps(unit + "s"), _unit_ps(unit))
+        self.assertEqual(_unit_ps("secs"), 1_000_000_000_000)
+        self.assertEqual(_unit_ps("steps"), 1000)
+
+    def test_seconds_timer_and_sim_time(self):
+        async def body(dut):
+            await Timer(1, units="s")
+            self.assertEqual(get_sim_time("ps"), 1_000_000_000_000)
+            self.assertEqual(get_sim_time("s"), 1)
+
+        run_native(body)
+
     def test_exact_picosecond_clock_and_time_conversion(self):
         async def body(dut):
             cocotb.start_soon(
