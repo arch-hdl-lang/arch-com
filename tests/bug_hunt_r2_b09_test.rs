@@ -41,6 +41,9 @@ module tb;
     dst(); dst(); dst(); check_value(8'ha5);
     rst = 1; dst(); src(); check_value(0);  // both destination output and source state reset
     rst = 0; data_in = 8'h3c; src(); dst(); dst(); dst(); check_value(8'h3c);
+    rst = 1; dst(); src(); rst = 0; data_in = 8'h5a;
+    src(); dst(); check_value(0); src(); dst(); check_value(0);
+    src(); dst(); check_value(0); src(); dst(); check_value(8'h5a);
     $finish;
   end
 endmodule
@@ -56,6 +59,7 @@ static ConfigSync dut;
 static void eval() { dut.eval(); }
 static void src_tick() { dut.src_clk = 0; eval(); dut.src_clk = 1; eval(); dut.src_clk = 0; eval(); }
 static void dst_tick() { dut.dst_clk = 0; eval(); dut.dst_clk = 1; eval(); dut.dst_clk = 0; eval(); }
+static void both_tick() { dut.src_clk = 0; dut.dst_clk = 0; eval(); dut.src_clk = 1; dut.dst_clk = 1; eval(); dut.src_clk = 0; dut.dst_clk = 0; eval(); }
 static void expect(unsigned value) {
   if (dut.data_out != value) { std::fprintf(stderr, "expected %u got %u\n", value, (unsigned)dut.data_out); std::abort(); }
 }
@@ -69,6 +73,8 @@ int main() {
   dst_tick(); dst_tick(); dst_tick(); expect(0xa5);
   dut.rst = 1; dst_tick(); src_tick(); expect(0);
   dut.rst = 0; dut.data_in = 0x3c; src_tick(); dst_tick(); dst_tick(); dst_tick(); expect(0x3c);
+  dut.rst = 1; dst_tick(); src_tick(); dut.rst = 0; dut.data_in = 0x5a;
+  both_tick(); expect(0); both_tick(); expect(0); both_tick(); expect(0); both_tick(); expect(0x5a);
   return 0;
 }
 "#;

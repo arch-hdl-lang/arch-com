@@ -218,6 +218,7 @@ impl<'a> SimCodegen<'a> {
                 // Both clocked SV blocks sample the pre-edge source holding
                 // register when the clocks coincide.
                 cpp.push_str("  auto _data_reg_before = _data_reg;\n");
+                cpp.push_str("  auto _req_src_before = _req_src;\n");
                 cpp.push_str("  if (_rising_src) {\n");
                 cpp.push_str("    if (data_in != _data_reg && _req_src == _ack_src) {\n");
                 cpp.push_str("      _data_reg = data_in;\n      _req_src ^= 1;\n    }\n");
@@ -235,7 +236,7 @@ impl<'a> SimCodegen<'a> {
                 for i in (1..stages).rev() {
                     cpp.push_str(&format!("    _req_sync{i} = _req_sync{};\n", i - 1));
                 }
-                cpp.push_str("    _req_sync0 = _req_src;\n");
+                cpp.push_str("    _req_sync0 = _req_src_before;\n");
                 cpp.push_str("  }\n");
             }
             SyncKind::Reset => {
