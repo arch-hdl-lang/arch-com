@@ -1936,7 +1936,12 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                 }
                 let mut extra_items: Vec<Item> = Vec::new();
                 for ((_port, _method), group) in indexed_target_groups {
-                    match lower_indexed_tlm_target_group(&m.name.name, group, &resource_decls) {
+                    match lower_indexed_tlm_target_group(
+                        &m.name.name,
+                        group,
+                        &resource_decls,
+                        &m.ports,
+                    ) {
                         Ok((items, mut extras)) => {
                             new_body.extend(items);
                             extra_items.append(&mut extras);
@@ -5316,6 +5321,7 @@ fn lower_indexed_tlm_target_group(
     module_name: &str,
     mut group: Vec<(ThreadBlock, TlmTargetBinding, TlmMethodMeta)>,
     resource_decls: &HashMap<String, ResourceDecl>,
+    ports: &[PortDecl],
 ) -> Result<(Vec<ModuleBodyItem>, Vec<Item>), CompileError> {
     if group.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -5326,6 +5332,17 @@ fn lower_indexed_tlm_target_group(
     let group_reset_ident = group[0].0.reset.clone();
     let group_rst = group[0].0.reset.name.clone();
     let group_rst_level = group[0].0.reset_level;
+    // Reset kind comes from the module's reset port (the clause carries only
+    // the level). The synthesized arbiter must match it, not hard-code Async
+    // (#1091): a `Reset<Sync>` target would otherwise get async arbiter flops.
+    let group_rst_kind = ports
+        .iter()
+        .find(|p| p.name.name == group_rst)
+        .and_then(|p| match &p.ty {
+            TypeExpr::Reset(k, _) => Some(*k),
+            _ => None,
+        })
+        .unwrap_or(ResetKind::Async);
     let port = group[0].1.port.name.clone();
     let method_name = group[0].1.method.name.clone();
     let method = group[0].2.clone();
@@ -5605,6 +5622,7 @@ fn lower_indexed_tlm_target_group(
         hook,
         &group_clk,
         &group_rst,
+        group_rst_kind,
         group_rst_level,
         span,
     )));

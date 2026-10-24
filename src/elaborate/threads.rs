@@ -442,7 +442,7 @@ fn lower_module_threads(
     }
 
     // Clock and reset ports (from first thread)
-    let (clk_name, rst_name, _rst_level) = {
+    let (clk_name, rst_name, _rst_kind, _rst_level) = {
         let t = &threads[0].1;
         let rk = type_map
             .get(&t.reset.name)
@@ -485,7 +485,12 @@ fn lower_module_threads(
             comb_deps: None,
             span: sp,
         });
-        (t.clock.name.clone(), t.reset.name.clone(), t.reset_level)
+        (
+            t.clock.name.clone(),
+            t.reset.name.clone(),
+            rk,
+            t.reset_level,
+        )
     };
 
     // Collect lock signal names (internal, not ports)
@@ -1078,6 +1083,7 @@ fn lower_module_threads(
             hook,
             &clk_name,
             &rst_name,
+            _rst_kind,
             _rst_level,
             sp,
         );
@@ -2648,13 +2654,15 @@ pub(crate) fn synthesize_lock_arbiter(
     hook: Option<ArbiterHookDecl>,
     clk_name: &str,
     rst_name: &str,
+    rst_kind: ResetKind,
     rst_level: ResetLevel,
     sp: Span,
 ) -> ArbiterDecl {
-    // Reset kind: synthesized arbiter inherits Async from the merged
-    // module's reset (matches the merged module itself, which uses Async
-    // for thread-driven resets).
-    let rst_ty = TypeExpr::Reset(ResetKind::Async, rst_level);
+    // Reset kind + level both come from the merged module's reset port, so
+    // the synthesized arbiter's flops match the `_threads` logic beside it.
+    // Hard-coding Async here (the old behavior) gave a `Reset<Sync>` design
+    // asynchronous arbiter flops — a reset-methodology mismatch (#1091).
+    let rst_ty = TypeExpr::Reset(rst_kind, rst_level);
     let clk_ty = TypeExpr::Clock(Ident::new("SysDomain".to_string(), sp));
     let n_threads_expr = Expr::new(ExprKind::Literal(LitKind::Dec(n_threads as u64)), sp);
     let gr_width = crate::width::index_width(n_threads as u64);
