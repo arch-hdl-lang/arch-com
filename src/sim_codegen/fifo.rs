@@ -16,23 +16,14 @@ impl<'a> SimCodegen<'a> {
             .iter()
             .find(|p| p.name.name == "DEPTH")
             .and_then(|p| p.default.as_ref())
-            .and_then(|e| {
-                if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
-                    Some(*v)
-                } else {
-                    None
-                }
-            })
+            .and_then(|e| try_eval_const_expr_with_params(e, &f.params))
             .unwrap_or(8);
         let overflow: u64 = f
             .params
             .iter()
             .find(|p| p.name.name == "OVERFLOW")
             .and_then(|p| p.default.as_ref())
-            .and_then(|e| match &e.kind {
-                ExprKind::Literal(LitKind::Dec(v)) => Some(*v),
-                _ => None,
-            })
+            .and_then(|e| try_eval_const_expr_with_params(e, &f.params))
             .unwrap_or(0);
 
         // Build type-param substitution: param name → concrete TypeExpr (from default)
