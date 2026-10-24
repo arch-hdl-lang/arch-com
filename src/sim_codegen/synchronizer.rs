@@ -9,7 +9,11 @@ impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_synchronizer(&self, s: &crate::ast::SynchronizerDecl) -> SimModel {
         use crate::ast::SyncKind;
 
-        let class = s.name.name.clone();
+        // All generated native simulation models use the Verilator-compatible
+        // `V<Name>` class/file naming contract.  Parent modules already refer
+        // to synchronizer instances through that name when they emit child
+        // fields and includes.
+        let class = format!("V{}", s.name.name);
 
         let stages: usize = s
             .params
