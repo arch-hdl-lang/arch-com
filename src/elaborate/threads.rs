@@ -1391,6 +1391,19 @@ fn lower_module_threads(
         // `is_folded` and skipped during codegen — it becomes unreachable.
         fold_wait_until_exit_assignments(&mut raw_states, t.once);
 
+        // A folded action may still carry a combinational assignment.  For a
+        // once-thread's final action, retain that state as the terminal hold
+        // state so its output remains asserted after the folded sequential
+        // action fires.  Only the seq portion was folded; dropping the state
+        // would silently drop its terminal comb output as well.
+        if t.once {
+            if let Some(last) = raw_states.last_mut() {
+                if last.is_folded && !last.comb_stmts.is_empty() {
+                    last.is_folded = false;
+                }
+            }
+        }
+
         // Lock release events: for each state marked as the last state of a
         // `lock` body, emit `_<res>_release_<ti> <= 1` sequentially when that
         // state's exit transition fires. The event is registered so the
@@ -1532,6 +1545,37 @@ fn lower_module_threads(
                 LockReleaseFire::Unconditional => pending_assign,
             };
             raw_states[target_idx].comb_stmts.push(pending_stmt);
+        }
+
+        // A once-thread's final sequential action must fire once on entry to
+        // the terminal state, then stop.  The ordinary terminal-state logic
+        // holds the state register in place, which would otherwise execute
+        // that state's seq statements on every subsequent clock edge.  Add a
+        // distinct empty hold state and preserve the terminal state's comb
+        // outputs there; this keeps terminal output semantics while making
+        // the action genuinely one-shot.  Folded wait-exit actions already
+        // fire from their predecessor and therefore do not need a hold state.
+        if t.once {
+            if let Some(last) = raw_states.last() {
+                if !last.seq_stmts.is_empty() {
+                    let terminal_comb = last.comb_stmts.clone();
+                    raw_states.push(ThreadFsmState {
+                        comb_stmts: terminal_comb,
+                        seq_stmts: Vec::new(),
+                        transition_cond: None,
+                        wait_cycles: None,
+                        multi_transitions: Vec::new(),
+                        terminal_return: None,
+                        folded_exit_seq: Vec::new(),
+                        folded_exit_target: None,
+                        is_folded: false,
+                        no_fold_into_prev: false,
+                        lock_release: None,
+                        lock_release_info: None,
+                        is_lock_body: false,
+                    });
+                }
+            }
         }
 
         let n_states = raw_states.len();
@@ -4350,13 +4394,14 @@ fn infer_for_cnt_width_inner(stmts: &[ThreadStmt], type_map: &HashMap<String, Si
     let mut max_width: u32 = 0;
     for stmt in stmts {
         match stmt {
-            ThreadStmt::For { end, .. } => {
+            ThreadStmt::For { end, body, .. } => {
                 // Only the end expression determines the counter width.
-                // Do NOT recurse into the for-loop body — no nested for loops,
-                // and recursing would find zero for-loops there, returning 0.
                 let w = infer_expr_uint_width(end, type_map);
 
                 max_width = max_width.max(w);
+                // Nested loops have independent counters, so the shared
+                // counter register width must accommodate their bounds too.
+                max_width = max_width.max(infer_for_cnt_width_inner(body, type_map));
             }
             ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => {
                 max_width = max_width.max(infer_for_cnt_width_inner(body, type_map));

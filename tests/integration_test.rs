@@ -225,7 +225,7 @@ end module SliceArithmeticExpr
 "#;
     let sv = compile_to_sv(source);
     assert!(
-        sv.contains("assign arch_idx_base_0 = a + one_s;"),
+        sv.contains("assign arch_idx_base_0 = 5'(a + one_s);"),
         "expected the arithmetic base bound to a temp, got:\n{sv}"
     );
     assert!(
@@ -580,7 +580,7 @@ end module {name}
         );
         let sv = compile_to_sv(&source);
         assert!(
-            sv.contains("assign arch_idx_base_0 = a + b;"),
+            sv.contains("assign arch_idx_base_0 = 9'(a + b);"),
             "{name}: expected additive base bound to a temp, got:\n{sv}"
         );
         assert!(
@@ -5113,7 +5113,7 @@ fn test_pipeline_preserves_per_register_init_and_reset_semantics() {
     assert!(sim.contains("_capture_expr_init_and_reset(INIT_VALUE)"));
     assert!(sim.contains("if (rst_sync) { _capture_reset_only = 3; }"));
     assert!(sim.contains("if ((!rst_async_n)) { _capture_init_and_reset = 9; }"));
-    assert!(sim.contains("if (rst_sync) { _capture_expr_init_and_reset = (INIT_VALUE + 1); }"));
+    assert!(sim.contains("if (rst_sync) { _capture_expr_init_and_reset = (uint16_t)(((((uint16_t)(((INIT_VALUE) & 0x1FFULL)) + (uint16_t)(((1) & 0x1FFULL)))) & 0x1FFULL)); }"));
     assert!(!sim.contains("if (rst_sync) { _capture_no_reset ="));
     assert!(!sim.contains("if (rst_sync) { _capture_init_only ="));
 }
@@ -10583,7 +10583,7 @@ fn test_vec_of_bus_port_param_driven_n() {
         "expected param-driven for-loop bounds to fold + unroll:\n{sv}"
     );
     assert!(
-        sv.contains("chans_d[2] = 8'(idx + 2)") || sv.contains("chans_d[2] = 8'((idx + 2))"),
+        sv.contains("chans_d[2] = 8'(((8 > $bits(2) ? 8 : $bits(2)) + 1)'(idx + 2))"),
         "missing unrolled last-element assignment:\n{sv}"
     );
 }
@@ -11583,8 +11583,9 @@ fn test_vec_of_bus_for_loop_static_unroll() {
         );
         // RHS must reference the literal i (not the loop variable).
         assert!(
-            sv.contains(&format!("chans_d[{i}] = 8'(idx + {i})"))
-                || sv.contains(&format!("chans_d[{i}] = 8'((idx + {i}))")),
+            sv.contains(&format!(
+                "chans_d[{i}] = 8'(((8 > $bits({i}) ? 8 : $bits({i})) + 1)'(idx + {i}))"
+            )),
             "missing unrolled `chans_d[{i}] = 8'(idx + {i})`:\n{sv}"
         );
     }
@@ -28024,7 +28025,7 @@ fn test_uint_48_param_width_emits_uint64_storage() {
 
     // The seq-assign cast must be (uint64_t), not (uint32_t).
     assert!(
-        out.contains("(uint64_t)((((_accumulator + inc_in))"),
+        out.contains("(uint64_t)((((uint64_t)(((((uint64_t)(((_accumulator) & 0x1FFFFFFFFFFFFULL)) + (uint64_t)(((inc_in) & 0x1FFFFFFFFFFFFULL)))) & 0x1FFFFFFFFFFFFULL))) & 0xFFFFFFFFFFFFULL))"),
         "trunc cast should be (uint64_t)(...); got:\n{out}"
     );
 }
@@ -28177,7 +28178,7 @@ fn test_sint_40_param_width_emits_int64_storage_and_signed_trunc() {
     );
     assert!(
         out.contains(
-            "((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
+            "((int64_t)(((uint64_t)(((int64_t)(((uint64_t)((((int64_t)(((uint64_t)(_accumulator) & 0x1FFFFFFFFFFULL) << 23) >> 23) + ((int64_t)(((uint64_t)(inc_in) & 0x1FFFFFFFFFFULL) << 23) >> 23))) & 0x1FFFFFFFFFFULL) << 23) >> 23)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
         ),
         "SInt<40> trunc should sign-extend from bit 39 into int64_t; got:\n{out}"
     );
@@ -28295,7 +28296,7 @@ fn test_thread_driven_sint_reg_keeps_parent_wire_type() {
         sv.contains("logic signed [W-1:0] acc;"),
         "parent-side wire for thread-driven SInt reg should keep signedness/width:\n{sv}"
     );
-    assert!(sv.contains("assign next_acc = W'(acc + product_ext);"),
+    assert!(sv.contains("assign next_acc = W'((($bits(acc) > W ? $bits(acc) : W) + 1)'(acc + product_ext));"),
             "parent expression should see typed signed acc/product_ext and emit the trunc assignment:\n{sv}");
 }
 
@@ -28653,7 +28654,7 @@ fn test_sint_40_lowered_thread_regs_keep_signed_storage() {
             "lowered thread/native sim must not use unsigned storage for SInt<40> accumulator; got:\n{out}");
     assert!(
         out.contains(
-            "((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
+            "((int64_t)(((uint64_t)(((int64_t)(((uint64_t)((((int64_t)(((uint64_t)(_accumulator) & 0x1FFFFFFFFFFULL) << 23) >> 23) + ((int64_t)(((uint64_t)(inc_in) & 0x1FFFFFFFFFFULL) << 23) >> 23))) & 0x1FFFFFFFFFFULL) << 23) >> 23)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
         ) || out.contains(
             "((int64_t)(((uint64_t)((accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
         ),
@@ -36646,7 +36647,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
 
     // 1. ceil-div sub-burst count: (ar_len + 16) >> 4.
     assert!(
-        flat.contains("num_sub_r <= 5'(9'(9'($unsigned(m_ar_len)) + 16) >> 4)"),
+        flat.contains("num_sub_r <= 5'(9'(10'(9'($unsigned(m_ar_len)) + 16)) >> 4)"),
         "num_sub must be ceil((ar_len+1)/16) = (ar_len+16)>>4:\n{sv}",
     );
     // 2. INCR-stepped sub-burst start address: base + (beats_done << size).
@@ -36656,7 +36657,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
         // name (arch#932) — so match the math, not the name.
         flat.contains("logic [ADDR_W-1:0] stepped;")
             && flat.contains("stepped = done << size;")
-            && flat.contains("ADDR_W'(base + stepped);"),
+            && flat.contains("ADDR_W'((ADDR_W + 1)'(base + stepped));"),
         "sub-burst start address must step by (i*16)<<size:\n{sv}",
     );
     // 3. AXI3 ar_len is 4-bit and is sub_beats-1.
@@ -36665,7 +36666,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
         "AXI3 s_ar_len must be 4-bit (max 16-beat burst):\n{sv}",
     );
     assert!(
-        flat.contains("s_ar_len = 4'(sub_beats_5_9(_t0_loop_cnt_0, total_r) - 1)"),
+        flat.contains("s_ar_len = 4'((($bits(sub_beats_5_9(_t0_loop_cnt_0, total_r)) > 1 ? $bits(sub_beats_5_9(_t0_loop_cnt_0, total_r)) : 1) + 1)'(sub_beats_5_9(_t0_loop_cnt_0, total_r) - 1))"),
         "AXI3 ar_len must be (sub_beats - 1) truncated to 4 bits:\n{sv}",
     );
     // min(16, remaining) clamp inside sub_beats().
@@ -36680,7 +36681,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
     );
     // 4. merged RLAST only on the final sub-burst.
     assert!(
-        flat.contains("m_r_last = _t0_loop_cnt_0 == num_sub_r - 1 && s_r_last"),
+        flat.contains("m_r_last = _t0_loop_cnt_0 == 6'(num_sub_r - 1) && s_r_last"),
         "merged RLAST must fire only on the final sub-burst:\n{sv}",
     );
 }
@@ -38594,7 +38595,7 @@ end module IdxArithHoist
         "expected a declared hoist temp, got:\n{sv}"
     );
     assert!(
-        sv.contains("assign arch_idx_base_0 = a - b;"),
+        sv.contains("assign arch_idx_base_0 = 9'(a - b);"),
         "expected the hoist temp assigned the arithmetic value, got:\n{sv}"
     );
     assert!(
@@ -39735,7 +39736,7 @@ fn test_seq_hoist_temps_land_at_module_scope() {
         ),
         (
             "module SeqIdxHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out Bit;\n  reg r: Bit reset rst => 0;\n  seq on clk rising\n    r <= (w - 1)[3];\n  end seq\n  comb\n    y = r;\n  end comb\nend module SeqIdxHoist\n",
-            "assign arch_idx_base_0 = w - 1;",
+            "assign arch_idx_base_0 = 17'(w - 1);",
         ),
     ];
     for (source, expected_assign) in cases {
@@ -40621,7 +40622,7 @@ end module LoopVarHoist861
         "arch#861 regression: parens dropped, emitted the precedence miscompile:\n{sv}"
     );
     assert!(
-        sv.contains("arch_idx_base_0 = a + v[i];"),
+        sv.contains("arch_idx_base_0 = 9'(a + v[i]);"),
         "expected a blocking assignment inside the loop body, got:\n{sv}"
     );
     assert!(
@@ -40640,7 +40641,9 @@ end module LoopVarHoist861
     let decl = sv
         .find("logic [9-1:0] arch_idx_base_0;")
         .unwrap_or_else(|| panic!("hoist temp declaration missing:\n{sv}"));
-    let first_stmt = sv.find("arch_idx_base_0 = a + v[i];").expect("assignment");
+    let first_stmt = sv
+        .find("arch_idx_base_0 = 9'(a + v[i]);")
+        .expect("assignment");
     assert!(
         decl > for_open && decl < first_stmt,
         "declaration must be at the top of the loop body (after `begin`, before the \

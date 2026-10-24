@@ -1237,7 +1237,7 @@ fn tlm_error_response_expr(
                 tlm_lit_dec(0, span)
             }
         }
-        _ => tlm_lit_dec(0, span),
+        _ => tlm_zero_for_type(ty, span),
     }
 }
 
@@ -2768,8 +2768,8 @@ fn lower_tlm_initiator_cohort(
         value: req_valid.clone(),
         span,
     }));
-    for (arg_i, (arg_ident, _)) in method_meta.args.iter().enumerate() {
-        let mut value = zero();
+    for (arg_i, (arg_ident, arg_ty)) in method_meta.args.iter().enumerate() {
+        let mut value = tlm_zero_for_type(arg_ty, span);
         for (i, dt) in group.iter().enumerate().rev() {
             value = tern(grants[i].clone(), dt.call.args[arg_i].clone(), value);
         }
@@ -4149,7 +4149,7 @@ fn inline_lower_tlm_initiator_group(
                 &format!("_tlm_init_{}_{}_{}", agg.port, agg.method, arg_ident.name),
                 arg_ty,
                 &pairs,
-                dec(0),
+                tlm_zero_for_type(arg_ty, span),
                 &mut items,
                 &mut comb_stmts,
             );
@@ -4568,8 +4568,8 @@ fn inline_lower_tlm_fork_join_all(
         value: req_valid.clone(),
         span,
     }));
-    for (arg_i, (arg_ident, _)) in method_meta.args.iter().enumerate() {
-        let mut value = zero();
+    for (arg_i, (arg_ident, arg_ty)) in method_meta.args.iter().enumerate() {
+        let mut value = tlm_zero_for_type(arg_ty, span);
         for (i, issue) in issues.iter().enumerate().rev() {
             value = tern(grants[i].clone(), issue.call.args[arg_i].clone(), value);
         }
@@ -5171,8 +5171,8 @@ fn inline_lower_tlm_initiator(
             span,
         }));
         // Each arg: ternary chain over issue states; default 0.
-        for (arg_i, (arg_ident, _arg_ty)) in agg.arg_decls.iter().enumerate() {
-            let mut value_expr = Expr::new(ExprKind::Literal(LitKind::Dec(0)), span);
+        for (arg_i, (arg_ident, arg_ty)) in agg.arg_decls.iter().enumerate() {
+            let mut value_expr = tlm_zero_for_type(arg_ty, span);
             for (state_idx, args) in agg.issues.iter().rev() {
                 if let Some(a) = args.get(arg_i) {
                     value_expr = Expr::new(

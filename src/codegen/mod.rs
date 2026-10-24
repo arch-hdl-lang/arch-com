@@ -6885,7 +6885,12 @@ impl<'a> Codegen<'a> {
                 });
             }
             let result = if let Some(pred) = args.first() {
-                self.emit_expr_str(pred)
+                let parent_prec = if method.name == "all" {
+                    Self::sv_binop_prec(&BinOp::And)
+                } else {
+                    Self::sv_binop_prec(&BinOp::Or)
+                };
+                self.emit_expr_prec(pred, parent_prec)
             } else {
                 // contains / reduce_*: see caller below; we won't be called
                 // without args from those paths.
@@ -6903,18 +6908,26 @@ impl<'a> Codegen<'a> {
             result
         };
 
+        // A lowered Vec method is represented by an expression tree node in
+        // ARCH, but its expansion is a string of SV operators. Keep that
+        // expansion grouped so the method remains atomic when it is used as
+        // an operand of a surrounding operator (especially `and`/`or`, unary
+        // `not`, and comparisons). Without this, for example,
+        // `v.any(p) and gate` became `v0 == n || v1 == n && gate`.
+        let grouped = |expr: String| format!("({expr})");
+
         match method.name.as_str() {
             "any" => {
                 if n_usize == 0 {
                     return "1'b0".to_string();
                 }
-                (0..n).map(emit_at).collect::<Vec<_>>().join(" || ")
+                grouped((0..n).map(emit_at).collect::<Vec<_>>().join(" || "))
             }
             "all" => {
                 if n_usize == 0 {
                     return "1'b1".to_string();
                 }
-                (0..n).map(emit_at).collect::<Vec<_>>().join(" && ")
+                grouped((0..n).map(emit_at).collect::<Vec<_>>().join(" && "))
             }
             "count" => {
                 if n_usize == 0 {
@@ -6938,28 +6951,30 @@ impl<'a> Codegen<'a> {
                 if n_usize == 0 {
                     return "1'b0".to_string();
                 }
-                (0..n)
-                    .map(|i| format!("({} == {x})", element_at(i)))
-                    .collect::<Vec<_>>()
-                    .join(" || ")
+                grouped(
+                    (0..n)
+                        .map(|i| format!("({} == {x})", element_at(i)))
+                        .collect::<Vec<_>>()
+                        .join(" || "),
+                )
             }
             "reduce_or" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n).map(element_at).collect::<Vec<_>>().join(" | ")
+                grouped((0..n).map(element_at).collect::<Vec<_>>().join(" | "))
             }
             "reduce_and" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n).map(element_at).collect::<Vec<_>>().join(" & ")
+                grouped((0..n).map(element_at).collect::<Vec<_>>().join(" & "))
             }
             "reduce_xor" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n).map(element_at).collect::<Vec<_>>().join(" ^ ")
+                grouped((0..n).map(element_at).collect::<Vec<_>>().join(" ^ "))
             }
             "find_first" => {
                 // Record the index width so a matching typedef is emitted
@@ -8156,6 +8171,20 @@ impl<'a> Codegen<'a> {
                     };
                     let wp = Self::paren_width(&w);
                     format!("{wp}'({l} {op_str} {r})")
+                } else if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) && {
+                    let const_params = self
+                        .current_construct_params()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|p| p.name.name.clone())
+                        .collect();
+                    !Self::is_const_reducible_with(expr, &const_params)
+                } {
+                    // A size cast supplies the ARCH result width as the SV
+                    // evaluation context and prevents a parent expression
+                    // from resizing the arithmetic before it is evaluated.
+                    let w = Self::paren_width(&self.infer_sv_width_str(expr));
+                    format!("{w}'({l} {op_str} {r})")
                 } else {
                     format!("{l} {op_str} {r}")
                 }

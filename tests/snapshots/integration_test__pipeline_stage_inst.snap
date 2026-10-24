@@ -13,7 +13,7 @@ module Alu #(
   output logic [T-1:0] result
 );
 
-  assign result = T'(a + b);
+  assign result = T'((T + 1)'(a + b));
 
 endmodule
 
