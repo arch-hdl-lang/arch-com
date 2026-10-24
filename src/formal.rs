@@ -3097,12 +3097,32 @@ impl<'a> FormalCtx<'a> {
                 })
             }
             BinOp::Shl => {
-                // Result width = W(a). Amount zero-extended to W(a).
+                // Result width = W(a), but the shift amount must not be
+                // truncated to that width.  SMT-LIB requires both operands
+                // of a bit-vector shift to have the same width, so widen the
+                // value and amount to their common width, perform the shift,
+                // then narrow the result back to W(a).  This preserves the
+                // HDL/SV overshift rule (zero for left/logical-right and
+                // sign-fill for arithmetic-right) when, for example, a
+                // UInt<2> is shifted by a UInt<8> value of 4.
                 let w = ta.width;
                 let signed = ta.signed;
-                let lb = coerce(tb, w, false);
+                let shift_w = w.max(tb.width);
+                let la = coerce(ta, shift_w, signed);
+                let lb = if tb.width == shift_w {
+                    SmtTerm {
+                        signed: false,
+                        ..tb
+                    }
+                } else {
+                    SmtTerm {
+                        s: format!("((_ zero_extend {}) {})", shift_w - tb.width, tb.s),
+                        width: shift_w,
+                        signed: false,
+                    }
+                };
                 Ok(SmtTerm {
-                    s: format!("(bvshl {} {})", ta.s, lb.s),
+                    s: format!("((_ extract {} 0) (bvshl {} {}))", w - 1, la.s, lb.s),
                     width: w,
                     signed,
                 })
@@ -3110,10 +3130,23 @@ impl<'a> FormalCtx<'a> {
             BinOp::Shr => {
                 let w = ta.width;
                 let signed = ta.signed;
-                let lb = coerce(tb, w, false);
+                let shift_w = w.max(tb.width);
+                let la = coerce(ta, shift_w, signed);
+                let lb = if tb.width == shift_w {
+                    SmtTerm {
+                        signed: false,
+                        ..tb
+                    }
+                } else {
+                    SmtTerm {
+                        s: format!("((_ zero_extend {}) {})", shift_w - tb.width, tb.s),
+                        width: shift_w,
+                        signed: false,
+                    }
+                };
                 let opname = if signed { "bvashr" } else { "bvlshr" };
                 Ok(SmtTerm {
-                    s: format!("({opname} {} {})", ta.s, lb.s),
+                    s: format!("((_ extract {} 0) ({opname} {} {}))", w - 1, la.s, lb.s),
                     width: w,
                     signed,
                 })
@@ -5873,22 +5906,35 @@ impl FormalCtx<'_> {
             }
             BinOp::Shl => {
                 let w = ta.width;
-                let amt = nv_coerce(tb, w, false)?.v;
-                let v = if amt >= 64 { 0 } else { ta.v << amt };
-                Some(nv(v, w, ta.signed))
+                let shift_w = w.max(tb.width);
+                // Shift amounts are bit patterns, not signed values.
+                let amt = tb.v;
+                let wide = nv_coerce(ta, shift_w, ta.signed)?;
+                let v = if amt >= u64::from(shift_w) {
+                    0
+                } else {
+                    wide.v << amt
+                };
+                Some(nv_coerce(nv(v, shift_w, ta.signed), w, ta.signed)?)
             }
             BinOp::Shr => {
                 let w = ta.width;
-                let amt = nv_coerce(tb, w, false)?.v;
-                let v = if ta.signed {
+                let shift_w = w.max(tb.width);
+                let amt = tb.v;
+                let wide = nv_coerce(ta, shift_w, ta.signed)?;
+                let v = if amt >= u64::from(shift_w) {
+                    if ta.signed && ((wide.v >> (shift_w - 1)) & 1) != 0 {
+                        nv_mask(shift_w)
+                    } else {
+                        0
+                    }
+                } else if ta.signed {
                     // bvashr: sign-fill; amounts ≥ width leave all sign bits.
-                    (nv_as_i64(&ta) >> amt.min(63)) as u64
-                } else if amt >= 64 {
-                    0
+                    (nv_as_i64(&wide) >> amt) as u64
                 } else {
-                    ta.v >> amt
+                    wide.v >> amt
                 };
-                Some(nv(v, w, ta.signed))
+                Some(nv_coerce(nv(v, shift_w, ta.signed), w, ta.signed)?)
             }
             BinOp::Implies => Some(nv((ta.v == 0 || tb.v != 0) as u64, 1, false)),
             // Nested `|=>` is rejected by the encoder; top-level `|=>` is
