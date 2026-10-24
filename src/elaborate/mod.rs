@@ -1671,7 +1671,12 @@ fn expand_generate_for(
     let inst_items_shape_stable = only_inst_items
         && gf.items.iter().all(|item| {
             if let GenItem::Inst(inst) = item {
-                inst_is_shape_stable_for_genvar(inst, parent_shape, child_module_ports)
+                inst_is_shape_stable_for_genvar(
+                    inst,
+                    &gf.var.name,
+                    parent_shape,
+                    child_module_ports,
+                )
             } else {
                 true
             }
@@ -1787,11 +1792,24 @@ fn expand_generate_for(
 // names that SV genvar can't carry.
 fn inst_is_shape_stable_for_genvar(
     inst: &InstDecl,
+    loop_var: &str,
     parent_shape: &ParentShapeInfo,
     child_module_ports: &HashMap<String, Vec<PortDecl>>,
 ) -> bool {
     // Inst-body for-loops produce per-iteration flat wiring — always unsafe.
     if !inst.for_loops.is_empty() {
+        return false;
+    }
+
+    // A parameter override that depends on the loop variable selects a
+    // different monomorphized child for each iteration.  Such a body cannot
+    // remain a single SV genvar instance: the elaborator emits distinct child
+    // definitions, so unroll it and rewrite each instance to its variant.
+    if inst
+        .param_assigns
+        .iter()
+        .any(|pa| expr_mentions_ident(&pa.value, loop_var))
+    {
         return false;
     }
 

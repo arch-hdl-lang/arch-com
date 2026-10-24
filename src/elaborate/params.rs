@@ -347,6 +347,27 @@ pub(crate) fn elaborate_module_variant(
                 module_params,
                 &param_vals,
             )),
+            ModuleBodyItem::Generate(GenerateDecl::For(mut gf)) => {
+                // Shape-stable generate-for bodies remain as SV genvar loops.
+                // Rewrite their child module names here just as we do for
+                // ordinary instances.  Loop-dependent overrides are rejected
+                // by the shape classifier and take the unrolled path, so the
+                // enclosing parameter map is sufficient for every preserved
+                // instance in this branch.
+                for item in &mut gf.items {
+                    if let GenItem::Inst(inst) = item {
+                        let rewritten = rewrite_inst(
+                            inst.clone(),
+                            module_variants,
+                            module_defaults,
+                            module_params,
+                            &param_vals,
+                        );
+                        *inst = rewritten;
+                    }
+                }
+                ModuleBodyItem::Generate(GenerateDecl::For(gf))
+            }
             other => other,
         })
         .collect();
