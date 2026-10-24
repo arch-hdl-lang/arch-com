@@ -77,9 +77,9 @@ module CeilTopStaged
 end module CeilTopStaged
 "#;
 
-fn available(tool: &str) -> bool {
+fn available(tool: &str, version_arg: &str) -> bool {
     Command::new(tool)
-        .arg("--version")
+        .arg(version_arg)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -139,7 +139,7 @@ fn b16_ceil_pow2_top_binade_emission_and_controls() {
         "staged final scale must be clamped (the pipelined form currently uses its default floor policy)"
     );
 
-    if available("iverilog") {
+    if available("iverilog", "-V") && available("vvp", "-V") {
         fs::write(dir.path().join("tb.sv"), SV_TB).unwrap();
         let compile = Command::new("iverilog")
             .args(["-g2012", "-s", "tb", "-o"])
@@ -163,10 +163,10 @@ fn b16_ceil_pow2_top_binade_emission_and_controls() {
             String::from_utf8_lossy(&run.stderr)
         );
     } else {
-        eprintln!("iverilog not in PATH; skipping executable-SV B16 regression");
+        eprintln!("iverilog/vvp not available; skipping executable-SV B16 regression");
     }
 
-    if available("c++") {
+    if available("c++", "--version") {
         fs::write(dir.path().join("tb.cpp"), CPP_TB).unwrap();
         let run = Command::new(arch)
             .args(["sim"])
