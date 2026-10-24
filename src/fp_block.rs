@@ -1009,21 +1009,29 @@ fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
         // Round the scale UP when amax is not already an exact power of two.
         // Widening the code gives the floor power of two as an f32 bit
         // pattern; both operands are finite and positive, so the unsigned
-        // compare is the numeric compare. The clamp is the format's largest
-        // finite code — bumping past it would land on NaN.
+        // compare is the numeric compare. This is still the preliminary
+        // exponent of `amax`: it must be allowed to reach 0xFF before the
+        // element exponent is subtracted below. The final scale is clamped
+        // after that subtraction, so treating 0xFF here as NaN is incorrect
+        // for the top FP32 binade.
         let _ = writeln!(
             o,
-            "    if (amax > {}(ecode) && ecode != 8'h{:02X}) ecode = ecode + 8'h01;",
+            "    if (amax > {}(ecode)) ecode = ecode + 8'h01;",
             s.scale.widen_fn(),
-            s.scale.max_finite_code()
         );
     }
     // 4. Shift the shared exponent down so the block maximum normalizes into
-    //    the element format's top binade; clamp underflow at the minimum
-    //    scale (overflow is structurally impossible: ecode <= 0xFE, emax >= 2).
+    //    the element format's top binade; clamp the final scale to the
+    //    finite scale range (and underflow at the minimum scale).
     let _ = writeln!(
         o,
         "    code = (ecode > 8'd{emax}) ? (ecode - 8'd{emax}) : 8'h00;"
+    );
+    let _ = writeln!(
+        o,
+        "    if (code > 8'h{:02X}) code = 8'h{:02X};",
+        s.scale.max_finite_code(),
+        s.scale.max_finite_code()
     );
     // 5. Multiply by the reciprocal scale, itself an E8M0 code, so the
     //    scaling is exact and the narrow below rounds exactly once.
@@ -1154,14 +1162,19 @@ pub fn sv_staged_quantize(
     if policy == ScalePolicy::CeilPow2 {
         let _ = writeln!(
             o,
-            "    if (amax > {}(ecode) && ecode != 8'h{:02X}) ecode = ecode + 8'h01;",
+            "    if (amax > {}(ecode)) ecode = ecode + 8'h01;",
             s.scale.widen_fn(),
-            s.scale.max_finite_code()
         );
     }
     let _ = writeln!(
         o,
         "    code = (ecode > 8'd{emax}) ? (ecode - 8'd{emax}) : 8'h00;"
+    );
+    let _ = writeln!(
+        o,
+        "    if (code > 8'h{:02X}) code = 8'h{:02X};",
+        s.scale.max_finite_code(),
+        s.scale.max_finite_code()
     );
     let _ = writeln!(
         o,
@@ -1617,14 +1630,19 @@ fn cpp_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String 
     if policy == ScalePolicy::CeilPow2 {
         let _ = writeln!(
             o,
-            "    if (amax > _{}(ecode) && ecode != 0x{:02X}u) ecode = (uint8_t)(ecode + 1u);",
+            "    if (amax > _{}(ecode)) ecode = (uint8_t)(ecode + 1u);",
             s.scale.widen_fn(),
-            s.scale.max_finite_code()
         );
     }
     let _ = writeln!(
         o,
         "    uint8_t code = (ecode > {emax}u) ? (uint8_t)(ecode - {emax}u) : (uint8_t)0u;"
+    );
+    let _ = writeln!(
+        o,
+        "    if (code > 0x{:02X}u) code = 0x{:02X}u;",
+        s.scale.max_finite_code(),
+        s.scale.max_finite_code()
     );
     let _ = writeln!(
         o,
