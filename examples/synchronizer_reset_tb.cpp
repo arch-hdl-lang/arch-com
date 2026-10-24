@@ -1,8 +1,8 @@
-#include "RstSync.h"
+#include "VRstSync.h"
 #include <cstdio>
 
 int main() {
-    RstSync dut;
+    VRstSync dut;
     int errors = 0;
 
     // Initialize: clocks low, reset deasserted

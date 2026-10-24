@@ -1,8 +1,8 @@
-#include "EventSync.h"
+#include "VEventSync.h"
 #include <cstdio>
 
 int main() {
-    EventSync dut;
+    VEventSync dut;
     int errors = 0;
 
     // Initialize

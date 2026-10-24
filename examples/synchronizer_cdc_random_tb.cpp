@@ -1,4 +1,4 @@
-#include "FlagSync.h"
+#include "VFlagSync.h"
 #include <cstdio>
 
 // Test that data eventually propagates through a 2-stage synchronizer.
@@ -6,7 +6,7 @@
 // test now exercises basic CDC propagation without the randomness knob.)
 
 int main() {
-    FlagSync dut;
+    VFlagSync dut;
     int errors = 0;
 
     // Reset

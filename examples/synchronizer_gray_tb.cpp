@@ -1,4 +1,4 @@
-#include "PtrSync.h"
+#include "VPtrSync.h"
 #include <cstdio>
 
 // Gray code: only 1 bit changes between consecutive values, so even
@@ -6,7 +6,7 @@
 // the old value or the new value — never a glitched third value.
 
 int main() {
-    PtrSync dut;
+    VPtrSync dut;
     int errors = 0;
 
     // Reset
