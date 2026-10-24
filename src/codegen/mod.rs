@@ -8164,9 +8164,7 @@ impl<'a> Codegen<'a> {
                         // formats all use a sign bit in the MSB; toggling it
                         // preserves the exponent and mantissa for ordinary
                         // values, as well as the signed-zero contract.
-                        // Storage-only formats remain on the integer path
-                        // until their operator gate is tightened by the type
-                        // checker.
+                        // Storage-only formats are rejected by the type checker.
                         if let Some(fmt) = self
                             .expr_float_fmt(operand)
                             .and_then(crate::fp_format::by_tag)

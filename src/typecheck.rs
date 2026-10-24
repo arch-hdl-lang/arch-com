@@ -4660,7 +4660,7 @@ impl<'a> TypeChecker<'a> {
                     UnaryOp::BitNot => t,
                     UnaryOp::Neg => {
                         // Storage-only floats and unsigned scale carriers have
-                        // no scalar arithmetic surface (spec §3.9/§9). Unary
+                        // no scalar arithmetic surface (spec §3.9/§3.10). Unary
                         // negation must use the same frontend contract as the
                         // binary arithmetic gates below, rather than silently
                         // passing the packed carrier to a backend.
