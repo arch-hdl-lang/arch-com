@@ -6,6 +6,18 @@
 use super::*;
 
 impl<'a> SimCodegen<'a> {
+    fn mangle_local_function(module: &str, function: &str) -> String {
+        // Length prefixes keep component boundaries unambiguous: A_B/C and
+        // A/B_C must never collapse to the same native symbol.
+        format!(
+            "__arch_local_m{}_{}_f{}_{}",
+            module.len(),
+            module,
+            function.len(),
+            function
+        )
+    }
+
     pub fn new(
         symbols: &'a SymbolTable,
         source: &'a SourceFile,
@@ -256,7 +268,7 @@ impl<'a> SimCodegen<'a> {
                 let fingerprint = format!("{}:{f:?}", f.name.name);
                 let cpp_name = canonical
                     .entry(fingerprint)
-                    .or_insert_with(|| format!("__arch_local_{}_{}", m.name.name, f.name.name))
+                    .or_insert_with(|| Self::mangle_local_function(&m.name.name, &f.name.name))
                     .clone();
                 module_names.insert(f.name.name.clone(), cpp_name);
             }

@@ -98,3 +98,43 @@ int main() { VTop t; t.a8 = 10; t.a16 = 1000; t.eval(); assert(t.n == 11); asser
 "#;
     run_native(src, tb, "local_functions_widths");
 }
+
+#[test]
+fn local_function_mangling_keeps_module_and_function_boundaries() {
+    let src = r#"
+module moduleA_B
+ port a: in UInt<8>;
+ port y: out UInt<8>;
+ function functionC(x: UInt<8>) -> UInt<8>
+   return x +% 1;
+ end function functionC
+ let y = functionC(a);
+end module moduleA_B
+module moduleA
+ port a: in UInt<8>;
+ port y: out UInt<8>;
+ function functionB_C(x: UInt<8>) -> UInt<8>
+   return x +% 2;
+ end function functionB_C
+ let y = functionB_C(a);
+end module moduleA
+module Top
+ port a: in UInt<8>;
+ port ab: out UInt<8>;
+ port a2: out UInt<8>;
+ inst left: moduleA_B
+ a <- a;
+ y -> ab;
+ end inst left
+ inst right: moduleA
+ a <- a;
+ y -> a2;
+ end inst right
+end module Top
+"#;
+    let tb = r#"#include "VTop.h"
+#include <cassert>
+int main() { VTop t; t.a = 10; t.eval(); assert(t.ab == 11); assert(t.a2 == 12); }
+"#;
+    run_native(src, tb, "local_function_mangle_boundaries");
+}
