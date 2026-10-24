@@ -18,7 +18,11 @@ fn compile_to_sv(source: &str) -> String {
 
 #[test]
 fn parameterized_generate_for_references_emitted_child_variants() {
-    let source = r#"
+    for (inst_name, first_name, second_name) in
+        [("c_i", "c_0", "c_1"), ("leaves", "leaves_0", "leaves_1")]
+    {
+        let source = format!(
+            r#"
 module Child
   param W: const = 1;
   port a: in UInt<8>;
@@ -31,28 +35,31 @@ module Top
   port a: in Vec<UInt<8>, N>;
   port y: out Vec<UInt<8>, N>;
   generate_for i in 0..N-1
-    inst leaves: Child
+    inst {inst_name}: Child
       param W = i + 1;
       a <- a[i];
       y -> y[i];
-    end inst leaves
+    end inst {inst_name}
   end generate_for
 end module Top
-"#;
+"#,
+            inst_name = inst_name
+        );
 
-    let sv = compile_to_sv(source);
-    assert!(sv.contains("module Child__W_1"), "missing W=1 child:\n{sv}");
-    assert!(sv.contains("module Child__W_2"), "missing W=2 child:\n{sv}");
-    assert!(
-        !sv.contains("Child #(.W(i + 1))"),
-        "unspecialized child remains:\n{sv}"
-    );
-    assert!(
-        sv.contains("Child__W_1 #(.W(0 + 1)) leaves_0"),
-        "missing first specialized instance:\n{sv}"
-    );
-    assert!(
-        sv.contains("Child__W_2 #(.W(1 + 1)) leaves_1"),
-        "missing second specialized instance:\n{sv}"
-    );
+        let sv = compile_to_sv(&source);
+        assert!(sv.contains("module Child__W_1"), "missing W=1 child:\n{sv}");
+        assert!(sv.contains("module Child__W_2"), "missing W=2 child:\n{sv}");
+        assert!(
+            !sv.contains("Child #(.W(i + 1))"),
+            "unspecialized child remains:\n{sv}"
+        );
+        assert!(
+            sv.contains(&format!("Child__W_1 #(.W(0 + 1)) {first_name}")),
+            "missing first specialized instance for {inst_name}:\n{sv}"
+        );
+        assert!(
+            sv.contains(&format!("Child__W_2 #(.W(1 + 1)) {second_name}")),
+            "missing second specialized instance for {inst_name}:\n{sv}"
+        );
+    }
 }
