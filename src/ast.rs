@@ -2043,6 +2043,13 @@ pub struct FunctionDecl {
     /// when the function is expensive (e.g. a 17×17 multiplier) and
     /// is called from multiple states of the same thread.
     pub shared: bool,
+    /// `shared(when EXPR) function NAME(...)`: sharing applies only when
+    /// the constant 1-bit EXPR (module params and literals only) is true.
+    /// `None` for plain `shared` and non-shared functions. The emitter keeps
+    /// one SV text for every parameter value: bound call sites become
+    /// `(EXPR) ? <shared harness output> : <inline call>`, which synthesis
+    /// folds once the parameter is known.
+    pub shared_when: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]

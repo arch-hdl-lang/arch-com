@@ -1651,6 +1651,21 @@ impl<'a> Codegen<'a> {
                 // Resolve mangled SV name (mirrors emit_expr_str's
                 // FunctionCall arm).
                 let sv_name = self.fn_call_sv_name(name, expr);
+                // What a bound call site is rewritten to. Plain `shared`: the
+                // harness output. `shared(when EXPR)`: one SV text for every
+                // parameter value, `(EXPR) ? harness : inline call`, which
+                // synthesis folds once the parameter is known (the unused
+                // harness or inline copy then has no readers). The inline text
+                // is emitted before this site is registered, so it is the
+                // ordinary call (nested shared args already rewritten).
+                let rewrite = match &fd.shared_when {
+                    Some(cond) => format!(
+                        "(({}) ? __shared_{sv_name}_out : {})",
+                        self.emit_expr_str(cond),
+                        self.emit_expr_str(expr)
+                    ),
+                    None => format!("__shared_{sv_name}_out"),
+                };
                 let key = (sv_name.clone(), reg.to_string());
                 let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
 
@@ -1679,8 +1694,7 @@ impl<'a> Codegen<'a> {
                     }
                     // Identical args — merge by recording this call
                     // site for rewrite without adding another mux entry.
-                    self.shared_call_sites
-                        .insert(expr.span.start, format!("__shared_{sv_name}_out"));
+                    self.shared_call_sites.insert(expr.span.start, rewrite);
                     return;
                 }
                 // New entry: record args + rewrite this call site.
@@ -1689,8 +1703,7 @@ impl<'a> Codegen<'a> {
                     arg_strs,
                     args: args.clone(),
                 });
-                self.shared_call_sites
-                    .insert(expr.span.start, format!("__shared_{sv_name}_out"));
+                self.shared_call_sites.insert(expr.span.start, rewrite);
             }
             ExprKind::Binary(_, a, b) => {
                 self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls);
@@ -4620,7 +4633,7 @@ impl<'a> Codegen<'a> {
                             unreachable!("wire GenItems should have been unrolled by elaboration")
                         }
                         GenItem::Assert(_) => {
-                            // SVA inside generate for: not yet supported in SV codegen (SVA needs static clock ref)
+                            unreachable!("assert GenItems should have been unrolled by elaboration")
                         }
                     }
                 }
@@ -6869,7 +6882,12 @@ impl<'a> Codegen<'a> {
                 });
             }
             let result = if let Some(pred) = args.first() {
-                self.emit_expr_str(pred)
+                let parent_prec = if method.name == "all" {
+                    Self::sv_binop_prec(&BinOp::And)
+                } else {
+                    Self::sv_binop_prec(&BinOp::Or)
+                };
+                self.emit_expr_prec(pred, parent_prec)
             } else {
                 // contains / reduce_*: see caller below; we won't be called
                 // without args from those paths.
@@ -6887,18 +6905,26 @@ impl<'a> Codegen<'a> {
             result
         };
 
+        // A lowered Vec method is represented by an expression tree node in
+        // ARCH, but its expansion is a string of SV operators. Keep that
+        // expansion grouped so the method remains atomic when it is used as
+        // an operand of a surrounding operator (especially `and`/`or`, unary
+        // `not`, and comparisons). Without this, for example,
+        // `v.any(p) and gate` became `v0 == n || v1 == n && gate`.
+        let grouped = |expr: String| format!("({expr})");
+
         match method.name.as_str() {
             "any" => {
                 if n_usize == 0 {
                     return "1'b0".to_string();
                 }
-                (0..n).map(emit_at).collect::<Vec<_>>().join(" || ")
+                grouped((0..n).map(emit_at).collect::<Vec<_>>().join(" || "))
             }
             "all" => {
                 if n_usize == 0 {
                     return "1'b1".to_string();
                 }
-                (0..n).map(emit_at).collect::<Vec<_>>().join(" && ")
+                grouped((0..n).map(emit_at).collect::<Vec<_>>().join(" && "))
             }
             "count" => {
                 if n_usize == 0 {
@@ -6922,28 +6948,30 @@ impl<'a> Codegen<'a> {
                 if n_usize == 0 {
                     return "1'b0".to_string();
                 }
-                (0..n)
-                    .map(|i| format!("({} == {x})", element_at(i)))
-                    .collect::<Vec<_>>()
-                    .join(" || ")
+                grouped(
+                    (0..n)
+                        .map(|i| format!("({} == {x})", element_at(i)))
+                        .collect::<Vec<_>>()
+                        .join(" || "),
+                )
             }
             "reduce_or" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n).map(element_at).collect::<Vec<_>>().join(" | ")
+                grouped((0..n).map(element_at).collect::<Vec<_>>().join(" | "))
             }
             "reduce_and" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n).map(element_at).collect::<Vec<_>>().join(" & ")
+                grouped((0..n).map(element_at).collect::<Vec<_>>().join(" & "))
             }
             "reduce_xor" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n).map(element_at).collect::<Vec<_>>().join(" ^ ")
+                grouped((0..n).map(element_at).collect::<Vec<_>>().join(" ^ "))
             }
             "find_first" => {
                 // Record the index width so a matching typedef is emitted
@@ -8021,6 +8049,26 @@ impl<'a> Codegen<'a> {
                 if let Some(v) = self.loop_var_subst.get(name) {
                     return v.to_string();
                 }
+                // A bare rvalue name that is not a declared signal in this
+                // construct may be an enum variant used by its short name
+                // (`mode <= Run`, `mode == Run`). The SV enum typedef
+                // canonicalizes variant names to uppercase, and the qualified
+                // `Enum::Variant` form does the same (see emit_pattern and the
+                // ExprKind::EnumVariant arm). A bare reference left in its
+                // original case mismatches the declared member, so the emitted
+                // SV fails to elaborate (Verilator: "Can't find definition of
+                // variable 'Run'"). Uppercase it to match. Mirrors typecheck's
+                // resolution order — a declared signal always wins, so the
+                // enum-variant lowering is gated on the name not resolving to a
+                // signal in this scope (arch#1031).
+                if self.ident_decl_type(name).is_none()
+                    && self.symbols.globals.values().any(|(sym, _)| {
+                        matches!(sym, Symbol::Enum(info)
+                            if info.variants.iter().any(|v| v == name))
+                    })
+                {
+                    return name.to_uppercase();
+                }
                 name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
@@ -8120,6 +8168,20 @@ impl<'a> Codegen<'a> {
                     };
                     let wp = Self::paren_width(&w);
                     format!("{wp}'({l} {op_str} {r})")
+                } else if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) && {
+                    let const_params = self
+                        .current_construct_params()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|p| p.name.name.clone())
+                        .collect();
+                    !Self::is_const_reducible_with(expr, &const_params)
+                } {
+                    // A size cast supplies the ARCH result width as the SV
+                    // evaluation context and prevents a parent expression
+                    // from resizing the arithmetic before it is evaluated.
+                    let w = Self::paren_width(&self.infer_sv_width_str(expr));
+                    format!("{w}'({l} {op_str} {r})")
                 } else {
                     format!("{l} {op_str} {r}")
                 }

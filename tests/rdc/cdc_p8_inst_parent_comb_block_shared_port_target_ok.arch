@@ -1,0 +1,52 @@
+// P8b: one parent comb block drives `wa` from the domain-DA register `ra`
+// and `wc` straight from the input port `dc` (no register fan-in). Only
+// `wc` reaches the child, whose input is consumed in DB. `wc` carries no
+// DA data, so nothing crosses. A check that unions the block's reads
+// tags every target with the block's single register domain (DA) and
+// wrongly flags `wc` (false positive).
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module Consumer
+  port clk: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= data_in;
+  end seq
+  let data_out = r;
+end module Consumer
+module Top
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port da: in UInt<8>;
+  port dc: in UInt<8>;
+  port q: out UInt<8>;
+  port qa: out UInt<8>;
+  wire wa: UInt<8>;
+  wire wc: UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg ra2: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+    ra2 <= wa;
+  end seq
+  comb
+    wa = ra +% 1;
+    wc = dc;
+  end comb
+  let qa = ra2;
+  inst cons: Consumer
+    clk <- clk_b;
+    rst <- rst;
+    data_in <- wc;
+    data_out -> q;
+  end inst cons
+end module Top

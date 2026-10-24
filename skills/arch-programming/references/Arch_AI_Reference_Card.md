@@ -187,6 +187,8 @@ enum E   { A, B, }
 ```
 
 - `SysDomain` is built-in — no `domain SysDomain end domain SysDomain` needed
+- `domain SysDomain freq_mhz: N` (top-level or in a package) sets the built-in's frequency and never needs `use`; conflicting `freq_mhz` re-declarations are an error. An undeclared `Clock<D>` is an implicit domain with no frequency
+- Package names are visible in the package's own file and in files that `use` it — nowhere else
 - `Bool` and `UInt<1>` are identical — freely assignable, bitwise ops on 1-bit return Bool
 - `Bit` is an alias for `UInt<1>`
 - No current `Future<T>` / `await` / user-visible `Token<T>` API. TLM concurrency is expressed with worker threads, `generate_for`, direct-call `fork/join` cohorts, and RHS-fork groups.
@@ -493,6 +495,8 @@ inst u: Name
 end inst u
 ```
 
+**Connection types** are checked like assignments. Width, signedness, `Vec` length and reset kind/polarity must match the port, evaluated with the inst's `param` overrides. Convert explicitly (`d <- x.zext<8>();`) and re-type a reset explicitly (`rst <- rst_n as Reset<Sync, High>;`). Two exceptions: a clock of another domain rebinds the instance (legal), and an unsized literal takes the port's width.
+
 **`auto;`** connects each still-unconnected child port to the identically-named in-scope signal (ports, `reg`/`wire`/`let`/`pipe_reg`, flattened bus fields, `ports[N]` groups, whole buses). Explicit connections always win, wherever they sit relative to the directive. It is a pure desugar — the emitted SV is identical to writing the lines by hand; `--explain-auto` prints the expansion. **No name match is an error** (never a dangling port, never a silently-created net), and a definite type mismatch — width, signedness, `Vec` length, reset kind/polarity, clock domain — is an error too; param-dependent widths defer to the normal checks. `auto` stays a legal identifier: only a bare `auto;` inside an inst body is the directive.
 
 Hierarchical refs **FORBIDDEN**: `inst_name.port` is a compile error. Connect outputs with `-> wire` and use `wire` in enclosing scope.
@@ -778,7 +782,7 @@ end module M
 | `if/else` (no waits) | Same-state conditional comb/seq | No |
 
 **Rules:**
-- `thread Name on clk rising, rst high` — clock edge and reset polarity required
+- `thread Name on clk rising, rst high` — clock edge and reset polarity required. The level must match the reset port's declared polarity (`Reset<K, Low>` ⇒ `rst low`); a mismatch is a compile error (fix the clause or the port; re-type a reset only at an `inst` connection with `as Reset<K, P>`)
 - `default comb … end default` must appear **before** the thread body; it may drive only comb outputs, not signals also assigned with `<=`
 - `default when cond … end default` must appear **before** the thread body; only seq assigns inside
 - `lock` blocks must **not** be nested — compile error (mutual exclusion guarantee)
@@ -787,6 +791,7 @@ end module M
 - `thread once` — FSM holds in terminal state instead of looping back to S0
 - `generate_for i in 0..N-1 / thread T_i … end thread T_i / end generate_for` — N identical threads
 - Multiple threads in one module share one `always_ff` — no multi-driver conflicts
+- A `reg` written by a thread must NOT also be written by a `seq`/`latch` block — multi-driver compile error (give it one owner)
 - Thread-driven `reg` declarations are **automatically** lifted to the `_ModuleName_threads` submodule
 
 **Lock arbiter policy** selected via `mutex<...>` / `semaphore<N, ...>` on the `resource` decl:
@@ -1578,7 +1583,7 @@ end module MyModule
 
 SV output: `function automatic` inside the module block. Use for one-off helpers that don't warrant a package.
 
-**`shared function`** — prefix a module-local function with `shared` to emit **one** instance at module scope, operands muxed by thread state, instead of inlining at every call site. Semantics are identical; only the structure changes, so flipping the keyword and re-synthesising is a complete evaluation. Binds only for call sites inside a `thread` state body; **any site that does not bind is silently inlined with no diagnostic** (arch#1032) — confirm by grepping the emitted SV for `__shared_<NAME>_out`. Worth it when the operator is expensive and called from several states (17×17 MAC on sky130: −56 % module area); may cost LUTs on FPGAs whose hard multiplier blocks absorb the copies anyway.
+**`shared function`** — prefix a module-local function with `shared` to emit **one** instance at module scope, operands muxed by thread state, instead of inlining at every call site. Semantics are identical; only the structure changes, so flipping the keyword and re-synthesising is a complete evaluation. Binds only for call sites inside a `thread` state body; **any site that does not bind is silently inlined with no diagnostic** (arch#1032) — confirm by grepping the emitted SV for wires starting `__shared_<NAME>_` (the emitted name carries the argument types, e.g. `__shared_MacRes_b_16_b_16_34_out`). Worth it when the operator is expensive and called from several states (17×17 MAC on sky130: −56 % module area); may cost LUTs on FPGAs whose hard multiplier blocks absorb the copies anyway. **`shared(when EXPR) function`** makes it per parameter: shared when the 1-bit constant `EXPR` is true, inlined when false. `EXPR` may only reference the enclosing module's params (a comparison/logical expression, a Bool/1-bit literal, or a 1-bit param), and the form is only allowed on module-local functions. One SV text serves both values: call sites emit `((EXPR) ? __shared_<SVNAME>_out : <SVNAME>(args))`, which synthesis folds. Typical use: a param set per target (arch-ibex MAC: sharing saves 28,877 µm² on sky130, inlining saves 489 LUT4 on ECP5).
 
 Function bodies support: `let`, `return`, `if/elsif/else`, `for` loops, assignment (`=`).
 

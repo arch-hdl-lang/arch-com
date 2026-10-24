@@ -168,8 +168,7 @@ impl Parser {
             // immediately followed by `function`. Outside that, it's
             // a regular identifier (used by some existing names like
             // `shared_signal_*`).
-            Some(TokenKind::Ident(_)) if self.peek_str() == "shared"
-                                          && self.peek_real_kind_at(1) == Some(TokenKind::Function)
+            Some(TokenKind::Ident(_)) if self.at_shared_function_start()
                 => Ok(Item::Function(self.parse_function()?)),
             Some(TokenKind::Linklist) => Ok(Item::Linklist(self.parse_linklist()?)),
             Some(TokenKind::Template) => Ok(Item::Template(self.parse_template()?)),
@@ -1263,10 +1262,7 @@ impl Parser {
                 Some(TokenKind::Function) => {
                     body.push(ModuleBodyItem::Function(self.parse_function()?));
                 }
-                Some(TokenKind::Ident(_))
-                    if self.peek_str() == "shared"
-                        && self.peek_real_kind_at(1) == Some(TokenKind::Function) =>
-                {
+                Some(TokenKind::Ident(_)) if self.at_shared_function_start() => {
                     body.push(ModuleBodyItem::Function(self.parse_function()?));
                 }
                 Some(other) => {
@@ -6293,6 +6289,11 @@ impl Parser {
         self.expect(TokenKind::Init)?;
         self.expect(TokenKind::Colon)?;
         match self.peek_kind() {
+            Some(TokenKind::None) => {
+                self.advance();
+                self.expect(TokenKind::Semi)?;
+                Ok(RamInit::None)
+            }
             Some(TokenKind::Ident(ref s)) => {
                 let s = s.clone();
                 match s.as_str() {
@@ -7787,15 +7788,29 @@ fn inside_binding_power() -> (u8, u8) {
 impl Parser {
     // ── Function ──────────────────────────────────────────────────────────────
 
-    fn parse_function(&mut self) -> Result<FunctionDecl, CompileError> {
-        // Optional `shared` modifier: `shared function NAME(...)`.
-        // Contextual keyword — checked as an ident with name "shared"
-        // immediately followed by `function`.
-        let shared = matches!(self.peek_kind(), Some(TokenKind::Ident(_)))
+    /// `shared function ...` or `shared(when EXPR) function ...`. `shared` is
+    /// a contextual keyword: only special at an item start, followed by
+    /// `function` or by `( when`. (The thread-port `shared(or)` / `shared(and)`
+    /// annotations never start an item.)
+    fn at_shared_function_start(&self) -> bool {
+        matches!(self.peek_kind(), Some(TokenKind::Ident(_)))
             && self.peek_str() == "shared"
-            && self.peek_real_kind_at(1) == Some(TokenKind::Function);
+            && (self.peek_real_kind_at(1) == Some(TokenKind::Function)
+                || (self.peek_real_kind_at(1) == Some(TokenKind::LParen)
+                    && self.peek_real_kind_at(2) == Some(TokenKind::When)))
+    }
+
+    fn parse_function(&mut self) -> Result<FunctionDecl, CompileError> {
+        // Optional `shared` / `shared(when EXPR)` modifier.
+        let shared = self.at_shared_function_start();
+        let mut shared_when = None;
         if shared {
             self.advance(); // consume the `shared` ident
+            if self.eat(TokenKind::LParen) {
+                self.expect(TokenKind::When)?;
+                shared_when = Some(self.parse_expr()?);
+                self.expect(TokenKind::RParen)?;
+            }
         }
         let start = self.expect(TokenKind::Function)?.span;
         let name = self.expect_ident()?;
@@ -7842,6 +7857,7 @@ impl Parser {
             doc: None,
             inner_doc,
             shared,
+            shared_when,
         })
     }
 
@@ -8306,6 +8322,28 @@ mod tests {
                 assert_eq!(m.ports.len(), 2);
             }
             _ => panic!("expected module"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ram_init_none_and_zero() {
+        let source = |init| {
+            format!(
+                "domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n\
+                 ram Mem\n  kind single;\n  latency 1;\n  init: {init};\n  param DEPTH: const = 4;\n  param T: type = UInt<8>;\n  port clk: in Clock<SysDomain>;\n  store\n    data: Vec<T, DEPTH>;\n  end store\n  ports access\n    en: in Bool;\n    wen: in Bool;\n    addr: in UInt<2>;\n    wdata: in T;\n    rdata: out T;\n  end ports access\nend ram Mem"
+            )
+        };
+
+        let none = parse(&source("none"));
+        match &none.items[1] {
+            Item::Ram(r) => assert!(matches!(r.init, Some(RamInit::None))),
+            _ => panic!("expected RAM"),
+        }
+
+        let zero = parse(&source("zero"));
+        match &zero.items[1] {
+            Item::Ram(r) => assert!(matches!(r.init, Some(RamInit::Zero))),
+            _ => panic!("expected RAM"),
         }
     }
 

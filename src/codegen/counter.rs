@@ -23,6 +23,25 @@ impl<'a> Codegen<'a> {
             .find(|p| p.name.name == "max" && matches!(p.direction, Direction::In))
             .map(|_| "max".to_string());
 
+        // The counter boundary has three forms, in this order of precedence:
+        // a runtime `max` port, the compile-time `MAX` parameter, or the
+        // natural all-ones value for the counter width. Keep this resolution
+        // shared by wrap, saturation, `at_max`, and the range assertion so
+        // the SV backend matches the native simulator.
+        let max_param = c
+            .params
+            .iter()
+            .any(|p| p.name.name == "MAX")
+            .then(|| "MAX".to_string());
+        let has_max_boundary = max_port.is_some() || max_param.is_some();
+        let max_expr = max_port
+            .clone()
+            .or_else(|| max_param.clone())
+            // Unsized `'1` is context-sized to the counter register. A
+            // reduction-AND (`&count_r`) is a one-bit predicate and cannot
+            // serve as the numeric wrap/saturation boundary.
+            .unwrap_or_else(|| "'1".to_string());
+
         // Determine counter width
         // Use MAX param if present, else look for WIDTH
         let width_param = c
@@ -120,6 +139,42 @@ impl<'a> Codegen<'a> {
         let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
         let rst_cond = Self::rst_condition(&rst, is_low);
 
+        if matches!(
+            (c.direction, c.mode),
+            (CounterDirection::Up, CounterMode::Gray)
+        ) {
+            let gray_range = Self::fold_width_str(&count_width);
+            self.line(&format!(
+                "function automatic logic [{gray_range}] _gray_to_bin(input logic [{gray_range}] g);"
+            ));
+            self.indent += 1;
+            self.line("integer i;");
+            self.line("begin");
+            self.indent += 1;
+            self.line(&format!(
+                "_gray_to_bin[{count_width}-1] = g[{count_width}-1];"
+            ));
+            self.line(&format!(
+                "for (i = {count_width}-2; i >= 0; i = i - 1) _gray_to_bin[i] = _gray_to_bin[i+1] ^ g[i];"
+            ));
+            self.indent -= 1;
+            self.line("end");
+            self.indent -= 1;
+            self.line("endfunction");
+            self.line(&format!(
+                "function automatic logic [{gray_range}] _bin_to_gray(input logic [{gray_range}] b);"
+            ));
+            self.indent += 1;
+            self.line("begin");
+            self.indent += 1;
+            self.line("_bin_to_gray = b ^ (b >> 1);");
+            self.indent -= 1;
+            self.line("end");
+            self.indent -= 1;
+            self.line("endfunction");
+            self.line("");
+        }
+
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
 
@@ -136,11 +191,6 @@ impl<'a> Codegen<'a> {
 
         match (c.direction, c.mode) {
             (CounterDirection::Up, CounterMode::Wrap) => {
-                let max_cond = if let Some(mp) = &max_port {
-                    format!("count_r == {mp}")
-                } else {
-                    format!("&count_r") // all bits set
-                };
                 let inc_cond = if has_inc {
                     "else if (inc) begin"
                 } else {
@@ -148,18 +198,15 @@ impl<'a> Codegen<'a> {
                 };
                 self.line(inc_cond);
                 self.indent += 1;
-                self.line(&format!("if ({max_cond}) count_r <= {init_val};"));
+                self.line(&format!(
+                    "if (count_r == {max_expr}) count_r <= {init_val};"
+                ));
                 self.line("else count_r <= count_r + 1;");
                 self.indent -= 1;
                 self.line("end");
             }
             (CounterDirection::Down, CounterMode::Wrap) => {
                 let min_cond = "count_r == '0";
-                let max_val = if let Some(mp) = &max_port {
-                    mp.clone()
-                } else {
-                    format!("'1")
-                };
                 let dec_cond = if has_dec {
                     "else if (dec) begin"
                 } else {
@@ -167,7 +214,7 @@ impl<'a> Codegen<'a> {
                 };
                 self.line(dec_cond);
                 self.indent += 1;
-                self.line(&format!("if ({min_cond}) count_r <= {max_val};"));
+                self.line(&format!("if ({min_cond}) count_r <= {max_expr};"));
                 self.line("else count_r <= count_r - 1;");
                 self.indent -= 1;
                 self.line("end");
@@ -177,11 +224,6 @@ impl<'a> Codegen<'a> {
                 self.line("else if (dec && !inc) count_r <= count_r - 1;");
             }
             (CounterDirection::Up, CounterMode::Saturate) => {
-                let max_cond = if let Some(mp) = &max_port {
-                    format!("count_r < {mp}")
-                } else {
-                    format!("!(&count_r)")
-                };
                 let inc_cond = if has_inc {
                     "else if (inc) begin"
                 } else {
@@ -189,7 +231,9 @@ impl<'a> Codegen<'a> {
                 };
                 self.line(inc_cond);
                 self.indent += 1;
-                self.line(&format!("if ({max_cond}) count_r <= count_r + 1;"));
+                self.line(&format!(
+                    "if (count_r < {max_expr}) count_r <= count_r + 1;"
+                ));
                 self.indent -= 1;
                 self.line("end");
             }
@@ -206,10 +250,13 @@ impl<'a> Codegen<'a> {
                 self.line("end");
             }
             (CounterDirection::Up, CounterMode::Gray) => {
-                // Gray: increment binary then apply bin→gray
+                // Gray state is stored in encoded form. Decode before the
+                // increment, then encode the incremented binary value; an
+                // encoded Gray value cannot be incremented as if it were
+                // binary (for example 3 -> 6 flips two bits).
                 self.line("else if (inc) begin");
                 self.indent += 1;
-                self.line("count_r <= (count_r + 1) ^ ((count_r + 1) >> 1);");
+                self.line("count_r <= _bin_to_gray(_gray_to_bin(count_r) + 1'b1);");
                 self.indent -= 1;
                 self.line("end");
             }
@@ -257,12 +304,7 @@ impl<'a> Codegen<'a> {
         }
         // at_max
         if c.ports.iter().any(|p| p.name.name == "at_max") {
-            let max_expr = if let Some(mp) = &max_port {
-                format!("count_r == {mp}")
-            } else {
-                format!("&count_r")
-            };
-            self.line(&format!("assign at_max = ({max_expr});"));
+            self.line(&format!("assign at_max = (count_r == {max_expr});"));
         }
         // at_min
         if c.ports.iter().any(|p| p.name.name == "at_min") {
@@ -275,12 +317,12 @@ impl<'a> Codegen<'a> {
         if !self.suppress_auto_sva {
             self.line("");
             self.line("// synopsys translate_off");
-            if let Some(mp) = &max_port {
+            if has_max_boundary {
                 self.line(&format!(
-                    "_auto_count_range: assert property (@(posedge {clk}) count_r <= {mp})"
+                    "_auto_count_range: assert property (@(posedge {clk}) count_r <= {max_expr})"
                 ));
                 self.line(&format!(
-                    "  else $fatal(1, \"COUNTER OVERFLOW: {n}.count_r > {mp}\");"
+                    "  else $fatal(1, \"COUNTER OVERFLOW: {n}.count_r > {max_expr}\");"
                 ));
             }
             self.line("// synopsys translate_on");

@@ -256,8 +256,13 @@ impl<'a> TypeChecker<'a> {
                 let in_scope = scope
                     .map(|range| range.contains(&item.span().start))
                     .unwrap_or(self.file_scopes.is_empty());
+                // A package is visible in the file that declares it as well as
+                // in files that `use` it (spec §3.12, §29.2) — the same rule
+                // `type_alias::packages_for_span` applies to package aliases.
                 match item {
                     Item::Use(u) if in_scope => Some(u.name.name.clone()),
+                    Item::Package(p) if in_scope => Some(p.name.name.clone()),
+                    Item::ExternPackage(p) if in_scope => Some(p.name.name.clone()),
                     _ => None,
                 }
             })
@@ -330,6 +335,63 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// Reject package-only names (domains, structs/enums/buses, aliases, and
+    /// params in width expressions) that `typ` mentions but the current file
+    /// cannot see (spec §29.2). `check_module` gets this through
+    /// `resolve_type_expr`; the other constructs never resolve their port
+    /// types, so [`Self::check_item_port_visibility`] runs this instead.
+    fn check_hidden_package_type(&mut self, typ: &TypeExpr) {
+        match typ {
+            TypeExpr::Clock(ident) | TypeExpr::Named(ident) => {
+                if self.package_member_hidden(&ident.name) {
+                    self.errors
+                        .push(CompileError::undefined(&ident.name, ident.span));
+                }
+            }
+            TypeExpr::UInt(e) | TypeExpr::SInt(e) => self.check_hidden_package_expr(e),
+            TypeExpr::Vec(elem, size) => {
+                self.check_hidden_package_type(elem);
+                self.check_hidden_package_expr(size);
+            }
+            TypeExpr::ScaledVec(elem, size, scale) => {
+                self.check_hidden_package_type(elem);
+                self.check_hidden_package_expr(size);
+                self.check_hidden_package_type(scale);
+            }
+            _ => {}
+        }
+    }
+
+    /// Package visibility for the port boundary of a non-`module` construct:
+    /// `port` declarations, `ram` port-group signals, `ports[N]` arrays, and
+    /// `type` param defaults.
+    fn check_item_port_visibility(&mut self, item: &Item) {
+        if matches!(item, Item::Module(_)) {
+            return; // resolve_type_expr already enforces it for modules
+        }
+        let mut types: Vec<&TypeExpr> = item.ports().iter().map(|p| &p.ty).collect();
+        if let Item::Ram(r) = item {
+            types.extend(
+                r.port_groups
+                    .iter()
+                    .flat_map(|g| g.signals.iter().map(|p| &p.ty)),
+            );
+        }
+        types.extend(
+            item.port_arrays()
+                .into_iter()
+                .flat_map(|a| a.signals.iter().map(|p| &p.ty)),
+        );
+        for p in Self::item_params(item) {
+            if let ParamKind::Type(ty) = &p.kind {
+                self.check_hidden_package_type(ty);
+            }
+        }
+        for ty in types {
+            self.check_hidden_package_type(ty);
+        }
+    }
+
     fn check_hidden_package_expr(&mut self, expr: &Expr) {
         let mut names = HashSet::new();
         crate::comb_graph::collect_expr_idents(expr, &mut names);
@@ -347,6 +409,7 @@ impl<'a> TypeChecker<'a> {
         // whose divisor is a reducible constant. Catches bad param defaults, etc.
         // Runs before per-item checks so reported errors sort naturally.
         self.check_const_div_zero();
+        self.check_shared_when_conditions();
         for item in self.source.items.clone().iter() {
             self.active_uses = self.uses_for_span(item.span());
             // A package's own declarations can refer to sibling members
@@ -359,6 +422,7 @@ impl<'a> TypeChecker<'a> {
                 &mut self.active_inst_output_nets,
                 Self::item_inst_output_nets(item),
             );
+            self.check_item_port_visibility(item);
             item.as_construct().typecheck(&mut self);
             self.active_params = saved_params;
             self.active_inst_output_nets = saved_nets;
@@ -753,6 +817,84 @@ impl<'a> TypeChecker<'a> {
                     .to_string(),
                 span: span_to_source_span(sp),
             });
+        }
+    }
+
+    /// `shared(when EXPR) function`: EXPR picks per parameter value whether
+    /// the function is shared, so it must be a 1-bit constant over the
+    /// enclosing module's params. A top-level or package function has no
+    /// module params to refer to, so the form is rejected there.
+    fn check_shared_when_conditions(&mut self) {
+        let items = self.source.items.clone();
+        // Thread lowering clones a module's functions into its generated
+        // `_threads` submodule; report each source condition once.
+        let mut reported: HashSet<(usize, usize)> = HashSet::new();
+        for item in &items {
+            match item {
+                Item::Function(f) => self.reject_shared_when_outside_module(f),
+                Item::Package(pkg) => {
+                    for f in &pkg.functions {
+                        self.reject_shared_when_outside_module(f);
+                    }
+                }
+                Item::Module(m) => {
+                    let params: HashSet<String> =
+                        m.params.iter().map(|p| p.name.name.clone()).collect();
+                    for it in &m.body {
+                        let ModuleBodyItem::Function(f) = it else {
+                            continue;
+                        };
+                        let Some(cond) = &f.shared_when else { continue };
+                        if !reported.insert((cond.span.start, cond.span.end)) {
+                            continue;
+                        }
+                        let mut idents = HashSet::new();
+                        crate::comb_graph::collect_expr_idents(cond, &mut idents);
+                        let mut not_params: Vec<String> =
+                            idents.into_iter().filter(|i| !params.contains(i)).collect();
+                        not_params.sort();
+                        if let Some(name) = not_params.first() {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`shared(when ...)` on function `{}` may only reference \
+                                     params of module `{}`: `{}` is not a param",
+                                    f.name.name, m.name.name, name
+                                ),
+                                cond.span,
+                            ));
+                            continue;
+                        }
+                        // Params type as generic here (`Ty::Error`), so decide
+                        // 1-bit-ness from the expression's shape instead.
+                        if !shared_when_is_one_bit(cond, &m.params) {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`shared(when ...)` condition on function `{}` must be 1 bit: \
+                                     a comparison or logical expression (e.g. \
+                                     `shared(when SHARE == 1)`), a Bool literal, or a 1-bit param",
+                                    f.name.name
+                                ),
+                                cond.span,
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn reject_shared_when_outside_module(&mut self, f: &FunctionDecl) {
+        if let Some(cond) = &f.shared_when {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "`shared(when ...)` is only allowed on a function declared inside a \
+                     module (its condition is evaluated against that module's params); \
+                     `{}` is a top-level or package function",
+                    f.name.name
+                ),
+                cond.span,
+            ));
         }
     }
 
@@ -1266,8 +1408,12 @@ impl<'a> TypeChecker<'a> {
                             ));
                         } else if is_output_port {
                             // Comb assignment to output port
-                            let rhs_ty =
-                                self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                            let rhs_ty = self.resolve_expr_type_in_context(
+                                &l.value,
+                                &m.name.name,
+                                &local_types,
+                                local_types.get(name),
+                            );
                             if let Some(port_ty) = local_types.get(name).cloned() {
                                 if rhs_ty != Ty::Error
                                     && rhs_ty != Ty::Todo
@@ -1291,8 +1437,12 @@ impl<'a> TypeChecker<'a> {
                             }
                         } else if local_types.contains_key(name) {
                             // Wire or previously declared let
-                            let rhs_ty =
-                                self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                            let rhs_ty = self.resolve_expr_type_in_context(
+                                &l.value,
+                                &m.name.name,
+                                &local_types,
+                                local_types.get(name),
+                            );
                             if let Some(wire_ty) = local_types.get(name).cloned() {
                                 if rhs_ty != Ty::Error
                                     && rhs_ty != Ty::Todo
@@ -1322,7 +1472,15 @@ impl<'a> TypeChecker<'a> {
                         }
                         // Do NOT insert into local_types or driven here — handled above per case
                     } else {
-                        let ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                        let expected = l.ty.as_ref().map(|declared_ty| {
+                            self.resolve_type_expr(declared_ty, &m.name.name, &local_types)
+                        });
+                        let ty = self.resolve_expr_type_in_context(
+                            &l.value,
+                            &m.name.name,
+                            &local_types,
+                            expected.as_ref(),
+                        );
                         // `let` bindings are always a fixed combinational
                         // expression (spec: "declaration (fixed combinational
                         // expr)") — a latency-N (N>0) `<pipelined, N>` result
@@ -1339,8 +1497,9 @@ impl<'a> TypeChecker<'a> {
                             ));
                         }
                         if let Some(declared_ty) = &l.ty {
-                            let expected =
-                                self.resolve_type_expr(declared_ty, &m.name.name, &local_types);
+                            let expected = expected.unwrap_or_else(|| {
+                                self.resolve_type_expr(declared_ty, &m.name.name, &local_types)
+                            });
                             if expected != Ty::Error
                                 && ty != Ty::Error
                                 && ty != Ty::Todo
@@ -1403,7 +1562,10 @@ impl<'a> TypeChecker<'a> {
                     local_types.insert(p.name.name.clone(), ty);
                     driven.insert(p.name.name.clone());
                 }
-                ModuleBodyItem::Inst(inst) => self.check_inst_decl(inst, &mut driven),
+                ModuleBodyItem::Inst(inst) => {
+                    self.check_inst_decl(inst, &mut driven);
+                    self.check_inst_connection_types(inst, &m.name.name, &local_types);
+                }
                 ModuleBodyItem::WireDecl(w) => {
                     self.check_snake_case(&w.name);
                     let ty = self.resolve_type_expr(&w.ty, &m.name.name, &local_types);
@@ -1531,6 +1693,16 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 ModuleBodyItem::Thread(t) => {
+                    // Lowering normally rejects this; under --thread-sim
+                    // parallel it is skipped, so check it here too.
+                    let reset_ty = m
+                        .ports
+                        .iter()
+                        .find(|p| p.name.name == t.reset.name)
+                        .map(|p| &p.ty);
+                    if let Some(e) = crate::elaborate::thread_reset_level_mismatch(t, reset_ty) {
+                        self.errors.push(e);
+                    }
                     // Under --thread-sim parallel, lower_threads is skipped,
                     // so threads survive to typecheck. Mark thread-driven
                     // signals (CombAssign + SeqAssign LHS) as driven so the
@@ -1782,42 +1954,66 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                // For each comb block, check if it reads registers from multiple domains
+                // Comb → seq crossings. Each comb signal — a `comb` block
+                // target or a `let` — is checked against its OWN transitive
+                // register fan-in, through wires, other comb targets and
+                // `let`s, across comb blocks. Not against the union of
+                // everything its comb block reads: that flags `a = ra;`
+                // because a sibling `b = rb;` in the same block reads a
+                // foreign-domain register (false positive) and names that
+                // unrelated register as the source. Diagnostics point at the
+                // comb block or `let` that drives the signal.
+                let comb_deps = Self::module_comb_deps(m);
+                let mut comb_signals: Vec<(Span, Vec<String>)> = Vec::new();
                 for item in &m.body {
-                    if let ModuleBodyItem::CombBlock(cb) = item {
-                        let mut reads = HashSet::new();
-                        Self::collect_comb_stmt_reads(&cb.stmts, &mut reads);
-                        for name in &reads {
-                            // A comb block reading a cross-domain register is unsafe —
-                            // it could be consumed by any domain downstream
-                            if reg_domain.contains_key(name) {
-                                // Find which domains consume this comb block's outputs
-                                let mut comb_targets = HashSet::new();
-                                Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
-                                for target in &comb_targets {
-                                    // Check if any seq block in a different domain reads this target
-                                    for item2 in &m.body {
-                                        if let ModuleBodyItem::RegBlock(rb) = item2 {
-                                            if let Some(consumer_domain) =
-                                                clk_domain.get(&rb.clock.name)
-                                            {
-                                                let mut seq_reads = HashSet::new();
-                                                Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
-                                                if seq_reads.contains(target) {
-                                                    if let Some(src_domain) = reg_domain.get(name) {
-                                                        if src_domain != consumer_domain {
-                                                            self.errors.push(CompileError::general(
-                                                                &format!(
-                                                                    "CDC violation: comb signal `{target}` reads register `{name}` \
-                                                                     (domain `{src_domain}`) but is consumed in domain `{consumer_domain}`. \
-                                                                     Use a `synchronizer` or async `fifo` to cross clock domains"
-                                                                ),
-                                                                cb.span,
-                                                            ));
-                                                        }
-                                                    }
-                                                }
-                                            }
+                    match item {
+                        ModuleBodyItem::CombBlock(cb) => {
+                            let mut targets = HashSet::new();
+                            Self::collect_comb_stmt_targets(&cb.stmts, &mut targets);
+                            let mut targets: Vec<String> = targets.into_iter().collect();
+                            targets.sort();
+                            comb_signals.push((cb.span, targets));
+                        }
+                        ModuleBodyItem::LetBinding(lb) => {
+                            let names = if lb.destructure_fields.is_empty() {
+                                vec![lb.name.name.clone()]
+                            } else {
+                                lb.destructure_fields
+                                    .iter()
+                                    .map(|f| f.name.clone())
+                                    .collect()
+                            };
+                            comb_signals.push((lb.span, names));
+                        }
+                        _ => {}
+                    }
+                }
+                for (span, signals) in &comb_signals {
+                    for target in signals {
+                        let src_regs = Self::comb_reg_fanin(target, &comb_deps, &reg_domain);
+                        if src_regs.is_empty() {
+                            continue;
+                        }
+                        // Check if any seq block in a different domain reads this signal
+                        for item in &m.body {
+                            if let ModuleBodyItem::RegBlock(rb) = item {
+                                if let Some(consumer_domain) = clk_domain.get(&rb.clock.name) {
+                                    let mut seq_reads = HashSet::new();
+                                    Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
+                                    if !seq_reads.contains(target) {
+                                        continue;
+                                    }
+                                    for name in &src_regs {
+                                        let src_domain = &reg_domain[name];
+                                        if src_domain != consumer_domain {
+                                            self.errors.push(CompileError::general(
+                                                &format!(
+                                                    "CDC violation: comb signal `{target}` reads register `{name}` \
+                                                     (domain `{src_domain}`) but is consumed in domain `{consumer_domain}`. \
+                                                     Use a `synchronizer` or async `fifo` to cross clock domains"
+                                                ),
+                                                *span,
+                                            ));
                                         }
                                     }
                                 }
@@ -3491,9 +3687,33 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
-                self.check_pipelined_call_binding(a, in_comb);
                 let is_indexed = !matches!(&a.target.kind, ExprKind::Ident(_));
+                // Resolve the RHS with the assignment target as context.  In
+                // particular, `onehot(index)` is width-polymorphic: its
+                // result width is the destination width, while the index is
+                // still resolved and checked normally.
+                let lhs_context = if in_comb {
+                    if is_indexed {
+                        let t = self.resolve_expr_type(&a.target, module_name, local_types);
+                        (t != Ty::Error).then_some(t)
+                    } else {
+                        local_types.get(&target_name).cloned()
+                    }
+                } else {
+                    let t = self.resolve_expr_type(&a.target, module_name, local_types);
+                    if t != Ty::Error && local_types.contains_key(&target_name) {
+                        Some(t)
+                    } else {
+                        None
+                    }
+                };
+                let rhs_ty = self.resolve_expr_type_in_context(
+                    &a.value,
+                    module_name,
+                    local_types,
+                    lhs_context.as_ref(),
+                );
+                self.check_pipelined_call_binding(a, in_comb);
                 // LHS-type lookup: comb uses local_types directly so missing
                 // entries silently skip the width check (matches historical
                 // behavior); seq uses resolve_expr_type to handle Index /
@@ -3502,6 +3722,21 @@ impl<'a> TypeChecker<'a> {
                     if is_indexed {
                         None
                     } else {
+                        // #1074 case 3: resolve the bare-identifier target so a
+                        // genuinely-undeclared name (`ww = din;`) is reported,
+                        // mirroring the seq path below. Before this, a comb LHS
+                        // name absent from `local_types` silently skipped
+                        // resolution, so `arch check` passed and codegen emitted
+                        // `assign ww = ...;` referencing a 1-bit implicit net.
+                        // `resolve_expr_type` only pushes `undefined name` for a
+                        // name that is neither in `local_types` nor resolvable in
+                        // the construct's symbol scope (ports/regs/lets/wires,
+                        // #748); a legal wire or output-port target resolves
+                        // cleanly. The width type still comes from `local_types`
+                        // (a scope-resolvable-but-untyped name yields the
+                        // `Ty::Error` poison, so the width check stays skipped
+                        // exactly as before for those).
+                        let _ = self.resolve_expr_type(&a.target, module_name, local_types);
                         local_types.get(&target_name).cloned()
                     }
                 } else {
@@ -4394,6 +4629,130 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Resolve an expression in an assignment context. `onehot(index)` is
+    /// target-typed per the ARCH specification; the index is still resolved
+    /// normally so name and operand diagnostics are preserved.
+    fn resolve_expr_type_in_context(
+        &mut self,
+        expr: &Expr,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        match (&expr.kind, expected) {
+            (ExprKind::Onehot(index), Some(Ty::UInt(width))) => {
+                self.resolve_expr_type(index, module_name, local_types);
+                Ty::UInt(*width)
+            }
+            (ExprKind::Ternary(..), Some(expected_ty)) => {
+                self.resolve_ternary_type(expr, module_name, local_types, Some(expected_ty))
+            }
+            _ => self.resolve_expr_type(expr, module_name, local_types),
+        }
+    }
+
+    fn resolve_ternary_type(
+        &mut self,
+        expr: &Expr,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        let ExprKind::Ternary(cond, then_expr, else_expr) = &expr.kind else {
+            unreachable!("ternary resolver requires a ternary expression");
+        };
+        // All three children must be resolved.  In particular, do not
+        // let a valid then-branch hide an undefined condition or
+        // else-branch (the old implementation only resolved the
+        // else branch when the then branch was already `Error`).
+        let cond_ty = self.resolve_expr_type(cond, module_name, local_types);
+        let then_ty =
+            self.resolve_expr_type_in_context(then_expr, module_name, local_types, expected);
+        let else_ty =
+            self.resolve_expr_type_in_context(else_expr, module_name, local_types, expected);
+
+        if !matches!(cond_ty, Ty::Bool | Ty::UInt(1) | Ty::Error | Ty::Todo) {
+            self.errors.push(CompileError::type_mismatch(
+                &Ty::Bool.display(),
+                &cond_ty.display(),
+                cond.span,
+            ));
+        }
+        if matches!(cond_ty, Ty::Error)
+            || matches!(then_ty, Ty::Error)
+            || matches!(else_ty, Ty::Error)
+        {
+            return Ty::Error;
+        }
+        if matches!(cond_ty, Ty::Todo) || matches!(then_ty, Ty::Todo) || matches!(else_ty, Ty::Todo)
+        {
+            return Ty::Todo;
+        }
+
+        // A conditional value has one hardware width and type on both
+        // runtime paths.  Requiring matching branch types prevents a
+        // narrower runtime arm from silently truncating the other arm.
+        // Unsized integer literals retain their usual contextual
+        // typing, so `sel ? data_u8 : 0` is the same as assigning the
+        // literal to a UInt<8> target.  Users can make conversions of
+        // runtime values explicit with `.trunc`, `.zext`, `.sext`, or
+        // a cast; float literals are context-typed by elaboration.
+        let then_is_unsized_int = matches!(
+            &then_expr.kind,
+            ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
+        ) || matches!(
+            &then_expr.kind,
+            ExprKind::Unary(
+                UnaryOp::Neg,
+                inner,
+            ) if matches!(
+                &inner.kind,
+                ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
+            )
+        ) || matches!(&then_expr.kind, ExprKind::Signed(inner) | ExprKind::Unsigned(inner)
+            if matches!(&inner.kind, ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))));
+        let else_is_unsized_int = matches!(
+            &else_expr.kind,
+            ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
+        ) || matches!(
+            &else_expr.kind,
+            ExprKind::Unary(
+                UnaryOp::Neg,
+                inner,
+            ) if matches!(
+                &inner.kind,
+                ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
+            )
+        ) || matches!(&else_expr.kind, ExprKind::Signed(inner) | ExprKind::Unsigned(inner)
+            if matches!(&inner.kind, ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))));
+        let bool_uint1_pair = matches!(
+            (&then_ty, &else_ty),
+            (Ty::Bool, Ty::UInt(1)) | (Ty::UInt(1), Ty::Bool)
+        );
+        let branches_compatible = then_ty == else_ty
+            || bool_uint1_pair
+            || (then_is_unsized_int && types_compatible(&else_ty, &then_ty))
+            || (else_is_unsized_int && types_compatible(&then_ty, &else_ty));
+        if !branches_compatible {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "ternary branches must have matching types: then is {}, else is {}; use an explicit cast or width conversion",
+                    then_ty.display(),
+                    else_ty.display(),
+                ),
+                expr.span,
+            ));
+            return Ty::Error;
+        }
+        if then_ty == else_ty {
+            then_ty
+        } else if then_is_unsized_int && types_compatible(&else_ty, &then_ty) {
+            else_ty
+        } else {
+            then_ty
+        }
+    }
+
     fn resolve_expr_type(
         &mut self,
         expr: &Expr,
@@ -4912,11 +5271,12 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::Onehot(index) => {
                 // onehot(index) returns a one-hot value; width = 2^index_width
-                // but we can't easily compute that, so infer from context (assignment target).
-                // Return a generic UInt that will be width-checked at assignment.
+                // With no assignment context, retain the legacy index-width
+                // result where representable, but never perform an unchecked
+                // shift (a UInt<32> index used to panic in debug builds).
                 let idx_ty = self.resolve_expr_type(index, module_name, local_types);
                 match idx_ty {
-                    Ty::UInt(w) => Ty::UInt(1 << w),
+                    Ty::UInt(w) if w < 32 => Ty::UInt(1u32 << w),
                     _ => Ty::UInt(32),
                 }
             }
@@ -4956,14 +5316,8 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            ExprKind::Ternary(_cond, then_expr, else_expr) => {
-                // Return the type of the then branch; else branch should match.
-                let then_ty = self.resolve_expr_type(then_expr, module_name, local_types);
-                if matches!(then_ty, Ty::Error) {
-                    self.resolve_expr_type(else_expr, module_name, local_types)
-                } else {
-                    then_ty
-                }
+            ExprKind::Ternary(..) => {
+                self.resolve_ternary_type(expr, module_name, local_types, None)
             }
             ExprKind::Inside(scrutinee, members) => {
                 self.resolve_expr_type(scrutinee, module_name, local_types);
@@ -7333,45 +7687,60 @@ impl<'a> TypeChecker<'a> {
             return; // Single-clock or no-clock child; no CDC concern
         }
 
-        // Build child module's port → domain map (which domain uses each port)
-        // A port is in a domain if a seq block on that clock reads/writes it
-        let mut child_port_domain: HashMap<String, String> = HashMap::new();
+        // Build the child module's port → domains map: the set of clock
+        // clock PORTS each port carries data on. We key by the child's clock
+        // *port name*, not its domain: two clock ports can share a declared
+        // domain yet be bound to different parent domains at the inst, so the
+        // domain alone cannot name a unique parent clock to map through (see
+        // #1064 — resolving a shared domain back to a parent clock was a
+        // `HashMap` coin-flip). Sets, not a single value, so a port used on
+        // two clocks keeps both — a single-valued map keeps whichever `insert`
+        // ran last, which makes detection depend on the order of seq blocks.
+        let mut child_port_clk: HashMap<String, BTreeSet<String>> = HashMap::new();
 
-        // Clock ports map to their own domain
-        for (clk_name, domain) in &child_clk_domain {
-            child_port_domain.insert(clk_name.clone(), domain.clone());
+        // A clock port's own data clock is itself.
+        for clk_name in child_clk_domain.keys() {
+            child_port_clk
+                .entry(clk_name.clone())
+                .or_default()
+                .insert(clk_name.clone());
         }
 
-        // Reset ports: if there's only one, it's shared; skip domain assignment
-        // Data ports: determine domain from seq block usage
+        // Registers → the clock port of the seq block that assigns them.
+        let mut child_reg_clk: HashMap<String, String> = HashMap::new();
         for body_item in &child_module.body {
             if let ModuleBodyItem::RegBlock(rb) = body_item {
-                if let Some(domain) = child_clk_domain.get(&rb.clock.name) {
-                    // Registers assigned in this seq block
+                if child_clk_domain.contains_key(&rb.clock.name) {
                     let mut assigned = HashSet::new();
                     Self::collect_stmt_targets(&rb.stmts, &mut assigned);
-
-                    // Find which output ports these registers feed via comb blocks
-                    for comb_item in &child_module.body {
-                        if let ModuleBodyItem::CombBlock(cb) = comb_item {
-                            let mut comb_reads = HashSet::new();
-                            Self::collect_comb_stmt_reads(&cb.stmts, &mut comb_reads);
-                            let mut comb_targets = HashSet::new();
-                            Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
-
-                            // If this comb block reads any register from this domain,
-                            // its output ports belong to this domain
-                            if comb_reads.iter().any(|r| assigned.contains(r)) {
-                                for target in &comb_targets {
-                                    if child_module.ports.iter().any(|p| p.name.name == *target) {
-                                        child_port_domain.insert(target.clone(), domain.clone());
-                                    }
-                                }
-                            }
-                        }
+                    for name in assigned {
+                        child_reg_clk.insert(name, rb.clock.name.clone());
                     }
+                }
+            }
+        }
 
-                    // Input ports read in this seq block belong to this domain
+        // Comb-driven ports: the clock ports of the registers in the port's
+        // OWN transitive fan-in — not of everything its comb block reads.
+        let child_deps = Self::module_comb_deps(child_module);
+        for p in &child_module.ports {
+            if !child_deps.contains_key(&p.name.name) {
+                continue;
+            }
+            for reg in Self::comb_reg_fanin(&p.name.name, &child_deps, &child_reg_clk) {
+                child_port_clk
+                    .entry(p.name.name.clone())
+                    .or_default()
+                    .insert(child_reg_clk[&reg].clone());
+            }
+        }
+
+        // Reset ports: if there's only one, it's shared; skip domain assignment.
+        // Input ports read in a seq block belong to that block's clock
+        // (every such clock, when several seq blocks read the port).
+        for body_item in &child_module.body {
+            if let ModuleBodyItem::RegBlock(rb) = body_item {
+                if child_clk_domain.contains_key(&rb.clock.name) {
                     let mut reads = HashSet::new();
                     Self::collect_stmt_reads(&rb.stmts, &mut reads);
                     for read_name in &reads {
@@ -7380,37 +7749,42 @@ impl<'a> TypeChecker<'a> {
                             .iter()
                             .any(|p| p.name.name == *read_name && p.direction == Direction::In)
                         {
-                            child_port_domain.insert(read_name.clone(), domain.clone());
+                            child_port_clk
+                                .entry(read_name.clone())
+                                .or_default()
+                                .insert(rb.clock.name.clone());
                         }
                     }
                 }
             }
         }
 
-        // Now build the parent signal → domain map
-        // Include: registers, comb outputs, and ports (clocks map to their domain)
-        let mut parent_signal_domain: HashMap<String, String> = parent_reg_domain.clone();
-        for (clk_name, domain) in parent_clk_domain {
-            parent_signal_domain.insert(clk_name.clone(), domain.clone());
+        // Now build the parent signal → domains map
+        // Include: registers, clocks, and comb signals (comb targets and
+        // `let`s) by the domains of their own transitive register fan-in.
+        let mut parent_signal_domain: HashMap<String, BTreeSet<String>> = HashMap::new();
+        for (name, domain) in parent_reg_domain {
+            parent_signal_domain
+                .entry(name.clone())
+                .or_default()
+                .insert(domain.clone());
         }
-        // Comb blocks: if a comb output is driven from a single-domain register, it's in that domain
-        for body_item in &parent_module.body {
-            if let ModuleBodyItem::CombBlock(cb) = body_item {
-                let mut reads = HashSet::new();
-                Self::collect_comb_stmt_reads(&cb.stmts, &mut reads);
-                let mut targets = HashSet::new();
-                Self::collect_comb_stmt_targets(&cb.stmts, &mut targets);
-                // If all register reads are from the same domain, targets inherit that domain
-                let domains: HashSet<&String> = reads
-                    .iter()
-                    .filter_map(|r| parent_reg_domain.get(r))
-                    .collect();
-                if domains.len() == 1 {
-                    let domain = domains.into_iter().next().unwrap();
-                    for target in targets {
-                        parent_signal_domain.insert(target, domain.clone());
-                    }
-                }
+        for (clk_name, domain) in parent_clk_domain {
+            parent_signal_domain
+                .entry(clk_name.clone())
+                .or_default()
+                .insert(domain.clone());
+        }
+        let parent_deps = Self::module_comb_deps(parent_module);
+        for target in parent_deps.keys() {
+            if parent_reg_domain.contains_key(target) {
+                continue;
+            }
+            for reg in Self::comb_reg_fanin(target, &parent_deps, parent_reg_domain) {
+                parent_signal_domain
+                    .entry(target.clone())
+                    .or_default()
+                    .insert(parent_reg_domain[&reg].clone());
             }
         }
 
@@ -7465,33 +7839,40 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            // Get the child port's expected domain
-            let child_domain = match child_port_domain.get(port_name) {
-                Some(d) => d,
-                None => continue, // Can't determine port's domain; skip
+            // Get the child port's sampling clock ports (sorted — BTreeSet).
+            let child_clks = match child_port_clk.get(port_name) {
+                Some(c) => c,
+                None => continue, // Can't determine port's clock; skip
             };
 
-            // Map child domain to parent domain via clock connections
-            // Find which parent clock is connected to the child clock in this domain
-            let expected_parent_domain =
-                inst_clk_mapping
-                    .iter()
-                    .find_map(|(child_clk, parent_domain)| {
-                        if child_clk_domain.get(child_clk) == Some(child_domain) {
-                            Some(parent_domain.as_str())
-                        } else {
-                            None
-                        }
-                    });
-
-            let expected_parent_domain = match expected_parent_domain {
-                Some(d) => d,
-                None => continue,
+            // Get the connected signal's domains in the parent
+            let Some(sig_name) = conn_signal.get(port_name) else {
+                continue;
+            };
+            let Some(sig_domains) = parent_signal_domain.get(sig_name) else {
+                continue;
             };
 
-            // Get the connected signal's domain in the parent
-            if let Some(sig_name) = conn_signal.get(port_name) {
-                if let Some(sig_domain) = parent_signal_domain.get(sig_name) {
+            // Resolve each sampling clock port to its (declared child domain,
+            // parent domain) directly — a single `get`, no iteration over the
+            // clock map, so the verdict is stable when two child clocks share
+            // a domain but bind to different parent domains (#1064). Collect
+            // the pairs into a sorted set so two distinct clock ports that map
+            // to the same parent domain do not emit a duplicate diagnostic.
+            let clk_pairs: BTreeSet<(&str, &str)> = child_clks
+                .iter()
+                .filter_map(|child_clk| {
+                    let child_domain = child_clk_domain.get(child_clk)?.as_str();
+                    let parent_domain = inst_clk_mapping.get(child_clk)?.as_str();
+                    Some((child_domain, parent_domain))
+                })
+                .collect();
+
+            // Conservative for multi-clock ports and signals: every
+            // (signal domain, port clock) pair that disagrees is a crossing
+            // and is reported; none is dropped because another pair agrees.
+            for (child_domain, expected_parent_domain) in &clk_pairs {
+                for sig_domain in sig_domains {
                     if sig_domain != expected_parent_domain {
                         self.errors.push(CompileError::general(
                             &format!(
@@ -7651,35 +8032,134 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Collect all identifier names read in comb statements.
-    fn collect_comb_stmt_reads(stmts: &[Stmt], out: &mut HashSet<String>) {
+    /// Module-wide direct combinational dependency map: each comb-block
+    /// target and each `let` name → the identifiers its value reads,
+    /// including the enclosing `if` conditions / `match` scrutinees that
+    /// select the assignment and any index expressions on the LHS
+    /// (`out[idx] = …` reads `idx`). Multiple assignments to one target
+    /// union their reads. Expression reads go through `collect_expr_reads`,
+    /// the same walker the seq-side CDC checks use.
+    fn module_comb_deps(m: &ModuleDecl) -> HashMap<String, HashSet<String>> {
+        let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::CombBlock(cb) => {
+                    Self::collect_comb_stmt_deps(&cb.stmts, &mut Vec::new(), &mut deps);
+                }
+                ModuleBodyItem::LetBinding(lb) => {
+                    let mut reads = HashSet::new();
+                    Self::collect_expr_reads(&lb.value, &mut reads);
+                    if lb.destructure_fields.is_empty() {
+                        deps.entry(lb.name.name.clone()).or_default().extend(reads);
+                    } else {
+                        for f in &lb.destructure_fields {
+                            deps.entry(f.name.clone())
+                                .or_default()
+                                .extend(reads.iter().cloned());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        deps
+    }
+
+    fn collect_comb_stmt_deps(
+        stmts: &[Stmt],
+        cond_stack: &mut Vec<HashSet<String>>,
+        deps: &mut HashMap<String, HashSet<String>>,
+    ) {
         for stmt in stmts {
             match stmt {
-                Stmt::Assign(a) => Self::collect_expr_reads(&a.value, out),
+                Stmt::Assign(a) => {
+                    let target = Self::expr_root_name_tc(&a.target);
+                    if target.is_empty() {
+                        continue;
+                    }
+                    let mut reads = HashSet::new();
+                    Self::collect_expr_reads(&a.value, &mut reads);
+                    Self::collect_lhs_index_reads_tc(&a.target, &mut reads);
+                    for conds in cond_stack.iter() {
+                        reads.extend(conds.iter().cloned());
+                    }
+                    deps.entry(target).or_default().extend(reads);
+                }
                 Stmt::IfElse(ie) => {
-                    Self::collect_expr_reads(&ie.cond, out);
-                    Self::collect_comb_stmt_reads(&ie.then_stmts, out);
-                    Self::collect_comb_stmt_reads(&ie.else_stmts, out);
+                    let mut cond = HashSet::new();
+                    Self::collect_expr_reads(&ie.cond, &mut cond);
+                    cond_stack.push(cond);
+                    Self::collect_comb_stmt_deps(&ie.then_stmts, cond_stack, deps);
+                    Self::collect_comb_stmt_deps(&ie.else_stmts, cond_stack, deps);
+                    cond_stack.pop();
                 }
-                Stmt::Match(m) => {
-                    Self::collect_expr_reads(&m.scrutinee, out);
-                    for arm in &m.arms {
-                        Self::collect_comb_stmt_reads(&arm.body, out);
+                Stmt::Match(mt) => {
+                    let mut scrut = HashSet::new();
+                    Self::collect_expr_reads(&mt.scrutinee, &mut scrut);
+                    cond_stack.push(scrut);
+                    for arm in &mt.arms {
+                        Self::collect_comb_stmt_deps(&arm.body, cond_stack, deps);
                     }
+                    cond_stack.pop();
                 }
-                Stmt::Log(l) => {
-                    for arg in &l.args {
-                        Self::collect_expr_reads(arg, out);
-                    }
-                }
-                Stmt::For(f) => {
-                    Self::collect_comb_stmt_reads(&f.body, out);
-                }
+                Stmt::For(f) => Self::collect_comb_stmt_deps(&f.body, cond_stack, deps),
+                // `log` arguments are observation, not dataflow.
+                Stmt::Log(_) => {}
                 Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
                     unreachable!("seq-only Stmt variant inside comb-context walker")
                 }
             }
         }
+    }
+
+    /// Identifiers read by the index / slice expressions of an assignment
+    /// target (`v[i] = …` reads `i`), excluding the root name itself.
+    fn collect_lhs_index_reads_tc(target: &Expr, out: &mut HashSet<String>) {
+        match &target.kind {
+            ExprKind::Index(base, idx) => {
+                Self::collect_expr_reads(idx, out);
+                Self::collect_lhs_index_reads_tc(base, out);
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                Self::collect_expr_reads(hi, out);
+                Self::collect_expr_reads(lo, out);
+                Self::collect_lhs_index_reads_tc(base, out);
+            }
+            ExprKind::PartSelect(base, start, width, _) => {
+                Self::collect_expr_reads(start, out);
+                Self::collect_expr_reads(width, out);
+                Self::collect_lhs_index_reads_tc(base, out);
+            }
+            ExprKind::FieldAccess(base, _) => Self::collect_lhs_index_reads_tc(base, out),
+            _ => {}
+        }
+    }
+
+    /// The registers (keys of `reg_domain`) that transitively feed comb
+    /// signal `target` through `deps` (see `module_comb_deps`), sorted for
+    /// deterministic diagnostics.
+    fn comb_reg_fanin(
+        target: &str,
+        deps: &HashMap<String, HashSet<String>>,
+        reg_domain: &HashMap<String, String>,
+    ) -> Vec<String> {
+        let mut regs = std::collections::BTreeSet::new();
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = vec![target];
+        while let Some(cur) = stack.pop() {
+            if !visited.insert(cur) {
+                continue;
+            }
+            let Some(reads) = deps.get(cur) else { continue };
+            for r in reads {
+                if reg_domain.contains_key(r) {
+                    regs.insert(r.clone());
+                } else if deps.contains_key(r) {
+                    stack.push(r);
+                }
+            }
+        }
+        regs.into_iter().collect()
     }
 
     /// Collect all target names assigned in comb statements.
@@ -8313,6 +8793,178 @@ impl<'a> TypeChecker<'a> {
                     site_span,
                 ));
             }
+        }
+    }
+
+    /// Effective const values of an inst target's params: inst-site
+    /// overrides (evaluated against the enclosing construct's params), else
+    /// the target's own defaults, resolved in declaration order so derived
+    /// params see earlier values. Unresolvable params are left out.
+    fn inst_target_param_vals(&self, inst: &InstDecl) -> HashMap<String, i64> {
+        let mut target_vals: HashMap<String, i64> = HashMap::new();
+        let Some(target_item) = self.find_item_by_name(&inst.module_name.name) else {
+            return target_vals;
+        };
+        let mut enclosing_vals: HashMap<String, i64> = HashMap::new();
+        for ap in &self.active_params {
+            if let Some(def) = &ap.default {
+                if let Some(v) = crate::elaborate::try_eval_i64(def, &enclosing_vals) {
+                    enclosing_vals.insert(ap.name.name.clone(), v);
+                }
+            }
+        }
+        for tp in Self::item_params(target_item) {
+            let effective = match inst
+                .param_assigns
+                .iter()
+                .find(|pa| pa.name.name == tp.name.name && pa.ty.is_none())
+            {
+                Some(pa) => crate::elaborate::try_eval_i64(&pa.value, &enclosing_vals),
+                None => tp
+                    .default
+                    .as_ref()
+                    .and_then(|d| crate::elaborate::try_eval_i64(d, &target_vals)),
+            };
+            if let Some(v) = effective {
+                target_vals.insert(tp.name.name.clone(), v);
+            }
+        }
+        target_vals
+    }
+
+    /// A child port's type with its widths evaluated under the inst's
+    /// effective params, for the shapes the connection check compares.
+    /// `None` = not comparable here (param-dependent width, bus, named
+    /// type, ...): the check then stays silent rather than guess.
+    fn inst_port_ty(ty: &TypeExpr, vals: &HashMap<String, i64>) -> Option<Ty> {
+        let width = |w: &Expr| {
+            crate::elaborate::try_eval_i64(w, vals)
+                .filter(|n| *n > 0)
+                .map(|n| n as u32)
+        };
+        Some(match ty {
+            TypeExpr::UInt(w) => Ty::UInt(width(w)?),
+            TypeExpr::SInt(w) => Ty::SInt(width(w)?),
+            TypeExpr::Bool | TypeExpr::Bit => Ty::Bool,
+            TypeExpr::Reset(k, l) => Ty::Reset(*k, *l),
+            TypeExpr::Vec(t, n) => Ty::Vec(Box::new(Self::inst_port_ty(t, vals)?), width(n)?),
+            _ => return None,
+        })
+    }
+
+    /// The definite mismatch between a child port type and the parent-side
+    /// signal type, if any, as a short reason. Same rule as `auto;`
+    /// (spec §"auto-connect": width, signedness, `Vec` length, reset kind or
+    /// polarity), except clock domains: an explicit clock connection rebinds
+    /// the child's domain (spec "Clock domain rebind is not a crossing").
+    fn inst_conn_mismatch(port: &Ty, sig: &Ty) -> Option<&'static str> {
+        match (port, sig) {
+            (Ty::Reset(k1, l1), Ty::Reset(k2, l2)) if k1 != k2 || l1 != l2 => {
+                Some("reset kind/polarity differs")
+            }
+            (Ty::UInt(a), Ty::UInt(b)) | (Ty::SInt(a), Ty::SInt(b)) if a != b => {
+                Some("widths differ")
+            }
+            (Ty::UInt(_), Ty::SInt(_)) | (Ty::SInt(_), Ty::UInt(_)) => Some("signedness differs"),
+            (Ty::UInt(w), Ty::Bool) | (Ty::Bool, Ty::UInt(w)) if *w != 1 => Some("widths differ"),
+            (Ty::Vec(t1, n1), Ty::Vec(t2, n2)) => {
+                if n1 != n2 {
+                    Some("`Vec` lengths differ")
+                } else {
+                    Self::inst_conn_mismatch(t1, t2)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Type conformance of explicit `inst` port connections (#737, #738).
+    /// Spec: "Every assignment, port connection, and arithmetic result is
+    /// width-checked at compile time. There is no implicit truncation,
+    /// zero-extension, or sign-extension anywhere in the language." A
+    /// reset-typed port additionally keeps its kind and polarity: re-typing
+    /// a reset at a boundary is written `rst <- r as Reset<K, P>`, the form
+    /// `auto;` already demands. Only definite mismatches are reported: a
+    /// param-dependent or otherwise unresolvable type on either side is
+    /// skipped. Typing the parent-side expression must not add diagnostics
+    /// of its own (inst connection RHS checking is #1026's scope), so any
+    /// it produces are discarded and the connection is then skipped.
+    pub(crate) fn check_inst_connection_types(
+        &mut self,
+        inst: &InstDecl,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+    ) {
+        // Compiler-generated constructs (`_<Mod>_threads`, `_arb_...` from
+        // thread/TLM lowering) are wired by the compiler, not the user; their
+        // connections are checked at the source construct, not here.
+        if inst.module_name.name.starts_with('_') {
+            return;
+        }
+        let Some(ports) = self.child_ports(&inst.module_name.name) else {
+            return;
+        };
+        let vals = self.inst_target_param_vals(inst);
+        for conn in &inst.connections {
+            // A compile-time constant (literals and params only, e.g. `1`,
+            // `HEAD_DIM`, `DEPTH - 1`) is context-typed, as everywhere else
+            // (`q <= 0;`): it takes the port's width. Whether its value fits
+            // is the sized-literal-fit question (#1052), not conformance.
+            let mut idents = HashSet::new();
+            crate::comb_graph::collect_expr_idents(&conn.signal, &mut idents);
+            if idents
+                .iter()
+                .all(|n| self.active_params.iter().any(|p| &p.name.name == n))
+            {
+                continue;
+            }
+            let Some(port) = ports
+                .iter()
+                .find(|p| p.name.name == conn.port_name.name && p.bus_info.is_none())
+            else {
+                continue;
+            };
+            let Some(port_ty) = Self::inst_port_ty(&port.ty, &vals) else {
+                continue;
+            };
+            let (n_err, n_warn) = (self.errors.len(), self.warnings.len());
+            let sig_ty = self.resolve_expr_type(&conn.signal, module_name, local_types);
+            let clean = self.errors.len() == n_err;
+            self.errors.truncate(n_err);
+            self.warnings.truncate(n_warn);
+            if !clean || matches!(sig_ty, Ty::Error | Ty::Todo) {
+                continue;
+            }
+            let Some(reason) = Self::inst_conn_mismatch(&port_ty, &sig_ty) else {
+                continue;
+            };
+            let hint = match &port_ty {
+                Ty::Reset(..) => format!(
+                    "; if the reset really is re-typed here, say so: `{} <- {} as {}`",
+                    conn.port_name.name,
+                    crate::interface::expr_str(&conn.signal),
+                    port_ty.display()
+                ),
+                Ty::UInt(w) | Ty::SInt(w) => format!(
+                    "; there is no implicit extension or truncation — convert explicitly \
+                     (`.zext<{w}>()`, `.sext<{w}>()`, `.trunc<{w}>()` or `.resize<{w}>()`)"
+                ),
+                _ => String::new(),
+            };
+            self.errors.push(CompileError::general(
+                &format!(
+                    "inst `{}`: {} on port `{}` of `{}`: port is {}, connected `{}` is {}{}",
+                    inst.name.name,
+                    reason,
+                    conn.port_name.name,
+                    inst.module_name.name,
+                    port_ty.display(),
+                    crate::interface::expr_str(&conn.signal),
+                    sig_ty.display(),
+                    hint
+                ),
+                conn.span,
+            ));
         }
     }
 
@@ -11385,4 +12037,48 @@ pub fn linklist_num_heads(l: &crate::ast::LinklistDecl) -> u32 {
 /// ceil_log2 for u32. Compatibility shim — delegates to [`crate::width::clog2`].
 pub fn clog2_u32(n: u32) -> u32 {
     crate::width::clog2(n as u64)
+}
+
+/// Whether a `shared(when ...)` condition is 1 bit by construction:
+/// comparisons, logical/reduction operators and Bool literals always are,
+/// and a bare param is when declared 1 bit wide (`[0:0]`, `Bool`, `UInt<1>`).
+fn shared_when_is_one_bit(e: &Expr, params: &[ParamDecl]) -> bool {
+    let lit_u32 = |x: &Expr| match &x.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v)) => Some(*v),
+        _ => None,
+    };
+    match &e.kind {
+        ExprKind::Binary(op, _, _) => matches!(
+            op,
+            BinOp::Eq
+                | BinOp::Neq
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Lte
+                | BinOp::Gte
+                | BinOp::And
+                | BinOp::Or
+        ),
+        ExprKind::Unary(op, inner) => match op {
+            UnaryOp::Not | UnaryOp::RedAnd | UnaryOp::RedOr | UnaryOp::RedXor => true,
+            UnaryOp::BitNot => shared_when_is_one_bit(inner, params),
+            UnaryOp::Neg => false,
+        },
+        ExprKind::Bool(_) => true,
+        ExprKind::Literal(LitKind::Sized(w, _)) => *w == 1,
+        ExprKind::Ident(name) => params.iter().any(|p| {
+            p.name.name == *name
+                && match &p.kind {
+                    ParamKind::WidthConst(hi, lo) => {
+                        matches!((lit_u32(hi), lit_u32(lo)), (Some(h), Some(l)) if h == l)
+                    }
+                    ParamKind::Logic(TypeExpr::Bool) | ParamKind::Logic(TypeExpr::Bit) => true,
+                    ParamKind::Logic(TypeExpr::UInt(w)) => lit_u32(w) == Some(1),
+                    _ => false,
+                }
+        }),
+        _ => false,
+    }
 }

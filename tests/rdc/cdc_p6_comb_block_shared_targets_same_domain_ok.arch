@@ -1,0 +1,41 @@
+// P6: one comb block drives two targets from different domains — `wa`
+// reads only the domain-DA register `ra` and is consumed in DA; `wb` reads
+// only the domain-DB register `rb` and is consumed in DB. No signal
+// crosses. The comb→seq check must work per target: a check that unions
+// every read in the block would flag both targets (false positive).
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Sync>;
+  port da: in UInt<8>;
+  port db: in UInt<8>;
+  port qa: out UInt<8>;
+  port qb: out UInt<8>;
+  wire wa: UInt<8>;
+  wire wb: UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg ra2: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  reg rb2: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+    ra2 <= wa;
+  end seq
+  comb
+    wa = ra +% 1;
+    wb = rb +% 1;
+  end comb
+  seq on clk_b rising
+    rb <= db;
+    rb2 <= wb;
+  end seq
+  let qa = ra2;
+  let qb = rb2;
+end module M

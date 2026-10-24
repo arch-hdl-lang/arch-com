@@ -90,6 +90,17 @@ and `claude/*` branches: it warns on overlap at push time but **never blocks**
 (bypass with `--no-verify`, or `CLAIM_CHECK_SKIP=1` to skip just the claim
 scan). Delete-only pushes (`git push --delete`) skip the hook entirely.
 
+The same hook also runs a **blocking** rustfmt check on every branch, mirroring
+the `rustfmt` CI job: it format-checks the pushed commit's contents (not your
+working tree) for each `.rs` file the push changes, with the pinned toolchain.
+Fix with `cargo fmt --all` and recommit; bypass one push with
+`FMT_CHECK_SKIP=1`. It warns and skips if rustfmt is not installed.
+
+It also runs the `tb registered` CI check (`scripts/check_tb_registered.sh
+--rev <pushed sha>`), **blocking**: every committed `*_tb.cpp` must be in
+`tests/arch_sim_manifest.json` (or the script's ALLOWLIST), and every manifest
+`tb_files` path must exist. Bypass one push with `TB_CHECK_SKIP=1`.
+
 ## Fix-PR lifecycle (finish work you start)
 
 The repo finds bugs faster than it books them. Two audits (2026-07) showed the

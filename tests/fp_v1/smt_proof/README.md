@@ -83,44 +83,8 @@ Yosys 0.67; times on an 8-core M-series):
 | widen / narrow conversions | unsat | <1 s each |
 | f32→s64 / u64 (saturating) | unsat | <1 s each |
 
-## Lean-to-SMT renderer correspondence (artifact-level check)
-
-`proofs/lean_fp_equiv/scripts/check_renderer_correspondence.py` checks the
-*actual* `dump_fp lean` and `dump_fp smt` outputs, not just their shared Rust
-source. It parses both generated artifacts, verifies their signatures and SSA
-order, and asks Z3 whether any local Lean expression differs from its SMT
-counterpart under arbitrary values of prior SSA nodes and arbitrary called
-functions. Every local query must be `unsat`; induction over the ordered nodes
-and the function-call DAG then gives whole-function correspondence. In
-particular, this avoids a monolithic multiplier/FMA equivalence query. The
-checker separately elaborates the emitted Lean source and type-checks the
-emitted SMT-LIB with Z3. It rejects an SMT function missing from the Lean
-emission, rather than silently dropping it from the common-function set.
-
-```
-cargo build --release --example dump_fp
-python3 proofs/lean_fp_equiv/scripts/check_renderer_correspondence.py \
-  --dump-fp target/release/examples/dump_fp \
-  --model proofs/lean_fp_equiv/ArchFpEquiv/Model.lean
-python3 tests/fp_v1/smt_proof/lean_renderer_correspondence_test.py
-```
-
-The checked-in Lean `Model.lean` is a **partial snapshot**: its 27 common
-FP32/BF16 definitions are checked against freshly emitted definitions, but
-the current renderer emits 35 additional common definitions not included in
-the snapshot. The correspondence check covers all 62 freshly emitted common
-Lean/SMT functions (2,788 local obligations on 2026-10-04); 15 Lean-only
-proof helpers have no SMT counterpart. Mutation tests change a Lean AND to OR,
-reverse a shift, and change a signed comparison to unsigned; all three produce
-`sat` counterexamples. Removing a Lean function also fails the coverage gate.
-
-This is a solver-checked correspondence with an explicit trust boundary, **not
-a Lean-kernel theorem about either renderer**. It trusts this script's
-restricted Lean parser and semantic translation (notably `.toNat` shifts,
-`setWidth`, signed comparisons, and one-bit Booleans), its SMT parser, Z3, and
-Lean elaboration. A Lean-kernel-checked renderer theorem would additionally
-formalize and prove these translation/semantics steps rather than trust this
-external checker.
+Not covered: the Lean renderer, whose check remains the byte-identical
+regeneration audit.
 
 ## Coverage (no silent caps)
 

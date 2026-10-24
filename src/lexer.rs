@@ -49,11 +49,30 @@ fn parse_inner_doc(lex: &mut logos::Lexer<TokenKind>) -> String {
     rest.strip_prefix(' ').unwrap_or(rest).to_string()
 }
 
+/// Consume a block comment after Logos has matched its `/*` opener.
+///
+/// Logos regexes cannot backtrack, so a pattern that accepts arbitrary runs of
+/// `*` would greedily consume the closing delimiter. Scanning the remainder
+/// here preserves the first-close rule while still keeping the lexer span
+/// accurate. An unterminated comment is reported as a lexer error.
+fn skip_block_comment(lex: &mut logos::Lexer<TokenKind>) -> Result<(), ()> {
+    let rest = lex.remainder();
+    if let Some(close) = rest.find("*/") {
+        lex.bump(close + 2);
+        Ok(())
+    } else {
+        lex.bump(rest.len());
+        Err(())
+    }
+}
+
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
 #[logos(skip r"//[^\n]*")]
-#[logos(skip r"/\*([^*]|\*[^/])*\*/")]
 pub enum TokenKind {
+    #[regex(r"/\*", skip_block_comment)]
+    BlockComment,
+
     // ── Doc comments ──────────────────────────────────────────────────────────
     // `///<line>` outer doc — attaches to the next construct. Logos picks the
     // longest match for `///abc` between this regex and the global `//[^\n]*`
@@ -427,6 +446,7 @@ pub enum TokenKind {
 impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            TokenKind::BlockComment => write!(f, "/* */"),
             TokenKind::Module => write!(f, "module"),
             TokenKind::End => write!(f, "end"),
             TokenKind::Param => write!(f, "param"),
@@ -650,6 +670,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, Vec<Span>> {
         let span = lex.span();
         let span = Span::new(span.start, span.end);
         match result {
+            Ok(TokenKind::BlockComment) => {}
             Ok(kind) => tokens.push(Token { kind, span }),
             Err(()) => errors.push(span),
         }
@@ -790,6 +811,40 @@ mod tests {
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[0].kind, TokenKind::Module);
         assert_eq!(tokens[1].kind, TokenKind::Ident("Counter".into()));
+    }
+
+    #[test]
+    fn test_block_comments_accept_star_runs_and_preserve_token_spans() {
+        let src = "/***/module/**/M/****/end module M";
+        let tokens = tokenize(src).unwrap();
+        assert_eq!(tokens.len(), 5);
+        assert_eq!(tokens[0].kind, TokenKind::Module);
+        assert_eq!(tokens[0].span, Span::new(5, 11));
+        assert_eq!(tokens[1].kind, TokenKind::Ident("M".into()));
+        assert_eq!(tokens[1].span, Span::new(15, 16));
+        assert_eq!(tokens[2].kind, TokenKind::End);
+        assert_eq!(tokens[2].span, Span::new(22, 25));
+        assert_eq!(tokens[3].kind, TokenKind::Module);
+        assert_eq!(tokens[3].span, Span::new(26, 32));
+        assert_eq!(tokens[4].kind, TokenKind::Ident("M".into()));
+        assert_eq!(tokens[4].span, Span::new(33, 34));
+    }
+
+    #[test]
+    fn test_block_comment_closes_at_first_star_slash() {
+        let src = "/* comment **/module M";
+        let tokens = tokenize(src).unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Module);
+        assert_eq!(tokens[0].span, Span::new(14, 20));
+        assert_eq!(tokens[1].kind, TokenKind::Ident("M".into()));
+        assert_eq!(tokens[1].span, Span::new(21, 22));
+    }
+
+    #[test]
+    fn test_unterminated_block_comment_remains_an_error() {
+        let src = "module /* unterminated";
+        let errors = tokenize(src).expect_err("unterminated block comment must fail");
+        assert_eq!(errors, vec![Span::new(7, 22)]);
     }
 
     #[test]

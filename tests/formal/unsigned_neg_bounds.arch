@@ -1,0 +1,9 @@
+module UnsignedNegBounds
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<2>;
+  port o: out SInt<3>;
+  comb o = -a; end comb
+  assert lower_bound: o >= -2;
+  assert non_positive: o <= 0;
+end module UnsignedNegBounds

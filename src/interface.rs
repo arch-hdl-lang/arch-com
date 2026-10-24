@@ -15,6 +15,74 @@ pub fn emit_interface(item: &Item) -> Option<String> {
     item.as_construct().emit_interface()
 }
 
+/// `use P;` lines an item's `.archi` needs so a consumer can resolve it.
+///
+/// Package names are visible only to files that `use` (or declare) the
+/// package (spec §3.12, enforced since #1065). A `.archi` is loaded as its own
+/// file, so it must carry the imports its interface text depends on: every
+/// package the item's source file imports or declares whose member names
+/// (domains, enums, structs, buses, aliases, functions, params; an extern
+/// package's types) appear in `content`. Packages the interface never mentions
+/// are left out so a consumer is not made to import them. Sorted for
+/// deterministic output.
+pub fn interface_uses(
+    item: &Item,
+    items: &[Item],
+    file_scopes: &[std::ops::Range<usize>],
+    content: &str,
+) -> Vec<String> {
+    let start = item.span().start;
+    let scope = file_scopes.iter().find(|r| r.contains(&start));
+    let in_scope = |sp: usize| scope.map(|r| r.contains(&sp)).unwrap_or(true);
+    let mentions = |name: &str| {
+        content.match_indices(name).any(|(i, _)| {
+            let before = content[..i].chars().next_back();
+            let after = content[i + name.len()..].chars().next();
+            let word = |c: Option<char>| c.map_or(false, |c| c.is_alphanumeric() || c == '_');
+            !word(before) && !word(after)
+        })
+    };
+    let mut visible: Vec<&str> = Vec::new();
+    for it in items {
+        match it {
+            Item::Use(u) if in_scope(it.span().start) => visible.push(&u.name.name),
+            Item::Package(p) if in_scope(it.span().start) => visible.push(&p.name.name),
+            Item::ExternPackage(p) if in_scope(it.span().start) => visible.push(&p.name.name),
+            _ => {}
+        }
+    }
+    let mut needed: Vec<String> = Vec::new();
+    for pkg in visible {
+        let members: Vec<&str> = items
+            .iter()
+            .flat_map(|it| match it {
+                Item::Package(p) if p.name.name == pkg => p
+                    .domains
+                    .iter()
+                    .map(|d| d.name.name.as_str())
+                    .chain(p.enums.iter().map(|e| e.name.name.as_str()))
+                    .chain(p.structs.iter().map(|s| s.name.name.as_str()))
+                    .chain(p.buses.iter().map(|b| b.name.name.as_str()))
+                    .chain(p.aliases.iter().map(|a| a.name.name.as_str()))
+                    .chain(p.functions.iter().map(|f| f.name.name.as_str()))
+                    .chain(p.params.iter().map(|pp| pp.name.name.as_str()))
+                    .collect::<Vec<_>>(),
+                Item::ExternPackage(p) if p.name.name == pkg => {
+                    p.types.iter().map(|t| t.name.as_str()).collect()
+                }
+                _ => Vec::new(),
+            })
+            .collect();
+        if (members.iter().any(|m| mentions(m)) || mentions(&format!("{pkg}::")))
+            && !needed.iter().any(|n| n == pkg)
+        {
+            needed.push(pkg.to_string());
+        }
+    }
+    needed.sort();
+    needed
+}
+
 /// Regfile uses the generic shape (no construct-specific fields beyond
 /// params + ports). Wrapper kept here so the trait impl can take a
 /// uniform `fn(&RegfileDecl) -> String`.
@@ -657,6 +725,18 @@ pub(crate) fn expr_str(expr: &Expr) -> String {
         }
         ExprKind::Ident(name) => name.clone(),
         ExprKind::Binary(op, l, r) => format!("({} {} {})", expr_str(l), op, expr_str(r)),
+        // Keep conditional parameter expressions intact across the `.archi`
+        // boundary.  The parentheses are required both for nested ternaries
+        // and when this expression is embedded in a type such as `UInt<D>`.
+        // Falling through to the generic fallback here silently changed a
+        // derived width to zero, so a consumer of the interface could no
+        // longer elaborate the same module as its source.
+        ExprKind::Ternary(cond, then_expr, else_expr) => format!(
+            "({} ? {} : {})",
+            expr_str(cond),
+            expr_str(then_expr),
+            expr_str(else_expr)
+        ),
         ExprKind::Clog2(inner) => format!("clog2({})", expr_str(inner)),
         _ => "0".to_string(), // fallback for complex expressions
     }

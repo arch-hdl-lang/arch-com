@@ -225,7 +225,7 @@ end module SliceArithmeticExpr
 "#;
     let sv = compile_to_sv(source);
     assert!(
-        sv.contains("assign arch_idx_base_0 = a + one_s;"),
+        sv.contains("assign arch_idx_base_0 = 5'(a + one_s);"),
         "expected the arithmetic base bound to a temp, got:\n{sv}"
     );
     assert!(
@@ -580,7 +580,7 @@ end module {name}
         );
         let sv = compile_to_sv(&source);
         assert!(
-            sv.contains("assign arch_idx_base_0 = a + b;"),
+            sv.contains("assign arch_idx_base_0 = 9'(a + b);"),
             "{name}: expected additive base bound to a temp, got:\n{sv}"
         );
         assert!(
@@ -5113,7 +5113,7 @@ fn test_pipeline_preserves_per_register_init_and_reset_semantics() {
     assert!(sim.contains("_capture_expr_init_and_reset(INIT_VALUE)"));
     assert!(sim.contains("if (rst_sync) { _capture_reset_only = 3; }"));
     assert!(sim.contains("if ((!rst_async_n)) { _capture_init_and_reset = 9; }"));
-    assert!(sim.contains("if (rst_sync) { _capture_expr_init_and_reset = (INIT_VALUE + 1); }"));
+    assert!(sim.contains("if (rst_sync) { _capture_expr_init_and_reset = (uint16_t)(((((uint16_t)(((INIT_VALUE) & 0x1FFULL)) + (uint16_t)(((1) & 0x1FFULL)))) & 0x1FFULL)); }"));
     assert!(!sim.contains("if (rst_sync) { _capture_no_reset ="));
     assert!(!sim.contains("if (rst_sync) { _capture_init_only ="));
 }
@@ -6407,6 +6407,172 @@ end module MacShare
     assert!(
         sv.contains("localparam") && sv.contains("_t0_S"),
         "expected per-thread state-name localparams (#247 shape):\n{sv}"
+    );
+}
+
+/// `shared(when EXPR) function`: whether a function is shared is chosen by a
+/// constant over the module's params, so one design can share an operator on
+/// one target (ASIC area) and inline it on another (an FPGA whose hard
+/// multiplier absorbs the copies). The emitter keeps a single SV text for
+/// every param value: each bound call site selects between the harness output
+/// and the ordinary inline call.
+const SHARE_WHEN_SRC: &str = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module MacShareWhen
+  param SHARE: const = 1;
+  port clk: in Clock<D>;
+  port rst: in Reset<Async, Low>;
+  port a: in UInt<16>;
+  port b: in UInt<16>;
+  port q: out UInt<34>;
+  reg acc: UInt<34> reset rst => 0;
+
+  shared(when SHARE == 1) function Mac(x: UInt<16>, y: UInt<16>, accum: UInt<34>) -> UInt<34>
+    return accum +% (x.zext<34>() *% y.zext<34>());
+  end function Mac
+
+  thread t on clk rising, rst low
+    acc <= Mac(a, b, acc);
+    wait 1 cycle;
+    acc <= Mac(a, a, acc);
+  end thread t
+
+  let q = acc;
+end module MacShareWhen
+"#;
+
+#[test]
+fn shared_when_rewrites_each_bound_call_site_to_a_param_select() {
+    let sv = compile_to_sv(SHARE_WHEN_SRC);
+    assert!(
+        sv.contains("__shared_Mac_16_16_34_out"),
+        "expected the shared harness (it is always emitted):\n{sv}"
+    );
+    let selects: Vec<&str> = sv
+        .lines()
+        .filter(|l| l.contains("((SHARE == 1) ? __shared_Mac_16_16_34_out : Mac_16_16_34("))
+        .collect();
+    assert_eq!(
+        selects.len(),
+        2,
+        "expected both call sites rewritten to the param select:\n{sv}"
+    );
+    assert!(
+        sv.contains("#(.SHARE(SHARE)) _threads"),
+        "the condition's param must reach the `_threads` submodule:\n{sv}"
+    );
+}
+
+#[test]
+fn shared_when_condition_folds_to_shared_or_inline_structure_in_yosys() {
+    // After constant folding, SHARE == 1 must leave exactly the plain-`shared`
+    // structure and SHARE == 0 exactly the plain-`function` one -- no harness
+    // logic survives the false branch. Cell types are compared before any
+    // operator-sharing optimisation could merge the inline copies.
+    if std::process::Command::new("yosys")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: yosys not available");
+        return;
+    }
+    let td = tempfile::tempdir().unwrap();
+    let cells = |tag: &str, src: &str, share: u32| -> Vec<(String, u32)> {
+        let sv_path = td.path().join(format!("{tag}.sv"));
+        std::fs::write(&sv_path, compile_to_sv(src)).unwrap();
+        let script = format!(
+            "read_verilog -sv {}; hierarchy -top MacShareWhen -chparam SHARE {share}; \
+             proc; flatten; opt_expr; opt_clean -purge; stat",
+            sv_path.display()
+        );
+        let out = std::process::Command::new("yosys")
+            .args(["-p", &script])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut cells: Vec<(String, u32)> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split_whitespace();
+                let n = f.next()?.parse::<u32>().ok()?;
+                let ty = f.next()?;
+                (ty.starts_with('$') && f.next().is_none()).then(|| (ty.to_string(), n))
+            })
+            .collect();
+        cells.sort();
+        cells
+    };
+    let muls = |c: &[(String, u32)]| c.iter().find(|(t, _)| t == "$mul").map_or(0, |(_, n)| *n);
+    let shared = cells(
+        "shared",
+        &SHARE_WHEN_SRC.replace("shared(when SHARE == 1) function", "shared function"),
+        1,
+    );
+    let plain = cells(
+        "plain",
+        &SHARE_WHEN_SRC.replace("shared(when SHARE == 1) function", "function"),
+        0,
+    );
+    let when1 = cells("when1", SHARE_WHEN_SRC, 1);
+    let when0 = cells("when0", SHARE_WHEN_SRC, 0);
+    assert_eq!(
+        muls(&when1),
+        1,
+        "SHARE=1 must fold to one shared multiplier"
+    );
+    assert_eq!(
+        muls(&when0),
+        2,
+        "SHARE=0 must fold to the two inline multipliers"
+    );
+    assert_eq!(
+        when1, shared,
+        "SHARE=1 must fold to the plain-`shared` netlist"
+    );
+    assert_eq!(when0, plain, "SHARE=0 must leave no harness logic behind");
+}
+
+#[test]
+fn shared_when_condition_must_be_a_one_bit_constant_over_module_params() {
+    let not_param = SHARE_WHEN_SRC.replace("shared(when SHARE == 1)", "shared(when a == 1)");
+    let errs = typecheck_errors(&not_param).unwrap_err().join("\n");
+    assert!(
+        errs.contains("may only reference params of module `MacShareWhen`: `a` is not a param"),
+        "{errs}"
+    );
+    assert_eq!(
+        errs.matches("shared(when ...)").count(),
+        1,
+        "reported once:\n{errs}"
+    );
+
+    let wide = SHARE_WHEN_SRC.replace("shared(when SHARE == 1)", "shared(when SHARE)");
+    let errs = typecheck_errors(&wide).unwrap_err().join("\n");
+    assert!(
+        errs.contains("condition on function `Mac` must be 1 bit"),
+        "{errs}"
+    );
+
+    let one_bit_param = SHARE_WHEN_SRC
+        .replace("param SHARE: const = 1;", "param SHARE[0:0]: const = 1;")
+        .replace("shared(when SHARE == 1)", "shared(when SHARE)");
+    assert!(
+        typecheck_errors(&one_bit_param).is_ok(),
+        "a 1-bit param is accepted as is"
+    );
+
+    let top_level = "shared(when 1'b1) function Inc(x: UInt<8>) -> UInt<8>\n  return x +% 8'd1;\nend function Inc\n";
+    let errs = typecheck_errors(top_level).unwrap_err().join("\n");
+    assert!(
+        errs.contains("only allowed on a function declared inside a module"),
+        "{errs}"
     );
 }
 
@@ -8717,10 +8883,6 @@ end module MissingDomainUse
         "expected missing package import to reject `Payload`:\n{stderr}"
     );
     assert!(
-        stderr.matches("Payload").count() >= 2,
-        "expected both same-file and cross-file consumers without `use` to reject `Payload`:\n{stderr}"
-    );
-    assert!(
         stderr.contains("unknown function `pass`"),
         "expected missing package import to reject `pass`:\n{stderr}"
     );
@@ -8735,6 +8897,192 @@ end module MissingDomainUse
     assert!(
         stderr.contains("undefined") && stderr.contains("PkgDomain"),
         "expected missing package import to reject `PkgDomain`:\n{stderr}"
+    );
+
+    // A package is visible in its own file without `use` (spec §3.12/§29.2):
+    // `SameFileMissingUse` lives in Pkg.arch, so checking that file alone
+    // must succeed.
+    let same_file = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&pkg)
+        .current_dir(td.path())
+        .output()
+        .expect("run same-file check");
+    assert!(
+        same_file.status.success(),
+        "a package member must be visible in the file that declares the package:\n{}",
+        String::from_utf8_lossy(&same_file.stderr)
+    );
+}
+
+/// Write `files` into a fresh tempdir and run `arch check` on all of them.
+fn check_package_domain_files(files: &[(&str, &str)]) -> std::process::Output {
+    let td = tempfile::tempdir().expect("tempdir");
+    let paths: Vec<_> = files
+        .iter()
+        .map(|(name, src)| {
+            let path = td.path().join(name);
+            std::fs::write(&path, src).expect("write source");
+            path
+        })
+        .collect();
+    std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("check")
+        .args(&paths)
+        .current_dir(td.path())
+        .output()
+        .expect("run arch check")
+}
+
+const SYS_DOMAIN_CONSUMER: &str = r#"module Consumer
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= d;
+  end seq
+  comb
+    q = r;
+  end comb
+end module Consumer
+"#;
+
+#[test]
+fn test_package_declared_sys_domain_does_not_hide_builtin() {
+    // Declaring the built-in `SysDomain` inside a package only supplies its
+    // attributes; it must not make `SysDomain` invisible to a file that does
+    // not `use` the package (it is visible there with no declaration at all).
+    let pkg = "package Pkg\n  domain SysDomain\n    freq_mhz: 100\n  end domain SysDomain\nend package Pkg\n";
+    let out =
+        check_package_domain_files(&[("Pkg.arch", pkg), ("Consumer.arch", SYS_DOMAIN_CONSUMER)]);
+    assert!(
+        out.status.success(),
+        "package-declared SysDomain must stay visible without `use`:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let same_file = format!("{pkg}\n{SYS_DOMAIN_CONSUMER}");
+    let out = check_package_domain_files(&[("Same.arch", &same_file)]);
+    assert!(
+        out.status.success(),
+        "package-declared SysDomain must stay visible in the same file:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_same_file_package_domain_and_struct_visible_without_use() {
+    let src = r#"package Pkg
+  domain FastDomain
+    freq_mhz: 500
+  end domain FastDomain
+
+  struct Pair
+    x: UInt<4>;
+    y: UInt<4>;
+  end struct Pair
+end package Pkg
+
+module Consumer
+  port clk: in Clock<FastDomain>;
+  port a: in Pair;
+  port b: out Pair;
+  comb
+    b = a;
+  end comb
+end module Consumer
+"#;
+    let out = check_package_domain_files(&[("Consumer.arch", src)]);
+    assert!(
+        out.status.success(),
+        "same-file package members must be visible without `use`:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_conflicting_domain_freq_is_an_error() {
+    let a = "domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n";
+    let b = "package Pkg\n  domain SysDomain\n    freq_mhz: 300\n  end domain SysDomain\nend package Pkg\n";
+    let out = check_package_domain_files(&[
+        ("A.arch", a),
+        ("Pkg.arch", b),
+        ("Consumer.arch", SYS_DOMAIN_CONSUMER),
+    ]);
+    assert!(
+        !out.status.success(),
+        "conflicting freq_mhz must be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("conflicting `freq_mhz` for domain `SysDomain`"),
+        "expected a conflicting-frequency diagnostic:\n{stderr}"
+    );
+    // Repeating the same frequency stays legal.
+    let out = check_package_domain_files(&[
+        ("A.arch", a),
+        ("B.arch", a),
+        ("Consumer.arch", SYS_DOMAIN_CONSUMER),
+    ]);
+    assert!(
+        out.status.success(),
+        "re-declaring a domain with the same freq_mhz must be accepted:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_declared_sys_domain_freq_reaches_multi_clock_sim() {
+    // `domain SysDomain freq_mhz: N` sets the built-in's frequency (spec
+    // §5.1). With every clock frequency known, the sim model gets a
+    // generated `tick()` driver; a dropped override would suppress it.
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("Two.arch");
+    std::fs::write(
+        &src,
+        r#"domain SysDomain
+  freq_mhz: 200
+end domain SysDomain
+
+domain BDom
+  freq_mhz: 100
+end domain BDom
+
+module Two
+  port ca: in Clock<SysDomain>;
+  port cb: in Clock<BDom>;
+  port rst: in Reset<Sync>;
+  port x: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on ca rising
+    r <= r +% 1;
+  end seq
+  comb
+    x = r;
+  end comb
+end module Two
+"#,
+    )
+    .expect("write Two.arch");
+    let outdir = td.path().join("sim");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&src)
+        .arg("-o")
+        .arg(&outdir)
+        .current_dir(td.path())
+        .output()
+        .expect("run arch sim");
+    assert!(
+        out.status.success(),
+        "arch sim failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cpp = std::fs::read_to_string(outdir.join("VTwo.cpp")).expect("read VTwo.cpp");
+    assert!(
+        cpp.contains("void VTwo::tick()") && cpp.contains("ca: half-period = 2500 ps (200 MHz)"),
+        "SysDomain freq_mhz override must reach the multi-clock tick() driver:\n{cpp}"
     );
 }
 
@@ -10235,7 +10583,7 @@ fn test_vec_of_bus_port_param_driven_n() {
         "expected param-driven for-loop bounds to fold + unroll:\n{sv}"
     );
     assert!(
-        sv.contains("chans_d[2] = 8'(idx + 2)") || sv.contains("chans_d[2] = 8'((idx + 2))"),
+        sv.contains("chans_d[2] = 8'(((8 > $bits(2) ? 8 : $bits(2)) + 1)'(idx + 2))"),
         "missing unrolled last-element assignment:\n{sv}"
     );
 }
@@ -11235,8 +11583,9 @@ fn test_vec_of_bus_for_loop_static_unroll() {
         );
         // RHS must reference the literal i (not the loop variable).
         assert!(
-            sv.contains(&format!("chans_d[{i}] = 8'(idx + {i})"))
-                || sv.contains(&format!("chans_d[{i}] = 8'((idx + {i}))")),
+            sv.contains(&format!(
+                "chans_d[{i}] = 8'(((8 > $bits({i}) ? 8 : $bits({i})) + 1)'(idx + {i}))"
+            )),
             "missing unrolled `chans_d[{i}] = 8'(idx + {i})`:\n{sv}"
         );
     }
@@ -14087,7 +14436,13 @@ fn test_tlm_method_param_widths_substitute_in_lowered_target_and_initiator() {
         "target response data should use substituted TOKEN_W:\n{sv}"
     );
     assert!(
-        sv.contains("assign m_read_tile = _tlm_init_m_read_grant_0 ? 5'd3 : 0;"),
+        sv.contains("logic [4:0] _tlm_init_m_read_argtile_3;")
+            && sv.contains(
+                "assign _tlm_init_m_read_argtile_3 = _tlm_init_m_read_grant_0 ? 5'd3 : 0;"
+            )
+            && sv.contains(
+                "assign m_read_tile = _tlm_init_m_read_grant_0 ? _tlm_init_m_read_argtile_3 : 0;"
+            ),
         "initiator request drive should use substituted TILE_W:\n{sv}"
     );
     assert!(
@@ -15756,6 +16111,12 @@ fn test_tlm_indexed_target_response_lock_uses_resource_policy() {
     assert!(
         sv.contains("module _arb_MemTarget_read_rsp"),
         "response lock should synthesize a policy arbiter module:\n{sv}"
+    );
+    // #1091: the `Reset<Sync>` port must give the synthesized TLM-target
+    // response arbiter synchronous flops, not the old hard-coded async reset.
+    assert!(
+        !sv.contains("posedge clk or posedge rst") && !sv.contains("posedge clk or negedge rst"),
+        "Reset<Sync> TLM target must emit a synchronous response arbiter:\n{sv}"
     );
     // Round-robin pointer-advance shape inside the synthesized
     // `_arb_MemTarget_read_rsp` arbiter module — uses the bare
@@ -21057,6 +21418,106 @@ fn test_lock_arbiter_emits_hold_latch_user_arbiter_does_not() {
     );
 }
 
+// #1091: the synthesized lock arbiter inherits BOTH the reset kind and level
+// from the merged module's reset port. It used to hard-code the kind to Async,
+// so a `Reset<Sync>` design got asynchronous arbiter flops beside synchronous
+// `_threads` logic — a reset-methodology mismatch, silent in check and
+// Verilator. For every Kind x Level, the `_arb_*` sensitivity list must match
+// the port.
+#[test]
+fn test_lock_arbiter_reset_kind_matches_the_port() {
+    // Helper: a two-thread lock design parameterized by the reset type text.
+    fn lock_src(reset_ty: &str, clause: &str) -> String {
+        format!(
+            r#"
+        module LockKind
+          port clk: in Clock<SysDomain>;
+          port rst: in {reset_ty};
+          port go: in Bool;
+          port busy: out Bool;
+
+          resource pool: mutex<round_robin>;
+
+          thread once T0 on clk rising, {clause}
+            lock pool
+              busy = 1;
+              wait until go;
+              busy = 0;
+            end lock pool
+          end thread T0
+
+          thread once T1 on clk rising, {clause}
+            lock pool
+              wait until go;
+            end lock pool
+          end thread T1
+        end module LockKind
+    "#
+        )
+    }
+
+    // Sync, active-high: arbiter must NOT have any async reset edge.
+    let sync_high = compile_to_sv(&lock_src("Reset<Sync, High>", "rst high"));
+    assert!(
+        sync_high.contains("module _arb_LockKind_pool"),
+        "expected synthesized arbiter:\n{sync_high}"
+    );
+    assert!(
+        !sync_high.contains("posedge clk or posedge rst")
+            && !sync_high.contains("posedge clk or negedge rst"),
+        "Reset<Sync> design must emit a synchronous arbiter, not an async one:\n{sync_high}"
+    );
+
+    // Sync, active-low: still synchronous (no edge-sensitive reset).
+    let sync_low = compile_to_sv(&lock_src("Reset<Sync, Low>", "rst low"));
+    assert!(
+        !sync_low.contains("posedge clk or posedge rst")
+            && !sync_low.contains("posedge clk or negedge rst"),
+        "Reset<Sync, Low> design must emit a synchronous arbiter:\n{sync_low}"
+    );
+
+    // Async, active-high: arbiter keeps its async reset (posedge rst).
+    let async_high = compile_to_sv(&lock_src("Reset<Async, High>", "rst high"));
+    assert!(
+        async_high.contains("always_ff @(posedge clk or posedge rst)"),
+        "Reset<Async, High> design must keep async arbiter flops:\n{async_high}"
+    );
+
+    // Async, active-low: async reset on negedge.
+    let async_low = compile_to_sv(&lock_src("Reset<Async, Low>", "rst low"));
+    assert!(
+        async_low.contains("always_ff @(posedge clk or negedge rst)"),
+        "Reset<Async, Low> design must keep async arbiter flops (negedge):\n{async_low}"
+    );
+
+    // The core #1091 invariant: the synthesized arbiter's clocking must MATCH
+    // the merged `_threads` module beside it, not merely be internally
+    // consistent. Extract the first `always_ff @(...)` sensitivity list of each
+    // module and require equality for every Kind x Level.
+    fn first_always_ff(sv: &str, module_marker: &str) -> String {
+        let after = sv
+            .split_once(module_marker)
+            .unwrap_or_else(|| panic!("module `{module_marker}` not found:\n{sv}"))
+            .1;
+        // Stop at the next module boundary so we read this module's own flop.
+        let body = after.split("\nmodule ").next().unwrap_or(after);
+        let at = body
+            .find("always_ff @(")
+            .unwrap_or_else(|| panic!("no always_ff in `{module_marker}`:\n{sv}"));
+        let rest = &body[at..];
+        let end = rest.find(')').map(|i| i + 1).unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+    for sv in [&sync_high, &sync_low, &async_high, &async_low] {
+        let arb = first_always_ff(sv, "module _arb_LockKind_pool");
+        let threads = first_always_ff(sv, "module _LockKind_threads");
+        assert_eq!(
+            arb, threads,
+            "synthesized arbiter clocking must match the `_threads` module:\n{sv}"
+        );
+    }
+}
+
 #[test]
 fn test_lock_release_ignores_internal_for_loop_back_edge() {
     let sv = compile_to_sv(
@@ -25782,6 +26243,208 @@ fn cdc_p4_comb_fanin_same_domain_ok() {
     assert_rdc_ok("P4", &src);
 }
 
+// P6/P7: the comb→seq check works per comb target, on each target's
+// transitive register fan-in — not on the union of everything its comb
+// block reads.
+
+#[test]
+fn cdc_p6_comb_block_shared_targets_same_domain_ok() {
+    let src =
+        std::fs::read_to_string("tests/rdc/cdc_p6_comb_block_shared_targets_same_domain_ok.arch")
+            .expect("read P6");
+    assert_rdc_ok("P6", &src);
+}
+
+#[test]
+fn cdc_p7_comb_transitive_foreign_domain_fail() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_p7_comb_transitive_foreign_domain_fail.arch")
+        .expect("read P7");
+    assert_rdc_fails(
+        "P7",
+        &src,
+        &[
+            "CDC violation: comb signal `w2` reads register `ra`",
+            "DA",
+            "DB",
+        ],
+    );
+}
+
+// Q1/Q2: a module-scope `let` is a comb signal too — a foreign-domain
+// `seq` reading it directly is a crossing.
+
+#[test]
+fn cdc_q1_let_consumed_in_foreign_domain_fail() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_q1_let_consumed_in_foreign_domain_fail.arch")
+        .expect("read Q1");
+    assert_rdc_fails(
+        "Q1",
+        &src,
+        &[
+            "CDC violation: comb signal `nxt` reads register `ra`",
+            "DA",
+            "DB",
+        ],
+    );
+}
+
+#[test]
+fn cdc_q2_let_consumed_in_same_domain_ok() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_q2_let_consumed_in_same_domain_ok.arch")
+        .expect("read Q2");
+    assert_rdc_ok("Q2", &src);
+}
+
+#[test]
+fn cdc_comb_names_actual_source_register() {
+    // sd_rx_fifo's unsynchronized `empty = adr_i == adr_o;` shares a comb
+    // block with the read mux `q = ram_N;`. The crossing is `adr_i` (write
+    // domain); the `ram_*` registers do not feed `empty`. Strip any CDC
+    // opt-out so the check runs.
+    let src = std::fs::read_to_string("tests/sdc/sd_rx_fifo.arch")
+        .expect("read sd_rx_fifo")
+        .replace("pragma cdc_safe;", "");
+    let errs: Vec<String> = match rdc_check(&src) {
+        Ok(()) => Vec::new(),
+        Err(es) => es.iter().map(|e| e.to_string()).collect(),
+    };
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("comb signal `empty` reads register `adr_i`")),
+        "expected the adr_i crossing on `empty`, got: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("register `ram_")),
+        "`ram_*` do not feed any comb signal consumed cross-domain, got: {errs:?}"
+    );
+}
+
+// P8: the instance-boundary CDC check gives each parent signal and each
+// child port the domains of its OWN transitive register fan-in (sets, not
+// a single last-written domain) — not the union of its comb block's reads.
+
+#[test]
+fn cdc_p8_inst_parent_comb_block_mixed_domains_fail() {
+    let src =
+        std::fs::read_to_string("tests/rdc/cdc_p8_inst_parent_comb_block_mixed_domains_fail.arch")
+            .expect("read P8a");
+    assert_rdc_fails(
+        "P8a",
+        &src,
+        &[
+            "CDC violation at instance `cons`: signal `wa` (domain `DA`)",
+            "port `data_in` which operates in domain `DB`",
+        ],
+    );
+}
+
+#[test]
+fn cdc_p8_inst_parent_comb_block_shared_port_target_ok() {
+    let src = std::fs::read_to_string(
+        "tests/rdc/cdc_p8_inst_parent_comb_block_shared_port_target_ok.arch",
+    )
+    .expect("read P8b");
+    assert_rdc_ok("P8b", &src);
+}
+
+#[test]
+fn cdc_p8_inst_parent_transitive_fanin_fail() {
+    let src = std::fs::read_to_string("tests/rdc/cdc_p8_inst_parent_transitive_fanin_fail.arch")
+        .expect("read P8c");
+    assert_rdc_fails(
+        "P8c",
+        &src,
+        &[
+            "CDC violation at instance `cons`: signal `w` (domain `DA`)",
+            "port `data_in` which operates in domain `DB`",
+        ],
+    );
+}
+
+#[test]
+fn cdc_p8_inst_child_input_two_domains_fail() {
+    // The crossing must be reported for both orders of the child's two
+    // seq blocks, not only when the DB block happens to come last.
+    let src = std::fs::read_to_string("tests/rdc/cdc_p8_inst_child_input_two_domains_fail.arch")
+        .expect("read P8d");
+    let blk_b = "  seq on clk_b rising\n    sb <= d;\n  end seq\n";
+    let blk_a = "  seq on clk_a rising\n    sa <= d;\n  end seq\n";
+    let order_ba = format!("{blk_b}{blk_a}");
+    assert!(src.contains(&order_ba), "P8d fixture layout changed");
+    let swapped = src.replace(&order_ba, &format!("{blk_a}{blk_b}"));
+    for (label, s) in [("P8d", &src), ("P8d-swapped", &swapped)] {
+        assert_rdc_fails(
+            label,
+            s,
+            &[
+                "CDC violation at instance `s`: signal `ra` (domain `DA`)",
+                "port `d` which operates in domain `DB`",
+            ],
+        );
+    }
+}
+
+// P9: a child with two clock ports in ONE declared domain, bound to two
+// DIFFERENT parent domains. `check_inst_cdc` must resolve each data port's
+// parent domain through the specific clock the port is sampled on — not by
+// searching a `HashMap` of clocks for the first whose domain matches, which was
+// a per-process coin flip (#1064).
+
+#[test]
+fn cdc_p9_inst_shared_child_domain_maps_to_sig_domain_ok() {
+    // `d` sampled on clk_y (-> parent DB); signal `rb` is DB: no crossing.
+    let src = std::fs::read_to_string(
+        "tests/rdc/cdc_p9_inst_shared_child_domain_maps_to_sig_domain_ok.arch",
+    )
+    .expect("read P9-ok");
+    assert_rdc_ok("P9-ok", &src);
+}
+
+#[test]
+fn cdc_p9_inst_shared_child_domain_crosses_fail() {
+    // Same shape, but `d` sampled on clk_x (-> parent DA); signal `rb` is DB:
+    // a real DA<-DB crossing, which must be reported.
+    let src =
+        std::fs::read_to_string("tests/rdc/cdc_p9_inst_shared_child_domain_crosses_fail.arch")
+            .expect("read P9-fail");
+    assert_rdc_fails(
+        "P9-fail",
+        &src,
+        &[
+            "CDC violation at instance `s`: signal `rb` (domain `DB`)",
+            "port `d` which operates in domain `DC` (mapped to parent domain `DA`)",
+        ],
+    );
+}
+
+#[test]
+fn cdc_p9_inst_shared_child_domain_verdict_is_deterministic() {
+    // `HashMap` iteration order is seeded per process, so a single in-process
+    // check cannot observe the #1064 flake — it only surfaces across separate
+    // processes. Invoke the compiler binary repeatedly and assert every run
+    // agrees. On the pre-fix binary the `_ok` design flipped between OK and a
+    // spurious crossing (observed ~50/50 over 30 runs); the fix pins it to OK.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let fixture = "tests/rdc/cdc_p9_inst_shared_child_domain_maps_to_sig_domain_ok.arch";
+    const RUNS: usize = 24;
+    let mut oks = 0usize;
+    for _ in 0..RUNS {
+        let out = std::process::Command::new(arch_bin)
+            .arg("check")
+            .arg(fixture)
+            .output()
+            .expect("run arch check");
+        if out.status.success() {
+            oks += 1;
+        }
+    }
+    assert_eq!(
+        oks, RUNS,
+        "#1064: inst-CDC verdict is not deterministic — {oks}/{RUNS} runs reported OK \
+         (expected all {RUNS}); the shared-domain child clock is being resolved by hash order"
+    );
+}
+
 #[test]
 fn cdc_p5_multibit_ff_synchronizer_warns() {
     // `kind ff` is a two-flop synchroniser: safe for a single bit, unsafe
@@ -27368,7 +28031,7 @@ fn test_uint_48_param_width_emits_uint64_storage() {
 
     // The seq-assign cast must be (uint64_t), not (uint32_t).
     assert!(
-        out.contains("(uint64_t)((((_accumulator + inc_in))"),
+        out.contains("(uint64_t)((((uint64_t)(((((uint64_t)(((_accumulator) & 0x1FFFFFFFFFFFFULL)) + (uint64_t)(((inc_in) & 0x1FFFFFFFFFFFFULL)))) & 0x1FFFFFFFFFFFFULL))) & 0xFFFFFFFFFFFFULL))"),
         "trunc cast should be (uint64_t)(...); got:\n{out}"
     );
 }
@@ -27521,7 +28184,7 @@ fn test_sint_40_param_width_emits_int64_storage_and_signed_trunc() {
     );
     assert!(
         out.contains(
-            "((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
+            "((int64_t)(((uint64_t)(((int64_t)(((uint64_t)((((int64_t)(((uint64_t)(_accumulator) & 0x1FFFFFFFFFFULL) << 23) >> 23) + ((int64_t)(((uint64_t)(inc_in) & 0x1FFFFFFFFFFULL) << 23) >> 23))) & 0x1FFFFFFFFFFULL) << 23) >> 23)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
         ),
         "SInt<40> trunc should sign-extend from bit 39 into int64_t; got:\n{out}"
     );
@@ -27639,7 +28302,7 @@ fn test_thread_driven_sint_reg_keeps_parent_wire_type() {
         sv.contains("logic signed [W-1:0] acc;"),
         "parent-side wire for thread-driven SInt reg should keep signedness/width:\n{sv}"
     );
-    assert!(sv.contains("assign next_acc = W'(acc + product_ext);"),
+    assert!(sv.contains("assign next_acc = W'((($bits(acc) > W ? $bits(acc) : W) + 1)'(acc + product_ext));"),
             "parent expression should see typed signed acc/product_ext and emit the trunc assignment:\n{sv}");
 }
 
@@ -27997,7 +28660,7 @@ fn test_sint_40_lowered_thread_regs_keep_signed_storage() {
             "lowered thread/native sim must not use unsigned storage for SInt<40> accumulator; got:\n{out}");
     assert!(
         out.contains(
-            "((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
+            "((int64_t)(((uint64_t)(((int64_t)(((uint64_t)((((int64_t)(((uint64_t)(_accumulator) & 0x1FFFFFFFFFFULL) << 23) >> 23) + ((int64_t)(((uint64_t)(inc_in) & 0x1FFFFFFFFFFULL) << 23) >> 23))) & 0x1FFFFFFFFFFULL) << 23) >> 23)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
         ) || out.contains(
             "((int64_t)(((uint64_t)((accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
         ),
@@ -32874,6 +33537,796 @@ fn has_multi_driver_error(source: &str, signal: &str) -> bool {
     }
 }
 
+// ── Issue #1063: inst output vs seq / latch / let drivers ─────────────────
+// `seq`/`latch` targets are compared only against `inst` outputs (seq-vs-seq
+// stays deferred, see `signal_flow::collect_module_drivers`); a `let` is a
+// continuous driver like a `comb` block.
+
+/// Child module shared by the #1063 tests: one registered output `oa`, one
+/// input `ib`.
+const MD1063_SRC: &str = r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+module Src
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port ib: in UInt<8>;
+  port oa: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= r +% ib;
+  end seq
+  let oa = r;
+end module Src
+"#;
+
+fn md1063_top(decl_and_driver: &str, conn: &str) -> String {
+    format!(
+        r#"{MD1063_SRC}
+module Top
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port xb: in UInt<8>;
+  port q: out UInt<8>;
+{decl_and_driver}
+  inst s: Src
+    clk <- clk;
+    rst <- rst;
+    {conn}
+  end inst s
+  let q = cb;
+end module Top
+"#
+    )
+}
+
+#[test]
+fn test_multi_driver_inst_output_and_seq_errors() {
+    let src = md1063_top(
+        "  reg cb: UInt<8> reset rst => 0;\n  seq on clk rising\n    cb <= xb;\n  end seq",
+        "ib <- xb;\n    oa -> cb;",
+    );
+    assert!(
+        has_multi_driver_error(&src, "cb"),
+        "inst output + seq write on one reg is two SV drivers (#1063)"
+    );
+}
+
+#[test]
+fn test_multi_driver_inst_output_and_let_errors() {
+    let src = md1063_top("  let cb: UInt<8> = xb;", "ib <- xb;\n    oa -> cb;");
+    assert!(
+        has_multi_driver_error(&src, "cb"),
+        "inst output + `let` on one name is two continuous drivers (#1063)"
+    );
+}
+
+#[test]
+fn test_multi_driver_inst_output_and_latch_errors() {
+    let src = md1063_top(
+        "  reg cb: UInt<8>;\n  latch on en\n    cb <= xb;\n  end latch",
+        "ib <- xb;\n    oa -> cb;",
+    );
+    assert!(
+        has_multi_driver_error(&src, "cb"),
+        "inst output + latch write on one reg is two SV drivers (#1063)"
+    );
+}
+
+#[test]
+fn test_multi_driver_arrow_into_child_input_is_not_a_driver() {
+    // `ib -> cb` names a child INPUT: the SV port map `.ib(cb)` only reads
+    // `cb`, so the seq block stays its single driver. (The arrow/direction
+    // mismatch itself is #1026's to reject, not the multi-driver check's.)
+    let src = md1063_top(
+        "  reg cb: UInt<8> reset rst => 0;\n  seq on clk rising\n    cb <= xb;\n  end seq\n  wire w: UInt<8>;",
+        "ib -> cb;\n    oa -> w;",
+    );
+    let r = typecheck_source(&src);
+    assert!(
+        r.is_ok(),
+        "`->` into a child input port must not count as a driver: {:?}",
+        r.err()
+    );
+}
+
+#[test]
+fn test_multi_driver_thread_and_seq_same_reg_errors() {
+    // A reg written by a `thread` AND a separate `seq` block is illegal (one
+    // driver per signal). Thread lowering moves the thread's writes into the
+    // generated `_<Mod>_threads` child, so without this check the emitted SV
+    // drives the reg from the child's output and the parent's always_ff.
+    let source = r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+module M
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port stop: in Bool;
+  port busy: out Bool;
+  reg active_r: Bool reset rst => false;
+  seq on clk rising
+    if stop
+      active_r <= false;
+    end if
+  end seq
+  thread T on clk rising, rst high
+    wait until go;
+    active_r <= true;
+  end thread T
+  let busy = active_r;
+end module M
+"#;
+    assert!(
+        has_multi_driver_error(source, "active_r"),
+        "thread + seq co-driving one reg must be a multi-driver error"
+    );
+}
+
+#[test]
+fn test_multi_driver_two_threads_same_reg_no_error() {
+    // Control: two THREADS sharing a reg is legal — both lower into the one
+    // `_<Mod>_threads` child and share its always_ff.
+    let source = r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+module M
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port stop: in Bool;
+  port busy: out Bool;
+  reg active_r: Bool reset rst => false;
+  thread A on clk rising, rst high
+    wait until go;
+    active_r <= true;
+  end thread A
+  thread B on clk rising, rst high
+    wait until stop;
+    active_r <= false;
+  end thread B
+  let busy = active_r;
+end module M
+"#;
+    let r = typecheck_source(source);
+    assert!(
+        r.is_ok(),
+        "two threads sharing a reg is legal: {:?}",
+        r.err()
+    );
+}
+
+// ── Issue #929: multi-driver through a surviving `generate_for` genvar loop ──
+// An inst-bearing `generate_for` with a param-dependent range is preserved as
+// an SV genvar `for` loop (not unrolled at elaboration). Its inst-output
+// connections are drivers that the module-scope walk never saw before this
+// fix. A connection whose target does NOT vary with the loop var drives the
+// same net every iteration (N drivers); one indexed by the loop var names a
+// distinct element each iteration (one driver per element).
+
+/// Child used by the generate_for multi-driver tests: a registered pass of
+/// `en`/`y`. Shaped like issue #929's `GCell`.
+const GEN929_SRC: &str = r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+module GCell
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port y: out UInt<8>;
+  reg acc: UInt<8> reset rst => 0;
+  seq on clk rising
+    if en
+      acc <= (acc + 1).trunc<8>();
+    end if
+  end seq
+  comb
+    y = acc;
+  end comb
+end module GCell
+module PassThrough
+  port a: in  Bool;
+  port b: out Bool;
+  comb
+    b = a;
+  end comb
+end module PassThrough
+"#;
+
+#[test]
+fn test_multi_driver_genfor_inst_output_self_conflict_errors() {
+    // #929 canonical repro: N=3 instances in a genvar loop all connect
+    // `y -> y`, so the single wire `y` has three SV drivers. The range is
+    // param-dependent (preserved as genvar) and evaluates to 3 iterations at
+    // the default N, which is >= 2 — a self-conflict with no outside driver.
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenMultiDrvTop
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out UInt<8>;
+  wire y: UInt<8>;
+  generate_for i in 0..N-1
+    inst cell_i: GCell
+      clk <- clk;
+      rst <- rst;
+      en <- en;
+      y -> y;
+    end inst cell_i
+  end generate_for
+  comb
+    dout = y;
+  end comb
+end module GenMultiDrvTop
+"#
+    );
+    assert!(
+        has_multi_driver_error(&source, "y"),
+        "N gen-insts driving one wire is N SV drivers (#929)"
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_inst_output_and_seq_errors() {
+    // A genvar-loop inst output (`y -> o`, not loop-var-indexed) collides with
+    // a module-scope `seq` driver of the same reg: always_ff + genvar port map.
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenSeqCollide
+  param N: const = 2;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port reg o: out UInt<8> reset rst => 0;
+  seq on clk rising
+    o <= acc_in;
+  end seq
+  wire acc_in: UInt<8>;
+  comb
+    acc_in = 0;
+  end comb
+  generate_for i in 0..N-1
+    inst cell_i: GCell
+      clk <- clk;
+      rst <- rst;
+      en <- en;
+      y -> o;
+    end inst cell_i
+  end generate_for
+end module GenSeqCollide
+"#
+    );
+    assert!(
+        has_multi_driver_error(&source, "o"),
+        "genvar-loop inst output + module-scope seq on one reg is two SV drivers (#929)"
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_inst_output_and_comb_errors() {
+    // Same, but the colliding module-scope driver is a `comb` block.
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenCombCollide
+  param N: const = 2;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out UInt<8>;
+  wire w: UInt<8>;
+  comb
+    w = 0;
+    dout = w;
+  end comb
+  generate_for i in 0..N-1
+    inst cell_i: GCell
+      clk <- clk;
+      rst <- rst;
+      en <- en;
+      y -> w;
+    end inst cell_i
+  end generate_for
+end module GenCombCollide
+"#
+    );
+    assert!(
+        has_multi_driver_error(&source, "w"),
+        "genvar-loop inst output + module-scope comb on one wire is two SV drivers (#929)"
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_distinct_vec_elements_no_error() {
+    // Regression lock (examples/generate_for.arch shape): each iteration drives
+    // a DISTINCT Vec element `gnt[i]` — N drivers on N distinct nets, legal.
+    // Must NOT be flagged.
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenDistinctTop
+  param N: const = 2;
+  port req: in  Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- req[i];
+      b -> gnt[i];
+    end inst pt_i
+  end generate_for
+end module GenDistinctTop
+"#
+    );
+    let r = typecheck_source(&source);
+    assert!(
+        r.is_ok(),
+        "distinct `gnt[i]` per iteration is one driver per element, legal: {:?}",
+        r.err()
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_single_iteration_no_error() {
+    // A param-dependent range that evaluates to ONE iteration at the default
+    // param (M=1 → 0..0) is preserved as genvar but is a single driver — no
+    // outside driver, so it must pass (checked at the design's default point
+    // in parameter space, #969).
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenSingleTop
+  param M: const = 1;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out UInt<8>;
+  wire y: UInt<8>;
+  generate_for i in 0..M-1
+    inst cell_i: GCell
+      clk <- clk;
+      rst <- rst;
+      en <- en;
+      y -> y;
+    end inst cell_i
+  end generate_for
+  comb
+    dout = y;
+  end comb
+end module GenSingleTop
+"#
+    );
+    let r = typecheck_source(&source);
+    assert!(
+        r.is_ok(),
+        "single-iteration genvar loop with no outside driver is legal: {:?}",
+        r.err()
+    );
+}
+
+#[test]
+fn test_multi_driver_genfor_distinct_plus_outside_same_base_errors() {
+    // `gnt[i]` distinct per iteration, but a module-scope comb ALSO drives
+    // `gnt[0]` — the genvar loop drives gnt[0] via pt_0, so gnt[0] has two
+    // real drivers. (A variable loop-var index conservatively aliases the
+    // whole vector, matching the existing variable-index handling.)
+    let source = format!(
+        r#"{GEN929_SRC}
+module GenDistinctOutsideTop
+  param N: const = 2;
+  port a: in Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- a[i];
+      b -> gnt[i];
+    end inst pt_i
+  end generate_for
+  comb
+    gnt[0] = a[0];
+  end comb
+end module GenDistinctOutsideTop
+"#
+    );
+    assert!(
+        has_multi_driver_error(&source, "gnt"),
+        "genvar `gnt[i]` fan-out + module-scope comb on `gnt[0]` double-drives gnt[0] (#929)"
+    );
+}
+
+// ── #1071: comb/seq-bearing generate_for with a param-dependent range ─────
+// Such a body used to be PRESERVED as an SV genvar loop (its items are not in
+// the `body_preservable` exclusion) and then hit `unreachable!` in codegen —
+// `emit_generate` has no genvar `always_comb`/`always_ff` emitter. These
+// bodies now always take the unroll path, so (a) every backend sees one flat
+// AST and (b) the Reading-B single-driver check applies. Crash → diagnostic
+// on every path; one path (indexed comb) gets a conservative pre-existing
+// diagnostic, tracked separately.
+
+/// Run elaboration only and return its errors formatted, or "" on success.
+/// The #1071 Reading-B rejection is raised inside `expand_generate_for`
+/// (elaboration), before the type checker runs, so `typecheck_source` (which
+/// `.expect("elaborate")`s) would panic on it — hence this dedicated helper.
+fn gen1071_elaborate_err(source: &str) -> String {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    match elaborate::elaborate(ast) {
+        Ok(_) => String::new(),
+        Err(errs) => errs
+            .iter()
+            .map(|e| format!("{e:?}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[test]
+fn test_genfor_1071_scalar_comb_only_diagnosed_not_panics() {
+    // #1071 filed repro (comb-only). The LHS `y = a` is a SCALAR write, so N
+    // iterations drive the SAME net — a genuine single-driver violation. The
+    // filed issue's "valid source, should compile" claim is wrong for this
+    // shape: before the fix `arch check` passed (the preserve path skips
+    // Reading-B) and `arch build` panicked; now it unrolls and Reading-B
+    // rejects it at elaboration with the loop-index diagnostic. A diagnostic,
+    // never a crash.
+    let src = r#"
+module GenCombOnly
+  param N: const = 3;
+  port a: in Bool;
+  port dout: out Bool;
+  wire y: Bool;
+  generate_for i in 0..N-1
+    comb
+      y = a;
+    end comb
+  end generate_for
+  comb
+    dout = y;
+  end comb
+end module GenCombOnly
+"#;
+    let err = gen1071_elaborate_err(src);
+    assert!(
+        err.contains("indexed by the loop variable"),
+        "scalar comb-only generate_for must be diagnosed (Reading-B), not panic: {err}"
+    );
+}
+
+#[test]
+fn test_genfor_1071_scalar_seq_only_diagnosed_not_panics() {
+    // #1071 filed repro (seq-only), scalar LHS `y <= a` — same as above.
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenSeqOnly
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port dout: out UInt<8>;
+  reg y: UInt<8> reset rst => 0;
+  generate_for i in 0..N-1
+    seq on clk rising
+      y <= a;
+    end seq
+  end generate_for
+  comb
+    dout = y;
+  end comb
+end module GenSeqOnly
+"#
+    );
+    let err = gen1071_elaborate_err(&src);
+    assert!(
+        err.contains("indexed by the loop variable"),
+        "scalar seq-only generate_for must be diagnosed (Reading-B), not panic: {err}"
+    );
+}
+
+#[test]
+fn test_genfor_1071_indexed_seq_unrolls_no_genvar() {
+    // The valid form the issue meant: an INDEXED seq LHS `y[i] <= a[i]` over a
+    // module-scope Vec reg. Previously preserved→panic; now unrolls to one
+    // `always_ff` per iteration, each driving a distinct element, no genvar.
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenSeqIdx
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port a: in Vec<UInt<8>, N>;
+  port dout: out Vec<UInt<8>, N>;
+  reg y: Vec<UInt<8>, N> reset rst => 0;
+  generate_for i in 0..N-1
+    seq on clk rising
+      y[i] <= a[i];
+    end seq
+  end generate_for
+  comb
+    for k in 0..N-1
+      dout[k] = y[k];
+    end for
+  end comb
+end module GenSeqIdx
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        !sv.contains("genvar"),
+        "seq-bearing generate_for must unroll, not preserve a genvar loop:\n{sv}"
+    );
+    assert!(
+        sv.matches("always_ff").count() >= 3,
+        "expected one always_ff per unrolled iteration (N=3):\n{sv}"
+    );
+    assert!(
+        sv.contains("y[0]") && sv.contains("y[1]") && sv.contains("y[2]"),
+        "each iteration drives a distinct Vec element:\n{sv}"
+    );
+}
+
+#[test]
+fn test_genfor_1071_mixed_inst_and_indexed_seq_unrolls() {
+    // Shape-stable inst (preservable on its own) + indexed seq in one body.
+    // The seq item forces the whole loop to unroll; the inst unrolls with it
+    // (losing the compact genvar form) and the design compiles. Was
+    // preserved → codegen panic.
+    let src = format!(
+        r#"{GEN929_SRC}
+module MixedGen
+  param N: const = 2;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port a: in Vec<Bool, N>;
+  port bufout: out Vec<Bool, N>;
+  reg acc: Vec<Bool, N> reset rst => false;
+  port accout: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    inst b_i: PassThrough
+      a <- a[i];
+      b -> bufout[i];
+    end inst b_i
+    seq on clk rising
+      acc[i] <= a[i];
+    end seq
+  end generate_for
+  comb
+    for k in 0..N-1
+      accout[k] = acc[k];
+    end for
+  end comb
+end module MixedGen
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        !sv.contains("genvar"),
+        "a mixed body carrying a seq item must unroll the whole loop:\n{sv}"
+    );
+    assert!(
+        sv.contains("b_0") && sv.contains("b_1"),
+        "inst items unroll to b_0/b_1 alongside the seq:\n{sv}"
+    );
+}
+
+#[test]
+fn test_genfor_1071_indexed_comb_only_diagnosed_not_panics() {
+    // Indexed comb-only body unrolls to N comb blocks each driving a distinct
+    // element `y[i]`. `signal_flow` keys comb drivers by BASE name and cannot
+    // yet distinguish `y[0]` from `y[1]`, so it reports a conservative,
+    // PRE-EXISTING multi-driver — the same rejection a hand-written set of
+    // per-element comb blocks already gets, with no generate_for involved
+    // (see `test_multi_driver_distinct_comb_elements_is_preexisting_1071`).
+    // The #1071 fix only guarantees a DIAGNOSTIC here, never a codegen panic.
+    // Flip to "compiles" if/when the comb-element driver-tracking ruling
+    // (#1073) lands; the idiomatic form today is one `comb` block with a
+    // `for k` loop.
+    let src = r#"
+module GenCombIdx
+  param N: const = 3;
+  port a: in Vec<Bool, N>;
+  port y: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    comb
+      y[i] = a[i];
+    end comb
+  end generate_for
+end module GenCombIdx
+"#;
+    assert!(
+        has_multi_driver_error(src, "y"),
+        "indexed comb-only generate_for hits the pre-existing comb-element multi-driver check, not a panic"
+    );
+}
+
+#[test]
+fn test_multi_driver_distinct_comb_elements_is_preexisting_1071() {
+    // Baseline for the test above: the distinct-element comb rejection has
+    // nothing to do with generate_for. Three hand-written comb blocks driving
+    // `y[0]`/`y[1]`/`y[2]` are rejected the same way. Documents that the
+    // #1071 indexed-comb limitation is inherited, not introduced.
+    let src = r#"
+module HandComb
+  param N: const = 3;
+  port a: in Vec<Bool, N>;
+  port y: out Vec<Bool, N>;
+  comb
+    y[0] = a[0];
+  end comb
+  comb
+    y[1] = a[1];
+  end comb
+  comb
+    y[2] = a[2];
+  end comb
+end module HandComb
+"#;
+    assert!(
+        has_multi_driver_error(src, "y"),
+        "distinct-element comb multi-driver is pre-existing and independent of generate_for"
+    );
+}
+
+#[test]
+fn test_genfor_1071_inst_only_param_range_still_preserves_genvar() {
+    // Guard: the #1071 comb/seq unroll must NOT disturb inst-only
+    // preservation. An inst-only generate_for with a param-dependent range
+    // still emits a compact SV genvar loop (the examples/generate_for.arch
+    // shape).
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenInstOnly
+  param N: const = 2;
+  port req: in Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- req[i];
+      b -> gnt[i];
+    end inst pt_i
+  end generate_for
+end module GenInstOnly
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        sv.contains("genvar"),
+        "inst-only param-range generate_for must still preserve the genvar loop:\n{sv}"
+    );
+}
+
+// ── #1072 follow-up: assert-bearing generate_for over a param range ───────
+// An `assert` item was NOT in the `body_preservable` exclusion, so a
+// param-dependent assert-only (or assert + shape-stable-inst) body was
+// PRESERVED as a genvar loop and codegen's `Assert` arm silently DROPPED the
+// property — an empty `gen_i` loop with every assertion lost and no
+// diagnostic. A constant range already unrolled and emitted the SVA, so only
+// the param path diverged. `assert` now forces unroll like comb/seq: one
+// concurrent SVA per iteration, the loop-var suffix uniquifying each label.
+// Matches the spec's documented `assert`-in-`generate_for` element (§19.4).
+
+#[test]
+fn test_genfor_assert_param_range_unrolls_to_sva() {
+    // Assert-only body over `0..N-1`. Before the fix: preserved → silently
+    // dropped (0 SVA). After: unrolled → one SVA per iteration, labels
+    // a_bnd_0/1/2, no genvar.
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenAssertParam
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port din: in Vec<UInt<8>, N>;
+  port dout: out Vec<UInt<8>, N>;
+  generate_for i in 0..N-1
+    assert a_bnd_i: din[i] < 200;
+  end generate_for
+  comb
+    for k in 0..N-1
+      dout[k] = din[k];
+    end for
+  end comb
+end module GenAssertParam
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        !sv.contains("genvar"),
+        "assert-bearing param-range generate_for must unroll, not preserve a genvar loop:\n{sv}"
+    );
+    assert!(
+        sv.matches("assert property").count() == 3,
+        "expected one concurrent SVA per iteration (N=3); the property was silently dropped before the #1072 follow-up:\n{sv}"
+    );
+    assert!(
+        sv.contains("a_bnd_0") && sv.contains("a_bnd_1") && sv.contains("a_bnd_2"),
+        "the loop-var suffix must uniquify each unrolled assertion label:\n{sv}"
+    );
+}
+
+#[test]
+fn test_genfor_assert_mixed_inst_unrolls_with_sva() {
+    // Shape-stable inst (preservable on its own) + assert in one body. The
+    // assert item forces the whole loop to unroll; the inst unrolls with it
+    // (losing the compact genvar form) and both per-iteration SVAs emit.
+    let src = format!(
+        r#"{GEN929_SRC}
+module GenAssertMixed
+  param N: const = 2;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port req: in Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+  port din: in Vec<UInt<8>, N>;
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- req[i];
+      b -> gnt[i];
+    end inst pt_i
+    assert a_bnd_i: din[i] < 200;
+  end generate_for
+end module GenAssertMixed
+"#
+    );
+    let sv = compile_to_sv(&src);
+    assert!(
+        !sv.contains("genvar"),
+        "a body carrying an assert item must unroll the whole loop (inst loses genvar form):\n{sv}"
+    );
+    assert!(
+        sv.matches("assert property").count() == 2,
+        "both per-iteration SVAs must be emitted:\n{sv}"
+    );
+    assert!(
+        sv.contains("pt_0") && sv.contains("pt_1"),
+        "inst items unroll to pt_0/pt_1 alongside the asserts:\n{sv}"
+    );
+}
+
+#[test]
+fn test_genfor_assert_param_and_const_range_emit_identical_sva() {
+    // The core of the bug: a constant range already unrolled and emitted the
+    // SVA; only the param-dependent range diverged (silently dropping it).
+    // After the fix both ranges emit the same SVA count.
+    let mk = |range: &str| {
+        format!(
+            r#"{GEN929_SRC}
+module GenAssertRange
+  param N: const = 3;
+  port clk: in Clock<DA>;
+  port rst: in Reset<Sync>;
+  port din: in Vec<UInt<8>, 3>;
+  port dout: out Vec<UInt<8>, 3>;
+  generate_for i in {range}
+    assert a_bnd_i: din[i] < 200;
+  end generate_for
+  comb
+    for k in 0..2
+      dout[k] = din[k];
+    end for
+  end comb
+end module GenAssertRange
+"#
+        )
+    };
+    let sv_param = compile_to_sv(&mk("0..N-1"));
+    let sv_const = compile_to_sv(&mk("0..2"));
+    assert_eq!(
+        sv_param.matches("assert property").count(),
+        sv_const.matches("assert property").count(),
+        "param-range and constant-range assert generate_for must emit the same SVA count"
+    );
+    assert_eq!(
+        sv_param.matches("assert property").count(),
+        3,
+        "both ranges must emit one SVA per iteration (N=3)"
+    );
+}
+
 /// Repro C2: two separate `comb` blocks driving the same output wire.
 /// Each `comb` becomes a distinct `always_comb` in SV — a genuine multi-driver.
 #[test]
@@ -35200,7 +36653,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
 
     // 1. ceil-div sub-burst count: (ar_len + 16) >> 4.
     assert!(
-        flat.contains("num_sub_r <= 5'(9'(9'($unsigned(m_ar_len)) + 16) >> 4)"),
+        flat.contains("num_sub_r <= 5'(9'(10'(9'($unsigned(m_ar_len)) + 16)) >> 4)"),
         "num_sub must be ceil((ar_len+1)/16) = (ar_len+16)>>4:\n{sv}",
     );
     // 2. INCR-stepped sub-burst start address: base + (beats_done << size).
@@ -35210,7 +36663,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
         // name (arch#932) — so match the math, not the name.
         flat.contains("logic [ADDR_W-1:0] stepped;")
             && flat.contains("stepped = done << size;")
-            && flat.contains("ADDR_W'(base + stepped);"),
+            && flat.contains("ADDR_W'((ADDR_W + 1)'(base + stepped));"),
         "sub-burst start address must step by (i*16)<<size:\n{sv}",
     );
     // 3. AXI3 ar_len is 4-bit and is sub_beats-1.
@@ -35219,7 +36672,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
         "AXI3 s_ar_len must be 4-bit (max 16-beat burst):\n{sv}",
     );
     assert!(
-        flat.contains("s_ar_len = 4'(sub_beats_5_9(_t0_loop_cnt_0, total_r) - 1)"),
+        flat.contains("s_ar_len = 4'((($bits(sub_beats_5_9(_t0_loop_cnt_0, total_r)) > 1 ? $bits(sub_beats_5_9(_t0_loop_cnt_0, total_r)) : 1) + 1)'(sub_beats_5_9(_t0_loop_cnt_0, total_r) - 1))"),
         "AXI3 ar_len must be (sub_beats - 1) truncated to 4 bits:\n{sv}",
     );
     // min(16, remaining) clamp inside sub_beats().
@@ -35234,7 +36687,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
     );
     // 4. merged RLAST only on the final sub-burst.
     assert!(
-        flat.contains("m_r_last = _t0_loop_cnt_0 == num_sub_r - 1 && s_r_last"),
+        flat.contains("m_r_last = _t0_loop_cnt_0 == 6'(num_sub_r - 1) && s_r_last"),
         "merged RLAST must fire only on the final sub-burst:\n{sv}",
     );
 }
@@ -37148,7 +38601,7 @@ end module IdxArithHoist
         "expected a declared hoist temp, got:\n{sv}"
     );
     assert!(
-        sv.contains("assign arch_idx_base_0 = a - b;"),
+        sv.contains("assign arch_idx_base_0 = 9'(a - b);"),
         "expected the hoist temp assigned the arithmetic value, got:\n{sv}"
     );
     assert!(
@@ -38289,7 +39742,7 @@ fn test_seq_hoist_temps_land_at_module_scope() {
         ),
         (
             "module SeqIdxHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out Bit;\n  reg r: Bit reset rst => 0;\n  seq on clk rising\n    r <= (w - 1)[3];\n  end seq\n  comb\n    y = r;\n  end comb\nend module SeqIdxHoist\n",
-            "assign arch_idx_base_0 = w - 1;",
+            "assign arch_idx_base_0 = 17'(w - 1);",
         ),
     ];
     for (source, expected_assign) in cases {
@@ -39175,7 +40628,7 @@ end module LoopVarHoist861
         "arch#861 regression: parens dropped, emitted the precedence miscompile:\n{sv}"
     );
     assert!(
-        sv.contains("arch_idx_base_0 = a + v[i];"),
+        sv.contains("arch_idx_base_0 = 9'(a + v[i]);"),
         "expected a blocking assignment inside the loop body, got:\n{sv}"
     );
     assert!(
@@ -39194,7 +40647,9 @@ end module LoopVarHoist861
     let decl = sv
         .find("logic [9-1:0] arch_idx_base_0;")
         .unwrap_or_else(|| panic!("hoist temp declaration missing:\n{sv}"));
-    let first_stmt = sv.find("arch_idx_base_0 = a + v[i];").expect("assignment");
+    let first_stmt = sv
+        .find("arch_idx_base_0 = 9'(a + v[i]);")
+        .expect("assignment");
     assert!(
         decl > for_open && decl < first_stmt,
         "declaration must be at the top of the loop body (after `begin`, before the \
@@ -40218,6 +41673,55 @@ end module Scope
 }
 
 #[test]
+fn test_undefined_comb_lhs_target_rejected_1074_case3() {
+    // #1074 case 3: a bare-identifier `comb` assignment *target* that names no
+    // declared signal (`ww = din;`, a typo for `w`) used to pass `arch check`
+    // and emit `assign ww = ...;` referencing a 1-bit implicit SV net — the
+    // seq RHS path resolved its target but the comb LHS path only looked the
+    // name up in `local_types` and silently skipped resolution. The #748 test
+    // above already covers the comb *if-condition* and *seq RHS* value
+    // positions; this pins the comb LHS-target position it omitted.
+    let source = r#"
+module CombLhsTypo
+  port din: in UInt<8>;
+  port o: out UInt<8>;
+  wire w: UInt<8>;
+  comb
+    ww = din;
+    o = w;
+  end comb
+end module CombLhsTypo
+"#;
+    let errs = typecheck_errors(source)
+        .expect_err("an undefined comb LHS target must not typecheck (#1074 case 3)");
+    assert!(
+        errs.iter().any(|e| e.contains("ww")),
+        "the undefined comb LHS target `ww` must be reported, got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_legal_comb_lhs_targets_still_resolve_1074_case3() {
+    // Guard against over-rejection from the case-3 fix: every legal bare-ident
+    // comb target — an output port and a declared `wire` — must still resolve
+    // cleanly (they live in the module symbol scope even when absent from the
+    // width-typed `local_types` map).
+    let source = r#"
+module CombLhsLegal
+  port din: in UInt<8>;
+  port o: out UInt<8>;
+  wire w: UInt<8>;
+  comb
+    w = din;
+    o = w;
+  end comb
+end module CombLhsLegal
+"#;
+    typecheck_errors(source)
+        .expect("a `wire` and an output port are legal bare-ident comb targets");
+}
+
+#[test]
 fn test_param_and_enum_variant_still_resolve_748() {
     // Guards the two legal fallbacks the pre-#748 `else` branch was covering:
     // a `param` reference (generic width) and a bare enum variant.
@@ -40771,28 +42275,26 @@ module GTop
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port en: in Bool;
-  port dout: out UInt<8>;
-
-  wire y: UInt<8>;
+  port dout: out Vec<UInt<8>, N>;
 
   generate_for i in 0..N-1
     inst cell_i: GCell
-      y -> y;
+      y -> dout[i];
       auto;
     end inst cell_i
   end generate_for
-
-  comb
-    dout = y;
-  end comb
 end module GTop
 ";
+    // Each iteration drives a DISTINCT element `dout[i]` — a legal N-way
+    // fan-out. (The earlier form drove one scalar wire `y -> y` on every
+    // iteration, which is N drivers on one net — the #929 multi-driver this
+    // test unintentionally relied on; now a compile error.)
     let sv = compile_to_sv(src);
     assert!(
         sv.contains(".clk(clk)") && sv.contains(".rst(rst)") && sv.contains(".en(en)"),
         "{sv}"
     );
-    assert!(sv.contains(".y(y)"), "{sv}");
+    assert!(sv.contains(".y(dout[i])"), "{sv}");
 }
 
 /// `auto` is a contextual keyword, not a reserved word: a port genuinely
@@ -41414,4 +42916,502 @@ endmodule
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr)
     );
+}
+
+/// Regression: every data-synchronizer kind must honor the *kind* of its
+/// declared reset port in the emitted `always_ff` sensitivity list. Before the
+/// fix, `kind ff`/`kind gray` added `or <edge> rst` for `Reset<Async, _>` but
+/// `kind handshake`/`kind pulse` silently dropped it, emitting a synchronous
+/// reset for an async-declared port — a reset-kind fidelity bug that also
+/// trips Verilator SYNCASYNCNET when the same reset net drives async flops in
+/// the parent. `Reset<Sync, _>` must stay clock-edge-only for all kinds.
+#[test]
+fn synchronizer_all_kinds_honor_reset_kind_in_sensitivity() {
+    // `kind reset` is excluded: its `data_in` *is* the async reset by
+    // construction (async-assert / sync-deassert), so its sensitivity is
+    // `or posedge data_in`, not driven by a `Reset<>` port.
+    let build = |kind: &str, data_ty: &str, reset_ty: &str| -> String {
+        let src = format!(
+            r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+
+synchronizer S
+  kind {kind};
+  param STAGES: const = 2;
+  port src_clk:  in Clock<DA>;
+  port dst_clk:  in Clock<DB>;
+  port rst:      in {reset_ty};
+  port data_in:  in {data_ty};
+  port data_out: out {data_ty};
+end synchronizer S
+"#
+        );
+        compile_to_sv(&src)
+    };
+
+    for (kind, data_ty) in [
+        ("ff", "Bool"),
+        ("gray", "UInt<4>"),
+        ("handshake", "UInt<8>"),
+        ("pulse", "Bool"),
+    ] {
+        // Async, Low → `or negedge rst`; Async, High → `or posedge rst`.
+        let sv_low = build(kind, data_ty, "Reset<Async, Low>");
+        assert!(
+            sv_low.contains("or negedge rst)"),
+            "kind {kind}: async-low reset must appear in the sensitivity list, got:\n{sv_low}"
+        );
+        let sv_high = build(kind, data_ty, "Reset<Async, High>");
+        assert!(
+            sv_high.contains("or posedge rst)"),
+            "kind {kind}: async-high reset must appear in the sensitivity list, got:\n{sv_high}"
+        );
+
+        // Sync reset stays clock-edge-only: no async reset edge anywhere.
+        let sv_sync = build(kind, data_ty, "Reset<Sync, High>");
+        assert!(
+            !sv_sync.contains("or negedge rst)") && !sv_sync.contains("or posedge rst)"),
+            "kind {kind}: sync reset must NOT add an async reset edge, got:\n{sv_sync}"
+        );
+    }
+}
+
+const VIS_PKG: &str = r#"package Q
+  domain QDom
+    freq_mhz: 100
+  end domain QDom
+
+  struct Pair
+    x: UInt<4>;
+    y: UInt<4>;
+  end struct Pair
+
+  type Word = UInt<8>;
+end package Q
+"#;
+
+/// A fifo whose clock domain and element type come from package `Q`.
+fn vis_fifo(dom: &str, elem: &str) -> String {
+    format!(
+        r#"fifo Fq
+  param DEPTH: const = 4;
+  param T: type = {elem};
+  port clk: in Clock<{dom}>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo Fq
+"#
+    )
+}
+
+#[test]
+fn test_package_alias_requires_use_across_files() {
+    // elaborate() used to re-run alias substitution without file scopes,
+    // substituting a package alias into a file that never `use`s it.
+    let consumer = "module Hc\n  port a: in Word;\n  port b: out Word;\n  comb\n    b = a;\n  end comb\nend module Hc\n";
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Hc.arch", consumer)]);
+    assert!(
+        !out.status.success(),
+        "package alias must not leak across files"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("undefined name: `Word`"),
+        "expected `Word` to be undefined without `use Q;`:\n{stderr}"
+    );
+    let with_use = format!("use Q;\n\n{consumer}");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Hc.arch", &with_use)]);
+    assert!(
+        out.status.success(),
+        "package alias must resolve with `use`:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_non_module_construct_ports_honor_package_visibility() {
+    // Only `module` used to resolve port types, so every other construct
+    // accepted package-only names from a file that never `use`s the package.
+    let fifo_dom = vis_fifo("QDom", "UInt<8>");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Fq.arch", &fifo_dom)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("undefined name: `QDom`"),
+        "fifo Clock<QDom> must be undefined without `use Q;`:\n{stderr}"
+    );
+    let fifo_ty = vis_fifo("SysDomain", "Pair");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Fq.arch", &fifo_ty)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("undefined name: `Pair`"),
+        "fifo `param T: type = Pair` must be undefined without `use Q;`:\n{stderr}"
+    );
+    let ram = r#"ram Rm
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 4;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports rd_port
+    en:   in Bool;
+    addr: in UInt<2>;
+    data: out Pair;
+  end ports rd_port
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<2>;
+    data: in T;
+  end ports wr_port
+end ram Rm
+"#;
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Rm.arch", ram)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("undefined name: `Pair`"),
+        "ram port-group `Pair` must be undefined without `use Q;`:\n{stderr}"
+    );
+
+    // With `use`, or with the package in the same file, all of it resolves.
+    let with_use = format!("use Q;\n\n{fifo_dom}");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Fq.arch", &with_use)]);
+    assert!(
+        out.status.success(),
+        "fifo must accept package names with `use`:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let same_file = format!("{VIS_PKG}\n{}", vis_fifo("QDom", "Pair"));
+    let out = check_package_domain_files(&[("Same.arch", &same_file)]);
+    assert!(
+        out.status.success(),
+        "fifo must accept same-file package names:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// #737 / #738: explicit `inst` connections are type-checked like `auto;`
+/// fills. Child under test; the parent is built per case by `conn_parent`.
+const CONN_CHILD: &str = r#"
+domain ADom
+end domain ADom
+
+domain BDom
+end domain BDom
+
+module ConnChild
+  param W: const = 8;
+  port clk: in Clock<ADom>;
+  port rst: in Reset<Sync, High>;
+  port d: in UInt<W>;
+  port s: in SInt<8>;
+  port v: in Vec<UInt<4>, 4>;
+  port q: out UInt<W>;
+  comb
+    q = d;
+  end comb
+end module ConnChild
+"#;
+
+/// A parent whose ports carry the given types, wired to `ConnChild` with the
+/// given connection lines (and optional `param` override line).
+fn conn_parent(clk: &str, rst: &str, d: &str, q: &str, param: &str, conns: &str) -> String {
+    format!(
+        "{CONN_CHILD}
+module ConnParent
+  port clk: in {clk};
+  port rst: in {rst};
+  port d: in {d};
+  port sd: in SInt<8>;
+  port ud: in UInt<8>;
+  port v4: in Vec<UInt<4>, 4>;
+  port v2: in Vec<UInt<4>, 2>;
+  port q: out {q};
+  inst c: ConnChild
+{param}{conns}
+  end inst c
+end module ConnParent
+"
+    )
+}
+
+const CONN_OK: &str = "    clk <- clk;
+    rst <- rst;
+    d <- d;
+    s <- sd;
+    v <- v4;
+    q -> q;
+";
+
+fn conn_errs(src: &str) -> String {
+    match typecheck_errors(src) {
+        Ok(()) => String::new(),
+        Err(e) => e.join("\n"),
+    }
+}
+
+#[test]
+fn inst_connection_types_matching_and_legal_rebinds_pass() {
+    let base = |clk: &str, conns: &str| {
+        conn_parent(clk, "Reset<Sync, High>", "UInt<8>", "UInt<8>", "", conns)
+    };
+    assert_eq!(conn_errs(&base("Clock<ADom>", CONN_OK)), "", "exact match");
+    // Spec "Clock domain rebind is not a crossing": the connected clock
+    // fixes the instance's domain, so a different domain is not a mismatch.
+    assert_eq!(
+        conn_errs(&base("Clock<BDom>", CONN_OK)),
+        "",
+        "clock domain rebind"
+    );
+    // An unsized literal is context-typed, as in `q <= 0;`.
+    let lit = CONN_OK.replace("d <- d;", "d <- 3;");
+    assert_eq!(conn_errs(&base("Clock<ADom>", &lit)), "", "unsized literal");
+    // So is a constant expression over params (`len <- HEAD_DIM;`).
+    let konst = base("Clock<ADom>", &CONN_OK.replace("d <- d;", "d <- K - 1;")).replacen(
+        "module ConnParent\n",
+        "module ConnParent\n  param K: const = 3;\n",
+        1,
+    );
+    assert!(konst.contains("param K"), "{konst}");
+    assert_eq!(conn_errs(&konst), "", "param constant expression");
+    // An explicit conversion makes the widths agree.
+    let src = conn_parent(
+        "Clock<ADom>",
+        "Reset<Sync, High>",
+        "UInt<4>",
+        "UInt<8>",
+        "",
+        &CONN_OK.replace("d <- d;", "d <- d.zext<8>();"),
+    );
+    assert_eq!(conn_errs(&src), "", "explicit .zext");
+}
+
+#[test]
+fn inst_connection_reset_kind_or_polarity_mismatch_is_an_error() {
+    // #737: an async active-low reset into a sync active-high port used to
+    // pass check and Verilator alike -- functionally inverted reset.
+    let src = conn_parent(
+        "Clock<ADom>",
+        "Reset<Async, Low>",
+        "UInt<8>",
+        "UInt<8>",
+        "",
+        CONN_OK,
+    );
+    let errs = conn_errs(&src);
+    assert!(
+        errs.contains("reset kind/polarity differs on port `rst` of `ConnChild`")
+            && errs.contains("`rst <- rst as Reset<Sync, High>`"),
+        "{errs}"
+    );
+    // The stated re-type is the override, as for `auto;`.
+    let cast = CONN_OK.replace("rst <- rst;", "rst <- rst as Reset<Sync, High>;");
+    let src = conn_parent(
+        "Clock<ADom>",
+        "Reset<Async, Low>",
+        "UInt<8>",
+        "UInt<8>",
+        "",
+        &cast,
+    );
+    assert_eq!(conn_errs(&src), "", "explicit `as Reset<...>`");
+}
+
+#[test]
+fn inst_connection_width_signedness_and_vec_length_must_match() {
+    // #738, spec: "Every assignment, port connection, and arithmetic result
+    // is width-checked at compile time."
+    let ok = "Reset<Sync, High>";
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<4>",
+        "UInt<8>",
+        "",
+        CONN_OK,
+    ));
+    assert!(
+        errs.contains(
+            "widths differ on port `d` of `ConnChild`: port is UInt<8>, connected `d` is UInt<4>"
+        ) && errs.contains(".zext<8>()"),
+        "input width:\n{errs}"
+    );
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<8>",
+        "UInt<4>",
+        "",
+        CONN_OK,
+    ));
+    assert!(
+        errs.contains(
+            "widths differ on port `q` of `ConnChild`: port is UInt<8>, connected `q` is UInt<4>"
+        ),
+        "output width:\n{errs}"
+    );
+    let signed = CONN_OK.replace("s <- sd;", "s <- ud;");
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<8>",
+        "UInt<8>",
+        "",
+        &signed,
+    ));
+    assert!(
+        errs.contains("signedness differs on port `s`"),
+        "signedness:\n{errs}"
+    );
+    let short = CONN_OK.replace("v <- v4;", "v <- v2;");
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<8>",
+        "UInt<8>",
+        "",
+        &short,
+    ));
+    assert!(
+        errs.contains("`Vec` lengths differ on port `v`"),
+        "vec length:\n{errs}"
+    );
+}
+
+#[test]
+fn inst_connection_width_uses_the_inst_param_override() {
+    let ok = "Reset<Sync, High>";
+    let w4 = "    param W = 4;\n";
+    assert_eq!(
+        conn_errs(&conn_parent(
+            "Clock<ADom>",
+            ok,
+            "UInt<4>",
+            "UInt<4>",
+            w4,
+            CONN_OK
+        )),
+        "",
+        "W = 4 makes the UInt<4> connections exact"
+    );
+    let errs = conn_errs(&conn_parent(
+        "Clock<ADom>",
+        ok,
+        "UInt<8>",
+        "UInt<8>",
+        w4,
+        CONN_OK,
+    ));
+    assert!(
+        errs.contains(
+            "widths differ on port `d` of `ConnChild`: port is UInt<4>, connected `d` is UInt<8>"
+        ),
+        "the override, not the default, sets the port width:\n{errs}"
+    );
+}
+
+/// A thread's reset clause must agree with its reset port's declared
+/// polarity (spec §7a.1). Base: active-low async port, `rst low` clause.
+const THREAD_RST_SRC: &str = r#"
+module ThrRst
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port go: in Bool;
+  port done: out Bool;
+  reg cnt: UInt<4> reset rst => 0;
+  thread Worker on clk rising, rst low
+    wait until go;
+    cnt <= cnt +% 1;
+  end thread Worker
+  comb
+    done = cnt == 3;
+  end comb
+end module ThrRst
+"#;
+
+/// Run the thread pipeline the CLI runs (TLM target rewrite, initiator
+/// calls, then `lower_threads`) and return its errors, if any.
+fn lower_thread_errors(source: &str) -> String {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let ast = elaborate::elaborate(parser.parse_source_file().expect("parse error"))
+        .expect("elaborate error");
+    let lowered = elaborate::lower_tlm_target_threads(ast)
+        .and_then(elaborate::lower_tlm_initiator_calls)
+        .and_then(elaborate::lower_threads);
+    match lowered {
+        Ok(_) => String::new(),
+        Err(errs) => errs
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[test]
+fn thread_reset_clause_matching_the_port_polarity_is_accepted() {
+    assert_eq!(lower_thread_errors(THREAD_RST_SRC), "");
+    assert!(typecheck_errors(THREAD_RST_SRC).is_ok());
+    let high = THREAD_RST_SRC
+        .replace("Reset<Async, Low>", "Reset<Sync, High>")
+        .replace("rst low", "rst high");
+    assert_eq!(lower_thread_errors(&high), "");
+}
+
+#[test]
+fn thread_reset_clause_contradicting_the_port_polarity_is_an_error() {
+    // The thread would sit in reset during normal operation and run during
+    // reset. Either the clause or the port is wrong; there is no override.
+    let bad = THREAD_RST_SRC.replace("rst low", "rst high");
+    let want = "thread `Worker`: reset clause `rst high` contradicts port \
+                `rst: Reset<Async, Low>`, which is active-low";
+    // Lowering path (check / build / default sim).
+    let errs = lower_thread_errors(&bad);
+    assert!(errs.contains(want), "lowering:\n{errs}");
+    assert!(
+        errs.contains("write `rst low`") && errs.contains("`Reset<Async, High>`"),
+        "{errs}"
+    );
+    // Unlowered path (`--thread-sim parallel` skips lower_threads).
+    let errs = typecheck_errors(&bad).unwrap_err().join("\n");
+    assert!(errs.contains(want), "typecheck:\n{errs}");
+}
+
+#[test]
+fn tlm_target_thread_reset_clause_must_match_the_port_polarity() {
+    let src = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Target
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s: target Mem;
+          reg value: UInt<64> reset rst => 0;
+          thread s.read(addr) on clk rising, rst low
+            return value;
+          end thread s.read
+        end module Target
+    ";
+    let errs = lower_thread_errors(src);
+    assert!(
+        errs.contains("reset clause `rst low` contradicts port `rst: Reset<Sync, High>`"),
+        "{errs}"
+    );
+    assert_eq!(lower_thread_errors(&src.replace("rst low", "rst high")), "");
 }

@@ -42,6 +42,37 @@ pub(super) fn cast_to_signed_bits(expr: &str, bits: u32) -> String {
     }
 }
 
+/// Cast an integer expression to the native simulator's unsigned carrier for
+/// an exact ARCH width. Scalar values through 128 bits use `_arch_u128` once
+/// they cross the 64-bit C++ carrier boundary.
+fn cast_to_unsigned_carrier(expr: &str, bits: u32) -> String {
+    if bits <= 64 {
+        cast_to_bits(expr, bits)
+    } else if bits < 128 {
+        let mask = format!("(((_arch_u128)1 << {bits}) - 1)");
+        format!("((_arch_u128)({expr}) & {mask})")
+    } else {
+        format!("(_arch_u128)({expr})")
+    }
+}
+
+/// Cast an integer expression to a sign-extended native simulator carrier for
+/// an exact ARCH width. This mirrors `cast_to_signed_bits` for 65–128-bit
+/// scalar values, which are stored as `_arch_u128` internally.
+fn cast_to_signed_carrier(expr: &str, bits: u32) -> String {
+    if bits <= 64 {
+        cast_to_signed_bits(expr, bits)
+    } else {
+        let mask = if bits == 128 {
+            "~(_arch_u128)0".to_string()
+        } else {
+            format!("(((_arch_u128)1 << {bits}) - 1)")
+        };
+        let shift = 128 - bits;
+        format!("(((__int128_t)(((_arch_u128)({expr}) & {mask}) << {shift})) >> {shift})")
+    }
+}
+
 /// Structural equality over the small expression grammar that appears in
 /// bit-slice bounds (idents, integer literals, arithmetic over them).
 /// Conservative: false on anything unrecognized.
@@ -510,6 +541,27 @@ impl<'a> Ctx<'a> {
             // reads / writes `port_name[i]` lowered to `port_name[0]` —
             // referencing a name that doesn't exist in the C++ class.
             format!("_{name}")
+        } else if !is_lhs {
+            // A bare rvalue name that matched no declared signal above may be
+            // an enum variant referenced by its short name (`mode <= Run`,
+            // `mode == Run`). SV puts variants in the surrounding scope so the
+            // bare name elaborates there, but the emitted C++ enum constants
+            // are prefixed (`Mode_Run`), so the bare name is an undeclared
+            // identifier and the sim C++ fails to compile (arch#1031). Emit
+            // the resolved ordinal instead — identical to the explicit
+            // `ExprKind::EnumVariant` lowering, and consistent with typecheck's
+            // resolution order, where a declared signal always wins and the
+            // enum variant is only the final fallback. Iterate enum names in
+            // sorted order so a (rare, otherwise-ill-formed) cross-enum
+            // variant-name collision resolves deterministically.
+            let mut enum_names: Vec<&String> = self.enum_map.keys().collect();
+            enum_names.sort();
+            for en in enum_names {
+                if let Some((_, ord)) = self.enum_map[en].iter().find(|(n, _)| n == name) {
+                    return ord.to_string();
+                }
+            }
+            name.to_string()
         } else {
             name.to_string()
         }
@@ -749,7 +801,15 @@ pub(super) fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
                 }
                 // Shift ops: result width = left operand width
                 BinOp::Shl | BinOp::Shr => infer_expr_width(lhs, ctx),
-                // Arithmetic ops: result width = max of operand widths
+                // Plain arithmetic widens by one bit to retain carry/borrow,
+                // matching the type checker and the SV/formal backends.
+                BinOp::Add | BinOp::Sub => {
+                    let lw = infer_expr_width(lhs, ctx);
+                    let rw = infer_expr_width(rhs, ctx);
+                    std::cmp::max(lw, rw).saturating_add(1)
+                }
+                // Wrapping arithmetic and division retain the ordinary
+                // operand-width rules used by the native simulator.
                 _ => {
                     let lw = infer_expr_width(lhs, ctx);
                     let rw = infer_expr_width(rhs, ctx);
@@ -1300,6 +1360,33 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                     cast_to_bits(&value, bits)
                 };
             }
+            if matches!(op, BinOp::Add | BinOp::Sub) {
+                // C++ promotes uint32_t operands back to uint32_t, dropping
+                // the carry before assignment to a widened ARCH result. Cast
+                // both operands to the inferred result carrier first. The
+                // <=64-bit path also masks subtraction to the ARCH width so
+                // unsigned underflow does not retain C++'s extra high bits.
+                let bits = infer_expr_width(expr, ctx);
+                if bits <= 128 {
+                    let signed = infer_expr_signed(expr, ctx);
+                    let l_wide = if signed {
+                        cast_to_signed_carrier(&l, bits)
+                    } else {
+                        cast_to_unsigned_carrier(&l, bits)
+                    };
+                    let r_wide = if signed {
+                        cast_to_signed_carrier(&r, bits)
+                    } else {
+                        cast_to_unsigned_carrier(&r, bits)
+                    };
+                    let value = format!("({l_wide} {op_str} {r_wide})");
+                    return if signed {
+                        cast_to_signed_carrier(&value, bits)
+                    } else {
+                        cast_to_unsigned_carrier(&value, bits)
+                    };
+                }
+            }
             format!("({l} {op_str} {r})")
         }
 
@@ -1822,9 +1909,19 @@ pub(super) fn cpp_unary(op: &UnaryOp, operand: &Expr, ctx: &Ctx) -> String {
                 format!("[&](){{auto& _v={o};for(int _i=0;_i<{}-1;_i++)if(_v._data[_i]!=0xFFFFFFFFU)return(uint8_t)0;return(uint8_t)(_v._data[{}]=={last_mask}?1:0);}}()", words, words-1)
             } else if w <= 1 {
                 format!("({o} & 1)")
-            } else {
-                let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+            } else if w <= 64 {
+                let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
                 format!("(uint8_t)(({o} & 0x{mask:x}ULL) == 0x{mask:x}ULL)")
+            } else {
+                // 65–128-bit values use _arch_u128.  A u64 mask silently
+                // discards bit 64 and above, making reduction AND report
+                // true for values whose upper bits are zero.
+                let mask = if w == 128 {
+                    "~(_arch_u128)0".to_string()
+                } else {
+                    format!("(((_arch_u128)1 << {w}) - 1)")
+                };
+                format!("(uint8_t)(((_arch_u128)({o}) & {mask}) == {mask})")
             }
         }
         UnaryOp::RedOr => {
@@ -1843,8 +1940,14 @@ pub(super) fn cpp_unary(op: &UnaryOp, operand: &Expr, ctx: &Ctx) -> String {
             if w > 128 {
                 let words = wide_words(w);
                 format!("[&](){{auto& _v={o};uint8_t _p=0;for(int _i=0;_i<{words};_i++)_p^=(uint8_t)__builtin_parity(_v._data[_i]);return _p;}}()")
-            } else {
+            } else if w <= 64 {
                 format!("(uint8_t)(__builtin_parityll((uint64_t)({o})))")
+            } else {
+                // Split the _arch_u128 value into two 64-bit halves so the
+                // upper half contributes to parity for widths 65–128.
+                format!(
+                    "(uint8_t)(__builtin_parityll((uint64_t)({o})) ^ __builtin_parityll((uint64_t)(((_arch_u128)({o})) >> 64)))"
+                )
             }
         }
     }
@@ -2315,6 +2418,11 @@ pub(super) fn sim_expr_decl_type(e: &Expr, ctx: &Ctx) -> Option<TypeExpr> {
             }
             None
         }
+        // A ternary preserves the declared type of its value arms.  Recover
+        // that type from the then arm just like SV codegen does, so chained
+        // conversions such as `(sel ? a : b).to_fp32()` still dispatch scale
+        // receivers through the E8M0/UE4M3 helper instead of integer widening.
+        ExprKind::Ternary(_, then_expr, _) => sim_expr_decl_type(then_expr, ctx),
         _ => None,
     }
 }

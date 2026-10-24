@@ -13,7 +13,10 @@ domain RdDomain
 end domain RdDomain
 
 module sd_tx_fifo
-  pragma rdc_safe;
+  // Intentional unsynchronized cross-domain pointer compare, mirroring the
+  // RealBench reference; cdc_safe records that (rdc_safe no longer covers
+  // CDC since #1025).
+  pragma cdc_safe;
   param TX_DEPTH: const = 8;
 
   port wclk: in Clock<WrDomain>;

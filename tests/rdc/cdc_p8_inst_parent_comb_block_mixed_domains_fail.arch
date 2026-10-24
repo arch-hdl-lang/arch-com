@@ -1,0 +1,57 @@
+// P8a: one parent comb block drives `wa` from the domain-DA register `ra`
+// and `wb` from the domain-DB register `rb`. `wa` feeds a child input
+// port consumed in the child's DB domain — an unsynchronized DA→DB
+// crossing at the instance boundary. The inst-boundary check must give
+// each comb target the domains of its OWN register fan-in; a check that
+// unions the block's reads sees {DA, DB}, gives neither target a domain,
+// and misses the crossing (false negative).
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module Consumer
+  port clk: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= data_in;
+  end seq
+  let data_out = r;
+end module Consumer
+module Top
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst: in Reset<Sync>;
+  port da: in UInt<8>;
+  port db: in UInt<8>;
+  port q: out UInt<8>;
+  port qb: out UInt<8>;
+  wire wa: UInt<8>;
+  wire wb: UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  reg rb2: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  seq on clk_b rising
+    rb <= db;
+    rb2 <= wb;
+  end seq
+  comb
+    wa = ra +% 1;
+    wb = rb +% 1;
+  end comb
+  let qb = rb2;
+  inst cons: Consumer
+    clk <- clk_b;
+    rst <- rst;
+    data_in <- wa;
+    data_out -> q;
+  end inst cons
+end module Top

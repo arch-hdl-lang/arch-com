@@ -47,7 +47,9 @@ use params::{
 // call site (`main.rs`, `tests/integration_test.rs`,
 // `tests/param_where_constraints.rs`) keeps resolving unchanged.
 mod threads;
-pub use threads::{lower_threads, lower_threads_with_opts, ThreadLowerOpts};
+pub use threads::{
+    lower_threads, lower_threads_with_opts, thread_reset_level_mismatch, ThreadLowerOpts,
+};
 
 // TLM (`tlm_method`) lowering: bus-initiator/target `tlm_connect` sugar
 // (`lower_tlm_connects`), `thread port.method(...)` target-body lowering
@@ -818,12 +820,26 @@ fn thread_stmt_span(stmt: &ThreadStmt) -> Span {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/// Single-source entry point: every package in `ast` is treated as being in
+/// the same file as every consumer. Multi-file callers must use
+/// [`elaborate_with_file_scopes`] so package visibility stays file-scoped.
 pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
-    // Substitute module-scope `type` aliases before any other pass sees the
-    // AST. Aliases are pure substitution — once resolved, downstream passes
-    // (typecheck / elaborate / codegen / sim) treat the AST as if the user
-    // had inlined the aliased types by hand.
-    let mut ast = crate::type_alias::resolve_type_aliases(ast)?;
+    elaborate_with_file_scopes(ast, &[])
+}
+
+/// `file_scopes` are the byte ranges of each original source file in a
+/// combined multi-file parse (empty for a single source).
+pub fn elaborate_with_file_scopes(
+    ast: SourceFile,
+    file_scopes: &[std::ops::Range<usize>],
+) -> Result<SourceFile, Vec<CompileError>> {
+    // Substitute `type` aliases before any other pass sees the AST. Aliases
+    // are pure substitution — once resolved, downstream passes (typecheck /
+    // elaborate / codegen / sim) treat the AST as if the user had inlined the
+    // aliased types by hand. A package alias is substituted only where its
+    // package is visible (spec §29.2); elsewhere the name stays unresolved
+    // and typecheck reports it as undefined.
+    let mut ast = crate::type_alias::resolve_type_aliases_with_file_scopes(ast, file_scopes)?;
 
     // Context-typed float literals (arch#622) + the BF16 constant-fold fixes
     // (arch#620/#623/#624): a bare float literal sitting in any known-BF16
@@ -1650,6 +1666,12 @@ fn expand_generate_for(
         .any(|item| matches!(item, GenItem::TlmConnect(_)));
     let has_inst_items = gf.items.iter().any(|item| matches!(item, GenItem::Inst(_)));
     let has_wire_items = gf.items.iter().any(|item| matches!(item, GenItem::Wire(_)));
+    let has_comb_items = gf.items.iter().any(|item| matches!(item, GenItem::Comb(_)));
+    let has_seq_items = gf.items.iter().any(|item| matches!(item, GenItem::Seq(_)));
+    let has_assert_items = gf
+        .items
+        .iter()
+        .any(|item| matches!(item, GenItem::Assert(_)));
     let range_depends_on_param = expr_references_param(&gf.start, &param_names)
         || expr_references_param(&gf.end, &param_names);
 
@@ -1698,10 +1720,37 @@ fn expand_generate_for(
     //     module's ports themselves are not Vec-of-bus. In that safe case
     //     SV emits `gen_i.foo_i.port(arr[i])` cleanly; sim codegen runs
     //     its own local unroll pass to keep both backends in sync.
+    //   - comb / seq items: never preserve. There is no genvar
+    //     `always_comb` / `always_ff` emitter on the preserved-loop path
+    //     (SV codegen `emit_generate` only handles `inst`; the `comb`/`seq`
+    //     arm is `unreachable!`), so a param-dependent comb-only / seq-only
+    //     body — or a mixed body carrying any comb/seq alongside a
+    //     shape-stable inst — used to be preserved and then panicked at
+    //     build (#1071). Unrolling here routes every backend through the
+    //     one tested path AND lets the Reading-B single-driver check below
+    //     run: a scalar LHS (`y = a` across N iterations) is N drivers of
+    //     one net and is now rejected with the loop-index diagnostic
+    //     instead of crashing; an indexed LHS (`y[i] = a`) unrolls to N
+    //     distinct-element drivers and compiles.
+    //   - assert items: never preserve. `emit_generate` has no genvar SVA
+    //     emitter either — the preserved-loop `Assert` arm silently dropped
+    //     the property, so an assert-only (or assert + shape-stable-inst)
+    //     body over a param range emitted an empty `gen_i` loop and lost
+    //     every assertion with no diagnostic. The spec documents `assert`
+    //     inside `generate_for` as a first-class generated element (§19.4:
+    //     "ports, instances, registers, connections, or assertions"), and a
+    //     constant-range assert body already unrolls to one concurrent SVA
+    //     per iteration — only the param-range path diverged. Unrolling here
+    //     substitutes the loop index into both the assertion label (via the
+    //     `_<var>` suffix convention) and its expression, so param- and
+    //     constant-range bodies now emit identical SVA.
     let body_preservable = !has_port_items
         && !has_thread_items
         && !has_connect_items
         && !has_wire_items
+        && !has_comb_items
+        && !has_seq_items
+        && !has_assert_items
         && (!has_inst_items || inst_items_shape_stable);
 
     if range_depends_on_param && body_preservable {

@@ -11,6 +11,27 @@ use crate::lexer::Span;
 /// and target) of a bus wire have `ConnectDir::Output` connections but
 /// drive *disjoint* sets of flat signals, so no real conflict exists.
 fn is_bus_port_in_child(module_name: &str, port_name: &str, source: &SourceFile) -> bool {
+    child_port(module_name, port_name, source)
+        .map(|p| p.bus_info.is_some())
+        .unwrap_or(false)
+}
+
+/// Returns true when the named module/fsm in `source` declares `port_name`
+/// as an INPUT.  An `->` connection to such a port drives nothing in the
+/// emitted SV (the port map is just a read of the parent signal), so it
+/// must not count as a driver.  The arrow/direction mismatch itself is a
+/// separate, currently unchecked defect (issue #1026 row 3).
+fn is_input_port_in_child(module_name: &str, port_name: &str, source: &SourceFile) -> bool {
+    child_port(module_name, port_name, source)
+        .map(|p| p.bus_info.is_none() && p.direction == Direction::In)
+        .unwrap_or(false)
+}
+
+fn child_port<'a>(
+    module_name: &str,
+    port_name: &str,
+    source: &'a SourceFile,
+) -> Option<&'a PortDecl> {
     source
         .items
         .iter()
@@ -20,13 +41,24 @@ fn is_bus_port_in_child(module_name: &str, port_name: &str, source: &SourceFile)
             _ => None,
         })
         .and_then(|ports| ports.iter().find(|p| p.name.name == port_name))
-        .map(|p| p.bus_info.is_some())
-        .unwrap_or(false)
+}
+
+/// What kind of block a [`DriveEntry`] comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DriveKind {
+    /// A `comb` block or a `let` binding — a continuous driver.
+    Comb,
+    /// An `inst` output connection — a continuous driver.
+    Inst,
+    /// A `seq` or `latch` block. Compared ONLY against `Inst` drivers; see
+    /// [`check_multi_driver`].
+    Seq,
 }
 
 /// One block-level drive record for a signal.
 pub struct DriveEntry {
     pub span: Span,
+    pub kind: DriveKind,
 }
 
 /// Extracts the integer value of a compile-time-constant literal index.
@@ -124,6 +156,113 @@ fn inst_conn_driver_name(expr: &Expr) -> Option<String> {
         }
         key
     })
+}
+
+/// Resolve one `inst` output connection to the parent signal name it drives,
+/// returning `(driver_key, span)`, or `None` when the connection drives
+/// nothing in the parent module: a non-output connection, a declared
+/// bus/struct wire shared by design, a bus port, or a child INPUT port
+/// reached with `->` (the SV port map only reads the parent signal there).
+///
+/// Shared by the module-scope `inst` walk and the `generate_for` walk so both
+/// apply exactly the same exemptions (#929).
+fn inst_output_driver(
+    inst_module_name: &str,
+    conn: &Connection,
+    named_wire_names: &HashSet<&str>,
+    source: &SourceFile,
+) -> Option<(String, Span)> {
+    if conn.direction != ConnectDir::Output {
+        return None;
+    }
+    let name = inst_conn_driver_name(&conn.signal)?;
+    // Skip connections to explicitly-declared bus/struct wires — driven by
+    // multiple inst items by design.  Match on the BASE name (the skip-set is
+    // keyed by the bare declaration name, but `name` may carry a const-index
+    // suffix like `link[0]`).
+    if lhs_base_name(&conn.signal)
+        .as_deref()
+        .map(|b| named_wire_names.contains(b))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    if is_bus_port_in_child(inst_module_name, &conn.port_name.name, source) {
+        return None;
+    }
+    if is_input_port_in_child(inst_module_name, &conn.port_name.name, source) {
+        return None;
+    }
+    Some((name, conn.span))
+}
+
+/// Build the module's const params mapped to their default integer values,
+/// evaluated at the declaration defaults — the single point in parameter
+/// space at which each design is type-checked (see issue #969).  Params are
+/// evaluated in declaration order so a later default may reference an earlier
+/// param.  Non-integer / type / defaultless params are simply absent.
+fn param_default_values(m: &ModuleDecl) -> HashMap<String, i64> {
+    let mut vals: HashMap<String, i64> = HashMap::new();
+    for p in &m.params {
+        if let Some(def) = &p.default {
+            if let Some(v) = crate::elaborate::try_eval_i64(def, &vals) {
+                vals.insert(p.name.name.clone(), v);
+            }
+        }
+    }
+    vals
+}
+
+/// Number of iterations of `gf` evaluated at the module's default params, or
+/// `None` when either range bound is not integer-evaluable there.  The ARCH
+/// `for` range is inclusive, so `0..N-1` is `N` iterations.
+fn generate_for_iter_count(gf: &GenerateFor, params: &HashMap<String, i64>) -> Option<u64> {
+    let s = crate::elaborate::try_eval_i64(&gf.start, params)?;
+    let e = crate::elaborate::try_eval_i64(&gf.end, params)?;
+    if e >= s {
+        Some((e - s + 1) as u64)
+    } else {
+        Some(0)
+    }
+}
+
+/// True when `expr` names something that varies with `loop_var` — i.e. the
+/// loop variable appears anywhere in it.  Used to tell a per-iteration-
+/// distinct `generate_for` target (`b -> gnt[i]`, N distinct elements, one
+/// driver each) from a target that names the SAME net on every iteration
+/// (`b -> y`, N drivers on one net).
+///
+/// Deliberately biased toward "varies": any unrecognized expression shape
+/// returns `true`, so the multi-driver check never *reports* on a target it
+/// could not fully analyze (a conservative false-negative, never a false
+/// positive that would reject a legal per-element fan-out).
+fn target_mentions_loop_var(expr: &Expr, loop_var: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(n) => n == loop_var,
+        ExprKind::SynthIdent(n, _) => n == loop_var,
+        ExprKind::Literal(_) | ExprKind::Bool(_) => false,
+        ExprKind::Index(base, idx) => {
+            target_mentions_loop_var(base, loop_var) || target_mentions_loop_var(idx, loop_var)
+        }
+        ExprKind::BitSlice(base, a, b) => {
+            target_mentions_loop_var(base, loop_var)
+                || target_mentions_loop_var(a, loop_var)
+                || target_mentions_loop_var(b, loop_var)
+        }
+        ExprKind::PartSelect(base, a, b, _) => {
+            target_mentions_loop_var(base, loop_var)
+                || target_mentions_loop_var(a, loop_var)
+                || target_mentions_loop_var(b, loop_var)
+        }
+        ExprKind::FieldAccess(base, _) => target_mentions_loop_var(base, loop_var),
+        ExprKind::LatencyAt(base, _) => target_mentions_loop_var(base, loop_var),
+        ExprKind::Binary(_, l, r) => {
+            target_mentions_loop_var(l, loop_var) || target_mentions_loop_var(r, loop_var)
+        }
+        ExprKind::Unary(_, e) => target_mentions_loop_var(e, loop_var),
+        // Any other shape: assume it varies per iteration (safe — see above).
+        _ => true,
+    }
 }
 
 /// Collect every distinct signal name driven by `stmts`, storing the
@@ -226,72 +365,130 @@ pub fn collect_module_drivers(
         })
         .collect();
 
+    // Const-param defaults, for evaluating a surviving `generate_for` range at
+    // the design's checked point in parameter space (see the Generate arm).
+    let param_defaults = param_default_values(m);
+
     for item in &m.body {
         // Collect signals driven by this block (one entry per signal —
         // deduplicates repeated assignments inside the same block).
-        let block_targets: HashMap<String, Span> = match item {
+        let (kind, block_targets): (DriveKind, HashMap<String, Span>) = match item {
             ModuleBodyItem::CombBlock(b) => {
                 let mut t = HashMap::new();
                 collect_stmts(&b.stmts, &mut t);
-                t
+                (DriveKind::Comb, t)
             }
-            // RegBlock (seq) multi-driver checking is deferred: the TLM
-            // target-thread inline lowering generates multiple RegBlocks that
-            // legitimately share register assignments (gated by state
-            // conditions), so a naive count-of-writers check produces false
-            // positives here.  The C-seq repro from issue #375 needs a
-            // follow-up PR that can distinguish user-written from
-            // compiler-generated blocks before this check is safe to enable.
-            ModuleBodyItem::RegBlock(_) => HashMap::new(),
-            // Latch blocks are similarly deferred.
-            ModuleBodyItem::LatchBlock(_) => HashMap::new(),
+            // A `let` is a continuous assignment of its name(s).
+            ModuleBodyItem::LetBinding(lb) => {
+                let mut t = HashMap::new();
+                if lb.destructure_fields.is_empty() {
+                    t.insert(lb.name.name.clone(), lb.span);
+                } else {
+                    for f in &lb.destructure_fields {
+                        t.insert(f.name.clone(), lb.span);
+                    }
+                }
+                (DriveKind::Comb, t)
+            }
+            // RegBlock (seq) targets are recorded as `Seq` drivers, which
+            // `check_multi_driver` compares only against `inst` outputs.
+            // Seq-vs-seq checking stays deferred: the TLM target-thread
+            // inline lowering generates multiple RegBlocks that legitimately
+            // share register assignments (gated by state conditions), so a
+            // naive count-of-writers check produces false positives.  The
+            // C-seq repro from issue #375 needs a follow-up that can
+            // distinguish user-written from compiler-generated blocks.  An
+            // `inst` output on a seq-driven signal, by contrast, is never
+            // compiler-generated sharing: it is always two drivers in the SV
+            // (`always_ff` + port map) — issue #1063.
+            ModuleBodyItem::RegBlock(rb) => {
+                let mut t = HashMap::new();
+                collect_stmts(&rb.stmts, &mut t);
+                (DriveKind::Seq, t)
+            }
+            // Latch blocks: same treatment as seq blocks.
+            ModuleBodyItem::LatchBlock(lb) => {
+                let mut t = HashMap::new();
+                collect_stmts(&lb.stmts, &mut t);
+                (DriveKind::Seq, t)
+            }
             // Thread items are only present at typecheck time when threads
             // have NOT been lowered (e.g. `--thread-sim parallel` mode).
             // Two threads driving the same signal is intentional (the FSM
             // combines them into one always_ff), so skip this context too.
-            ModuleBodyItem::Thread(_) => HashMap::new(),
+            ModuleBodyItem::Thread(_) => continue,
             ModuleBodyItem::Inst(inst) => {
                 let mut t = HashMap::new();
                 for conn in &inst.connections {
-                    if conn.direction == ConnectDir::Output {
-                        if let Some(name) = inst_conn_driver_name(&conn.signal) {
-                            // Skip connections to explicitly-declared bus/struct
-                            // wires — these are driven by multiple inst items by
-                            // design.  Match on the BASE name: `name` may carry a
-                            // constant-index suffix (`link[0]`), but the skip-set
-                            // is keyed by the bare declaration name (`link`).
-                            let base = lhs_base_name(&conn.signal);
-                            if base
-                                .as_deref()
-                                .map(|b| named_wire_names.contains(b))
-                                .unwrap_or(false)
-                            {
-                                continue;
-                            }
-                            // Skip connections where the child port is a bus
-                            // port — both initiator and target instances connect
-                            // their bus ports as Output to the same (possibly
-                            // implicit) bus wire, driving disjoint subsets of
-                            // its flat signals.
-                            if is_bus_port_in_child(
+                    if let Some((name, span)) =
+                        inst_output_driver(&inst.module_name.name, conn, &named_wire_names, source)
+                    {
+                        t.entry(name).or_insert(span);
+                    }
+                }
+                (DriveKind::Inst, t)
+            }
+            // A `generate_for` that survives elaboration as an SV genvar loop
+            // (shape-stable inst body + param-dependent range — see
+            // `elaborate::expand_generate_for`) carries `inst` output drivers
+            // that the flat walk above never sees.  Collect them here (#929,
+            // the residual `generate_for` corner of #375):
+            //
+            // - A connection whose parent-side target does NOT vary with the
+            //   loop variable drives the SAME net on every iteration, so an
+            //   N-iteration loop is N drivers of one net.  When N >= 2 at the
+            //   default params, that is a self-conflict reported at the
+            //   connection line (two `Inst` entries make `check_multi_driver`
+            //   fire); when N is 1 (or the count is not evaluable) it is a
+            //   single driver that still collides with any module-scope driver
+            //   of the same net.
+            // - A connection indexed by the loop variable (`b -> gnt[i]`)
+            //   names a distinct element each iteration: one driver per
+            //   element, recorded once at the base so it collides only with a
+            //   DIFFERENT block driving the same name (the same conservatism
+            //   the variable-index handling already applies).
+            //
+            // `generate_if` never survives elaboration (the taken arm is
+            // inlined, the other dropped), so only the `For` variant matters.
+            ModuleBodyItem::Generate(GenerateDecl::For(gf)) => {
+                let iters = generate_for_iter_count(gf, &param_defaults);
+                for gi in &gf.items {
+                    if let GenItem::Inst(inst) = gi {
+                        for conn in &inst.connections {
+                            let Some((name, span)) = inst_output_driver(
                                 &inst.module_name.name,
-                                &conn.port_name.name,
+                                conn,
+                                &named_wire_names,
                                 source,
-                            ) {
+                            ) else {
                                 continue;
+                            };
+                            let varies = target_mentions_loop_var(&conn.signal, &gf.var.name);
+                            let self_conflict = !varies && iters.map(|n| n >= 2).unwrap_or(false);
+                            let list = drivers.entry(name).or_default();
+                            list.push(DriveEntry {
+                                span,
+                                kind: DriveKind::Inst,
+                            });
+                            if self_conflict {
+                                // Same net driven on >= 2 iterations: record a
+                                // second continuous driver so the conflict is
+                                // reported even with no module-scope driver.
+                                list.push(DriveEntry {
+                                    span,
+                                    kind: DriveKind::Inst,
+                                });
                             }
-                            t.entry(name).or_insert(conn.span);
                         }
                     }
                 }
-                t
+                continue;
             }
             // The items below don't generate drive edges in the parent module.
             ModuleBodyItem::RegDecl(_)
             | ModuleBodyItem::WireDecl(_)
             | ModuleBodyItem::PipeRegDecl(_)
-            | ModuleBodyItem::LetBinding(_)
-            | ModuleBodyItem::Generate(_)
+            | ModuleBodyItem::Generate(GenerateDecl::If(_))
             | ModuleBodyItem::Resource(_)
             | ModuleBodyItem::Assert(_)
             | ModuleBodyItem::Function(_)
@@ -300,7 +497,10 @@ pub fn collect_module_drivers(
         };
 
         for (name, span) in block_targets {
-            drivers.entry(name).or_default().push(DriveEntry { span });
+            drivers
+                .entry(name)
+                .or_default()
+                .push(DriveEntry { span, kind });
         }
     }
 
@@ -310,7 +510,11 @@ pub fn collect_module_drivers(
 /// Check for multi-driver conflicts.
 ///
 /// Returns one `CompileError::MultipleDrivers` per signal that is driven
-/// by two or more distinct blocks.  Signals annotated `shared(or)` or
+/// by two or more distinct continuous blocks (`comb`, `let`, `inst`
+/// output), or by a `seq`/`latch` block AND an `inst` output.  Seq/latch
+/// drivers are not compared with each other (deferred, see
+/// `collect_module_drivers`) nor with `comb`/`let` (a comb write to a `reg`
+/// is rejected separately by the typechecker).  Signals annotated `shared(or)` or
 /// `shared(and)` on the enclosing module's port list are exempt — they are
 /// intentionally multi-driven with compiler-synthesized reduction logic.
 pub fn check_multi_driver(
@@ -326,16 +530,33 @@ pub fn check_multi_driver(
 
     let mut errors: Vec<CompileError> = Vec::new();
     for (name, entries) in drivers {
-        if entries.len() < 2 {
-            continue;
-        }
         if shared.contains(name.as_str()) {
             continue;
         }
-        errors.push(CompileError::MultipleDrivers {
-            name: name.clone(),
-            span: span_to_source_span(entries[1].span),
-        });
+        let continuous: Vec<&DriveEntry> = entries
+            .iter()
+            .filter(|e| e.kind != DriveKind::Seq)
+            .collect();
+        let report_span = if continuous.len() >= 2 {
+            Some(continuous[1].span)
+        } else if entries.iter().any(|e| e.kind == DriveKind::Inst) {
+            // Seq/latch target that an `inst` output also drives: report at
+            // the seq/latch write. That is always user-written, whereas the
+            // inst may be compiler-generated (a lowered `thread` lives in a
+            // `_<Module>_threads` child, whose inst has no source span).
+            entries
+                .iter()
+                .find(|e| e.kind == DriveKind::Seq)
+                .map(|e| e.span)
+        } else {
+            None
+        };
+        if let Some(span) = report_span {
+            errors.push(CompileError::MultipleDrivers {
+                name: name.clone(),
+                span: span_to_source_span(span),
+            });
+        }
     }
     errors.sort_by_key(|e| {
         if let CompileError::MultipleDrivers { span, .. } = e {

@@ -113,6 +113,8 @@ For genuinely library-style reuse that doesn't fit a built-in pattern — custom
 
 **2. Lexical Conventions**
 
+Line comments start with `//`. Block comments use `/* ... */` and end at the first `*/`; they do not nest. Runs of stars are valid, including `/**/` and `/***/`. An unterminated block comment is a lexical error.
+
 **2.1 Naming Rules (recommended, not compiler-enforced)**
 
   -------------------------------------------------------------------------------------------------------
@@ -2065,6 +2067,8 @@ The compiler validates that the default value fits within the declared range. Co
 
 > ◈ port \<- signal drives an input. port -\> signal reads an output. The arrow direction always shows which way data flows --- a property that makes the design readable to both humans and AI without any context lookup.
 >
+> ◈ **Connection types.** A connection is checked like an assignment: the signal's type must equal the port's, evaluated with the inst's `param` overrides. There is no implicit extension or truncation, so a `UInt<4>` into a `UInt<8>` port is an error; write `d <- x.zext<8>();`. Signedness and `Vec` length must match too. A `Reset` port also keeps its kind and polarity: a `Reset<Async, Low>` signal into a `Reset<Sync, High>` port is an error, since it would silently invert the reset. If the re-type is intended, state it: `rst <- rst_n as Reset<Sync, High>;`. These are the same rules `auto;` applies, with one exception: **clock domains**. Connecting a clock of another domain rebinds the instance's domain and is legal (see "Clock domain rebind is not a crossing"). An unsized integer literal (`total <- 1;`) takes the port's width, as in any other context-typed position. Only definite mismatches are reported. When either side's width stays param-dependent and cannot be evaluated at the inst site, the check stays silent.
+>
 > ◈ **Port group member syntax.** For constructs with named port groups (e.g. `regfile` with `ports[N] read`), connections use dot notation: `write.en <- wr_en;` (flattened to `write_en`). For indexed port groups, use bracket-dot notation: `read[0].addr <- sel;` (flattened to `read0_addr`). The index must be an integer literal. Both forms are resolved at parse time --- the rest of the compiler sees only the flattened name.
 >
 > ◈ **`auto;` --- auto-connect by name.** A single `auto;` line inside an `inst` body connects every child port that the explicit connections left unconnected to the **identically-named** signal in the enclosing scope. Explicit connections always win, wherever they appear relative to the directive:
@@ -2125,6 +2129,13 @@ Every Clock signal in Arch carries a domain tag as part of its type. The compile
 **5.1 Declaring Domains**
 
 **Built-in domain: `SysDomain`.** The domain `SysDomain` is always available without an explicit declaration. It is the conventional default clock domain. You may still declare `domain SysDomain freq_mhz: 200 end domain SysDomain` to set a specific frequency, but the domain name itself is pre-registered and can be used in `Clock<SysDomain>` without any domain block.
+
+**Domain name resolution.**
+
+- **Built-in.** `SysDomain` is visible in every source file. Declaring it, at the top level or inside a `package`, only supplies attributes such as `freq_mhz`, which replace the built-in defaults. A declaration never makes `SysDomain` less visible: it needs no `use`, even when the declaring package is not imported.
+- **Declared.** A top-level `domain` is visible file-wide. A domain declared inside a `package` follows package visibility (§29.2): it is visible in the file that declares the package and in files that `use` it. In any other file it is an error (*"undefined name"*).
+- **Re-declaration.** A domain may be declared more than once (multi-file projects commonly repeat one). The declarations merge: a declared `freq_mhz` fills in one an earlier declaration omitted. Two *different* `freq_mhz` values for the same domain are an error (*"conflicting `freq_mhz` for domain ..."*), never a silent first-wins.
+- **Implicit.** A `Clock<D>` naming a domain that is declared nowhere is accepted as an *implicit domain* with no attributes. It still takes full part in clock-domain tracking and CDC checking. It just has no `freq_mhz`, so for example the multi-clock simulation `tick()` driver, which needs every clock's frequency, is not generated.
 
 +-------------------------------------------------------------------------------+
 | *domains.arch*                                                                |
@@ -2677,6 +2688,7 @@ end thread Name
 - `Name` — optional; auto-named `thread`, `thread1`, … if omitted
 - `on clk rising` — clock port name and edge (`rising` or `falling`)
 - `, rst high` — reset port name and active level (`high` or `low`)
+  - The level must match the reset port's declared polarity: a `Reset<K, High>` port needs `rst high`, and a `Reset<K, Low>` port needs `rst low`. A contradicting clause is a compile error. It would hold the thread in reset during normal operation and release it during reset, so either the clause or the port declaration is wrong. There is no override in the clause. A reset that really changes polarity is re-typed where it enters the module, at the parent's `inst` connection: `rst <- rst_n as Reset<Sync, High>;` (§4.3 "Connection types"). This applies to every thread form, including TLM target threads (`thread s.read(addr) on clk rising, rst high`). The reset *kind* (`Sync`/`Async`) always comes from the port. A reset named by a non-`Reset` signal declares no polarity and is not checked.
 - `default when cond … end default` — optional soft-reset clause (see §7a.4)
 - Body is a sequence of statements (see §7a.2)
 
@@ -2687,6 +2699,8 @@ end thread Name
 **Rejected historical syntax: `reentrant`**: the earlier TLM pipelining sketch allowed `thread ... reentrant [max N]`, but that syntax is no longer accepted. Parallel copies of a thread are expressed explicitly with `generate_for`, which gives each lane static ownership of state, destinations, tags, locks, and array indices. This avoids the hidden slot lifetime, shared-write, response-routing, reset, and cancellation semantics that made `reentrant` a poor fit for synthesizable ARCH.
 
 **Multiple threads** in one module are declared independently; they all compile into the same `_ModuleName_threads` submodule and share one `always_ff` block to avoid multi-driver conflicts.
+
+That sharing is between threads only. A `reg` written by a `thread` must not also be written by a `seq` or `latch` block of the module (or driven by any other construct) — the thread's writes move into `_ModuleName_threads` while the `seq` block stays in the parent, so the two would be separate SV drivers. The single-driver rule applies (every signal has exactly one driver), and `arch check` reports a `has multiple drivers` error at the `seq` write. Give such a register one owner: write it from the threads only, or from one `seq` block only.
 
 **`generate_for` over threads:**
 
@@ -3680,6 +3694,8 @@ Any Arch struct can be used as the word type of a ram. The compiler packs the st
 > ◈ When a struct is the word type, the compiler automatically generates the packing/unpacking bit slices in the emitted SystemVerilog. Designers work entirely with named fields --- no manual \[hi:lo\] indexing into packed words.
 
 **11.8 RAM Initialization**
+
+Initialization clauses end with a semicolon. Use `init: none;` to explicitly leave writable RAM contents uninitialized, or `init: zero;` for zero initialization. ROMs require initialized contents and cannot use `init: none;`.
 
   ----------------------------------------------------------------------------------------------------------------------------
   **Annotation**                **Behaviour**                                 **Supported In**
@@ -9579,7 +9595,7 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 
 **29.1 The package Construct**
 
-A **package** groups related type definitions, constants, and functions into a reusable namespace. Packages follow the universal block grammar:
+A **package** groups related type definitions, constants, and functions into a reusable unit. Its names are published unqualified, so it is a grouping rather than a qualified namespace (§3.12). Visibility is still scoped to the declaring file and to files that `use` it (§29.2). Packages follow the universal block grammar:
 
 > **package** PkgName
 >
@@ -9633,6 +9649,8 @@ A consumer file imports a package with the **use** statement at file scope (befo
 > **use** PkgName;
 
 This makes all names defined inside the package available unqualified in the importing file. Multiple `use` statements are allowed.
+
+**Visibility rule.** A package's names are visible in exactly two places: the source file that declares the package, which needs no `use` (§3.12), and every file that has `use PkgName;`. In any other file they are undefined, even when the package's file is on the same command line. The only exception is the built-in domain `SysDomain`, which is visible everywhere even when a package declares it (§5.1).
 
 **29.3 File Resolution**
 
@@ -9778,9 +9796,12 @@ arguments, share the one instance.
 **Any call site that does not bind is silently inlined.** There is no
 diagnostic — see the warning below.
 
-**Emitted SV.** One `function automatic` body, `__shared_<NAME>_in_<arg>`
-and `__shared_<NAME>_out` wires, and an `always_comb` that decodes the
-thread state onto the operand wires. The function body itself is still
+**Emitted SV.** One `function automatic` body, `__shared_<SVNAME>_in_<arg>`
+and `__shared_<SVNAME>_out` wires, and an `always_comb` that decodes the
+thread state onto the operand wires. `<SVNAME>` is the emitted (type-mangled)
+function name, not the source name: `MacRes` with arguments
+`Bool, UInt<16>, Bool, UInt<16>, UInt<34>` emits as `MacRes_b_16_b_16_34`, so
+its output wire is `__shared_MacRes_b_16_b_16_34_out`. The function body itself is still
 emitted (unused function definitions synthesise to nothing); what
 changes is that call sites read `__shared_<NAME>_out` instead of calling
 it.
@@ -9792,7 +9813,8 @@ it.
 > case. The one `CompileWarning` in the implementation (same state,
 > different args) is pushed to `SvCodegen::warnings`, which **no caller
 > reads**, so it never reaches the user either. The only way to confirm
-> sharing is to inspect the emitted SV for `__shared_<NAME>_out`, or to
+> sharing is to inspect the emitted SV for wires starting `__shared_<NAME>_`
+> (the full name carries the argument types, see above), or to
 > count operator instances after synthesis. This is how a 2026-05-11
 > change (per-thread state-name localparams) silently disabled sharing
 > on arch-ibex's multiplier for four months — four multipliers where one
@@ -9817,6 +9839,43 @@ shared function MacRes(sign_a: Bool, op_a16: UInt<16>,
   ...
 end function MacRes
 ```
+
+**Choosing per parameter: `shared(when EXPR)`.** Because the better choice
+depends on the target, sharing can be made conditional on a module parameter:
+
+```
+module ibex_multdiv_fast
+  param ShareMac[0:0]: const = 1'b1;
+  ...
+  shared(when ShareMac) function MacRes(...) -> UInt<34>
+    ...
+  end function MacRes
+```
+
+The function is shared when `EXPR` is true and inlined when it is false, with
+the same binding rules as `shared`. `EXPR` must be a 1-bit constant over the
+enclosing module's params: a comparison or logical expression
+(`shared(when SHARE == 1)`), a Bool or 1-bit literal, or a bare param declared
+1 bit wide (`param X[0:0]`, `Bool`, `UInt<1>`). It may not reference ports,
+signals or anything other than that module's params, and the form is only
+allowed on a function declared inside a module (a top-level or package
+function has no module params to test). Violations are compile errors.
+
+Because the module's SV keeps its params symbolic (one SV module for every
+param value, overridable with `#(...)` or a synthesis tool's `chparam`), the
+emitter writes **both** structures: the shared harness as above, and every
+bound call site as `((EXPR) ? __shared_<SVNAME>_out : <SVNAME>(args))`. Once
+the param is known, synthesis folds the select and removes whichever form has
+no readers. The result equals plain `shared` when `EXPR` is true and plain
+`function` when it is false. Semantics are identical either way, as for
+`shared`.
+
+Measured on arch-ibex `ibex_multdiv_fast` (17×17 MAC, nine call sites), the
+whole design: inlined instead of shared is **−489 LUT4 on ECP5** (16,608 →
+16,119; one hard `MULT18X18D` in both, fmax unchanged within seed noise) but
+**+28,877 µm² on sky130** (1,819,558 → 1,848,435 µm² at synthesis). So the
+two targets want opposite settings, which is what `shared(when ...)` lets one
+source express.
 
 See also `shared(or)` / `shared(and)` in the thread chapter — a
 different feature that happens to use the same word: those resolve

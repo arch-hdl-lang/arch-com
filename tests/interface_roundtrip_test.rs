@@ -184,3 +184,106 @@ fn packages_emit_no_archi_but_still_emit_sv_and_resolve() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// #1086: a `.archi` is read as its own file, and package names are visible
+/// only to files that `use` them (enforced since #1065). A stub whose ports
+/// use package types must therefore carry the package import, or a parent
+/// that instantiates the module through the stub cannot resolve them
+/// (arch-ibex: `undefined name: Irqs` in `ibex_controller.archi`).
+#[test]
+fn archi_carries_package_imports_for_its_port_types() {
+    let root = repo_root();
+    let tmp = std::env::temp_dir().join(format!("arch_archi_uses_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("mkdir");
+    std::fs::copy(root.join("examples/TestPkg.arch"), tmp.join("TestPkg.arch"))
+        .expect("copy package");
+    std::fs::write(
+        tmp.join("Child.arch"),
+        "use TestPkg;\n\nmodule Child\n  port mode: in AluOp;\n  port a: in UInt<8>;\n  \
+         port b: in UInt<8>;\n  port result: out UInt<8>;\n  let result = max(a, b);\n\
+         end module Child\n",
+    )
+    .expect("write child");
+    let run = |args: &[&str]| {
+        let out = Command::new(arch())
+            .current_dir(&tmp)
+            .args(args)
+            .output()
+            .expect("run arch");
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+
+    let (ok, log) = run(&["build", "Child.arch", "-o", "Child.sv"]);
+    assert!(ok, "child build failed:\n{log}");
+    let stub = std::fs::read_to_string(tmp.join("Child.archi")).expect("read stub");
+    assert!(
+        stub.starts_with("use TestPkg;\n"),
+        "the stub's port `mode: in AluOp` needs `use TestPkg;`:\n{stub}"
+    );
+
+    // From here the child is visible only through its stub.
+    std::fs::remove_file(tmp.join("Child.arch")).expect("remove child source");
+    std::fs::write(
+        tmp.join("Parent.arch"),
+        "use TestPkg;\n\nmodule Parent\n  port mode: in AluOp;\n  port a: in UInt<8>;\n  \
+         port b: in UInt<8>;\n  port r: out UInt<8>;\n  inst u: Child\n    mode <- mode;\n    \
+         a <- a;\n    b <- b;\n    result -> r;\n  end inst u\nend module Parent\n",
+    )
+    .expect("write parent");
+    let (ok, log) = run(&["build", "Parent.arch", "-o", "Parent.sv"]);
+    assert!(ok, "parent build through Child.archi failed:\n{log}");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Same contract as `archi_carries_package_imports_for_its_port_types`, for a
+/// package **param** (a package-scoped constant, spec §29.1) used in a port
+/// width. `interface_uses` must enumerate package params alongside the other
+/// member kinds, so a stub whose only package reference is `UInt<WIDTH>` still
+/// carries `use TestPkg;`. Without params in the member list the stub shipped
+/// no `use`, leaving the package name undefined in the stub's own scope — the
+/// same shape as #1086, differing only in which member kind is referenced.
+#[test]
+fn archi_carries_package_imports_for_its_param_typed_ports() {
+    let root = repo_root();
+    let tmp = std::env::temp_dir().join(format!("arch_archi_param_uses_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("mkdir");
+    std::fs::copy(root.join("examples/TestPkg.arch"), tmp.join("TestPkg.arch"))
+        .expect("copy package");
+    // Port width is the only reference into TestPkg (no enum/struct/function).
+    std::fs::write(
+        tmp.join("WChild.arch"),
+        "use TestPkg;\n\nmodule WChild\n  port a: in UInt<WIDTH>;\n  \
+         port out: out UInt<4>;\n  comb out = a.trunc<4>(); end comb\n\
+         end module WChild\n",
+    )
+    .expect("write child");
+    let out = Command::new(arch())
+        .current_dir(&tmp)
+        .args(["build", "WChild.arch", "-o", "WChild.sv"])
+        .output()
+        .expect("run arch");
+    assert!(
+        out.status.success(),
+        "child build failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stub = std::fs::read_to_string(tmp.join("WChild.archi")).expect("read stub");
+    assert!(
+        stub.starts_with("use TestPkg;\n"),
+        "the stub's port `a: in UInt<WIDTH>` references package param `WIDTH`, so the \
+         stub needs `use TestPkg;`:\n{stub}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}

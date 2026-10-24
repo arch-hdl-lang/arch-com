@@ -1585,6 +1585,15 @@ impl<'a> SimCodegen<'a> {
             || m.body
                 .iter()
                 .any(|i| matches!(i, ModuleBodyItem::WireDecl(w) if ty_references_named(&w.ty)))
+            // `let m: Mode = ...` declares a `_let_m` storage member of the
+            // named type, so the header must pull in VStructs.h just like a
+            // reg/wire does — otherwise it references an undeclared type and
+            // the sim C++ fails to compile (arch#1031 facet 2). A
+            // struct-destructuring `let {a, b} = expr;` has `ty: None` but
+            // reads a struct-typed RHS, so include defensively there too.
+            || m.body.iter().any(|i| matches!(i, ModuleBodyItem::LetBinding(l)
+                if l.ty.as_ref().is_some_and(ty_references_named)
+                    || !l.destructure_fields.is_empty()))
             || m.ports.iter().any(|p| ty_references_named(&p.ty));
         let mut h = String::new();
         h.push_str(&format!(

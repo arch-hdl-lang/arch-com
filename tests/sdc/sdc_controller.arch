@@ -205,12 +205,12 @@ module sdc_controller
     error_int_signal_enable_reg -> error_int_signal_enable_reg_w;
     clock_divider -> clock_divider_w;
     Bd_isr_enable_reg -> Bd_isr_enable_reg_w;
-    status_reg -> status_reg_r;
-    cmd_resp_1 -> cmd_resp_1_r;
-    normal_int_status_reg -> normal_int_status_reg_r;
-    error_int_status_reg  -> error_int_status_reg_r;
-    Bd_Status_reg -> Bd_Status_reg_r;
-    Bd_isr_reg    -> Bd_isr_reg_r;
+    status_reg <- status_reg_r;
+    cmd_resp_1 <- cmd_resp_1_r;
+    normal_int_status_reg <- normal_int_status_reg_r;
+    error_int_status_reg  <- error_int_status_reg_r;
+    Bd_Status_reg <- Bd_Status_reg_r;
+    Bd_isr_reg    <- Bd_isr_reg_r;
     Bd_isr_reset     -> Bd_isr_reset_w;
     normal_isr_reset -> normal_isr_reset_w;
     error_isr_reset  -> error_isr_reset_w;

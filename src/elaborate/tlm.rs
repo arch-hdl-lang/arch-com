@@ -1182,19 +1182,54 @@ fn tlm_bus_field(bus: &str, field: &str, span: Span) -> Expr {
     )
 }
 
-/// Zero literal matching a synthesized reg's declared type: float types get
-/// a typed +0.0 (all-zero bits in FP32/BF16/FP8E4M3/FP8E5M2), everything
-/// else the integer 0.
+/// Zero/default expression matching a synthesized reg's declared type.
+///
+/// Float types get a typed +0.0 (all-zero bits in every supported narrow
+/// format).  Scale types do not both have a zero encoding: E8M0's zero code
+/// is the smallest positive scale, so use the representation of 1.0 for a
+/// valid reset/default value; UE4M3 does have a zero encoding but using its
+/// conversion keeps this helper type-correct without teaching integer
+/// literals about scale types.
 fn tlm_zero_for_type(ty: &TypeExpr, span: Span) -> Expr {
+    if matches!(ty, TypeExpr::SInt(_)) {
+        return Expr::new(
+            ExprKind::Signed(Box::new(Expr::new(
+                ExprKind::Literal(LitKind::Dec(0)),
+                span,
+            ))),
+            span,
+        );
+    }
     let fmt = match ty {
         TypeExpr::FP32 => Some(FloatLitFmt::Fp32),
         TypeExpr::BF16 => Some(FloatLitFmt::Bf16),
         TypeExpr::FP8E4M3 => Some(FloatLitFmt::E4m3),
         TypeExpr::FP8E5M2 => Some(FloatLitFmt::E5m2),
+        TypeExpr::FP4E2M1 => Some(FloatLitFmt::E2m1),
+        TypeExpr::FP6E2M3 => Some(FloatLitFmt::E2m3),
+        TypeExpr::FP6E3M2 => Some(FloatLitFmt::E3m2),
         _ => None,
     };
     match fmt {
         Some(f) => Expr::new(ExprKind::Literal(LitKind::TypedFloat(f, 0)), span),
+        None if matches!(ty, TypeExpr::E8M0 | TypeExpr::UE4M3) => {
+            let method = if matches!(ty, TypeExpr::E8M0) {
+                "to_e8m0"
+            } else {
+                "to_ue4m3"
+            };
+            Expr::new(
+                ExprKind::MethodCall(
+                    Box::new(Expr::new(
+                        ExprKind::Literal(LitKind::Float(1.0f64.to_bits())),
+                        span,
+                    )),
+                    Ident::new(method.to_string(), span),
+                    Vec::new(),
+                ),
+                span,
+            )
+        }
         None => Expr::new(ExprKind::Literal(LitKind::Dec(0)), span),
     }
 }
@@ -1237,7 +1272,7 @@ fn tlm_error_response_expr(
                 tlm_lit_dec(0, span)
             }
         }
-        _ => tlm_lit_dec(0, span),
+        _ => tlm_zero_for_type(ty, span),
     }
 }
 
@@ -1763,6 +1798,27 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
     for it in ast.items {
         match it {
             Item::Module(mut m) => {
+                // Target threads are rewritten here, not by `lower_threads`,
+                // so their reset clause is checked against the port here.
+                for item in &m.body {
+                    if let ModuleBodyItem::Thread(t) = item {
+                        let is_target = t.tlm_target.is_some()
+                            || t.implement
+                                .as_ref()
+                                .is_some_and(|b| b.kind == TlmImplementKind::Target);
+                        if !is_target {
+                            continue;
+                        }
+                        let reset_ty = m
+                            .ports
+                            .iter()
+                            .find(|p| p.name.name == t.reset.name)
+                            .map(|p| &p.ty);
+                        if let Some(e) = super::thread_reset_level_mismatch(t, reset_ty) {
+                            errors.push(e);
+                        }
+                    }
+                }
                 // Build port → bus_name map for this module.
                 let (port_buses, port_methods) = specialize_tlm_methods_for_module_ports(
                     &m,
@@ -1915,7 +1971,12 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                 }
                 let mut extra_items: Vec<Item> = Vec::new();
                 for ((_port, _method), group) in indexed_target_groups {
-                    match lower_indexed_tlm_target_group(&m.name.name, group, &resource_decls) {
+                    match lower_indexed_tlm_target_group(
+                        &m.name.name,
+                        group,
+                        &resource_decls,
+                        &m.ports,
+                    ) {
                         Ok((items, mut extras)) => {
                             new_body.extend(items);
                             extra_items.append(&mut extras);
@@ -2742,10 +2803,27 @@ fn lower_tlm_initiator_cohort(
         value: req_valid.clone(),
         span,
     }));
-    for (arg_i, (arg_ident, _)) in method_meta.args.iter().enumerate() {
-        let mut value = zero();
+    for (arg_i, (arg_ident, arg_ty)) in method_meta.args.iter().enumerate() {
+        let mut value = tlm_zero_for_type(arg_ty, span);
         for (i, dt) in group.iter().enumerate().rev() {
-            value = tern(grants[i].clone(), dt.call.args[arg_i].clone(), value);
+            let arg = if matches!(arg_ty, TypeExpr::UInt(_) | TypeExpr::SInt(_)) {
+                let name = format!("_tlm_pool_{}_{}_arg{}_{}", port, method, arg_ident.name, i);
+                items.push(ModuleBodyItem::LetBinding(LetBinding {
+                    name: ident(name.clone()),
+                    ty: Some(arg_ty.clone()),
+                    value: tern(
+                        grants[i].clone(),
+                        dt.call.args[arg_i].clone(),
+                        tlm_zero_for_type(arg_ty, span),
+                    ),
+                    span,
+                    destructure_fields: Vec::new(),
+                }));
+                id(name)
+            } else {
+                dt.call.args[arg_i].clone()
+            };
+            value = tern(grants[i].clone(), arg, value);
         }
         comb_stmts.push(Stmt::Assign(CombAssign {
             target: port_member(format!("{}_{}", method, arg_ident.name)),
@@ -4116,14 +4194,38 @@ fn inline_lower_tlm_initiator_group(
                 .iter()
                 .zip(agg.issues.iter())
                 .filter_map(|(grant, (_, args, _, _, _))| {
-                    args.get(arg_i).map(|arg| (grant.clone(), arg.clone()))
+                    args.get(arg_i).map(|arg| {
+                        if matches!(arg_ty, TypeExpr::UInt(_) | TypeExpr::SInt(_)) {
+                            let temp_name = format!(
+                                "_tlm_init_{}_{}_arg{}_{}",
+                                agg.port,
+                                agg.method,
+                                arg_ident.name,
+                                items.len()
+                            );
+                            items.push(ModuleBodyItem::LetBinding(LetBinding {
+                                name: mk_ident(temp_name.clone()),
+                                ty: Some(arg_ty.clone()),
+                                value: tern(
+                                    grant.clone(),
+                                    arg.clone(),
+                                    tlm_zero_for_type(arg_ty, span),
+                                ),
+                                span,
+                                destructure_fields: Vec::new(),
+                            }));
+                            (grant.clone(), id(temp_name))
+                        } else {
+                            (grant.clone(), arg.clone())
+                        }
+                    })
                 })
                 .collect();
             let arg_value = emit_mux_tree(
                 &format!("_tlm_init_{}_{}_{}", agg.port, agg.method, arg_ident.name),
                 arg_ty,
                 &pairs,
-                dec(0),
+                tlm_zero_for_type(arg_ty, span),
                 &mut items,
                 &mut comb_stmts,
             );
@@ -4542,10 +4644,27 @@ fn inline_lower_tlm_fork_join_all(
         value: req_valid.clone(),
         span,
     }));
-    for (arg_i, (arg_ident, _)) in method_meta.args.iter().enumerate() {
-        let mut value = zero();
+    for (arg_i, (arg_ident, arg_ty)) in method_meta.args.iter().enumerate() {
+        let mut value = tlm_zero_for_type(arg_ty, span);
         for (i, issue) in issues.iter().enumerate().rev() {
-            value = tern(grants[i].clone(), issue.call.args[arg_i].clone(), value);
+            let arg = if matches!(arg_ty, TypeExpr::UInt(_) | TypeExpr::SInt(_)) {
+                let name = format!("_tlm_pool_{}_{}_arg{}_{}", port, method, arg_ident.name, i);
+                items.push(ModuleBodyItem::LetBinding(LetBinding {
+                    name: ident(name.clone()),
+                    ty: Some(arg_ty.clone()),
+                    value: tern(
+                        grants[i].clone(),
+                        issue.call.args[arg_i].clone(),
+                        tlm_zero_for_type(arg_ty, span),
+                    ),
+                    span,
+                    destructure_fields: Vec::new(),
+                }));
+                id(name)
+            } else {
+                issue.call.args[arg_i].clone()
+            };
+            value = tern(grants[i].clone(), arg, value);
         }
         comb_stmts.push(Stmt::Assign(CombAssign {
             target: port_member(format!("{}_{}", method, arg_ident.name)),
@@ -5122,6 +5241,7 @@ fn inline_lower_tlm_initiator(
     // Build comb drives: one unconditional CombAssign per wire, with
     // state-dependent RHS. OR-of-state-eq for booleans; ternary-mux for
     // argument values (default 0 when not in an issue state).
+    let mut temp_items: Vec<ModuleBodyItem> = Vec::new();
     let mut comb_stmts: Vec<Stmt> = Vec::new();
     let or_of_states = |indices: &[u64]| -> Expr {
         if indices.is_empty() {
@@ -5145,14 +5265,37 @@ fn inline_lower_tlm_initiator(
             span,
         }));
         // Each arg: ternary chain over issue states; default 0.
-        for (arg_i, (arg_ident, _arg_ty)) in agg.arg_decls.iter().enumerate() {
-            let mut value_expr = Expr::new(ExprKind::Literal(LitKind::Dec(0)), span);
+        for (arg_i, (arg_ident, arg_ty)) in agg.arg_decls.iter().enumerate() {
+            let mut value_expr = tlm_zero_for_type(arg_ty, span);
             for (state_idx, args) in agg.issues.iter().rev() {
                 if let Some(a) = args.get(arg_i) {
+                    let a = if matches!(arg_ty, TypeExpr::UInt(_) | TypeExpr::SInt(_)) {
+                        let temp_name = format!(
+                            "_tlm_init_{}_{}_arg{}_s{}",
+                            agg.port, agg.method, arg_ident.name, state_idx
+                        );
+                        temp_items.push(ModuleBodyItem::LetBinding(LetBinding {
+                            name: mk_ident(temp_name.clone()),
+                            ty: Some(arg_ty.clone()),
+                            value: Expr::new(
+                                ExprKind::Ternary(
+                                    Box::new(state_eq(*state_idx)),
+                                    Box::new(a.clone()),
+                                    Box::new(tlm_zero_for_type(arg_ty, span)),
+                                ),
+                                span,
+                            ),
+                            span,
+                            destructure_fields: Vec::new(),
+                        }));
+                        Expr::new(ExprKind::Ident(temp_name), span)
+                    } else {
+                        a.clone()
+                    };
                     value_expr = Expr::new(
                         ExprKind::Ternary(
                             Box::new(state_eq(*state_idx)),
-                            Box::new(a.clone()),
+                            Box::new(a),
                             Box::new(value_expr),
                         ),
                         span,
@@ -5193,11 +5336,12 @@ fn inline_lower_tlm_initiator(
         span,
     };
 
-    Ok(vec![
+    temp_items.extend([
         ModuleBodyItem::RegDecl(state_reg_decl),
         ModuleBodyItem::RegBlock(reg_block),
         ModuleBodyItem::CombBlock(comb_block),
-    ])
+    ]);
+    Ok(temp_items)
 }
 
 #[derive(Clone)]
@@ -5295,6 +5439,7 @@ fn lower_indexed_tlm_target_group(
     module_name: &str,
     mut group: Vec<(ThreadBlock, TlmTargetBinding, TlmMethodMeta)>,
     resource_decls: &HashMap<String, ResourceDecl>,
+    ports: &[PortDecl],
 ) -> Result<(Vec<ModuleBodyItem>, Vec<Item>), CompileError> {
     if group.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -5305,6 +5450,17 @@ fn lower_indexed_tlm_target_group(
     let group_reset_ident = group[0].0.reset.clone();
     let group_rst = group[0].0.reset.name.clone();
     let group_rst_level = group[0].0.reset_level;
+    // Reset kind comes from the module's reset port (the clause carries only
+    // the level). The synthesized arbiter must match it, not hard-code Async
+    // (#1091): a `Reset<Sync>` target would otherwise get async arbiter flops.
+    let group_rst_kind = ports
+        .iter()
+        .find(|p| p.name.name == group_rst)
+        .and_then(|p| match &p.ty {
+            TypeExpr::Reset(k, _) => Some(*k),
+            _ => None,
+        })
+        .unwrap_or(ResetKind::Async);
     let port = group[0].1.port.name.clone();
     let method_name = group[0].1.method.name.clone();
     let method = group[0].2.clone();
@@ -5584,6 +5740,7 @@ fn lower_indexed_tlm_target_group(
         hook,
         &group_clk,
         &group_rst,
+        group_rst_kind,
         group_rst_level,
         span,
     )));

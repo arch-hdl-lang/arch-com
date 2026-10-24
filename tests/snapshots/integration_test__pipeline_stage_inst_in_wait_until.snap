@@ -24,7 +24,7 @@ module Worker (
       end else if (state_q == 2'd2) begin
         state_q <= 2'd0;
       end else begin
-        state_q <= 2'(state_q + 1);
+        state_q <= 2'(3'(state_q + 1));
       end
     end
   end

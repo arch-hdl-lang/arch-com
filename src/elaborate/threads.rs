@@ -183,6 +183,55 @@ pub fn lower_threads_with_opts(
 /// All threads become per-thread state machines within one module.
 /// Shared registers, lock arbitration, and output muxing are all
 /// handled internally — no multi-driver issues.
+/// A thread's reset clause names the reset port and its active level
+/// (`on clk rising, rst low`). When that port is declared `Reset<K, L>`, the
+/// clause's level must be `L`: a thread that treats an active-high reset as
+/// active-low sits in reset during normal operation and runs during reset.
+/// Either the clause or the port declaration is wrong, so this is an error
+/// rather than an implicit re-type (spec §7a.1). A reset named by a
+/// non-`Reset` signal declares no polarity and is not checked here.
+pub fn thread_reset_level_mismatch(
+    t: &ThreadBlock,
+    reset_ty: Option<&TypeExpr>,
+) -> Option<CompileError> {
+    let Some(TypeExpr::Reset(kind, level)) = reset_ty else {
+        return None;
+    };
+    if *level == t.reset_level {
+        return None;
+    }
+    let word = |l: ResetLevel| match l {
+        ResetLevel::High => "high",
+        ResetLevel::Low => "low",
+    };
+    let cap = |l: ResetLevel| match l {
+        ResetLevel::High => "High",
+        ResetLevel::Low => "Low",
+    };
+    let kind = match kind {
+        ResetKind::Sync => "Sync",
+        ResetKind::Async => "Async",
+    };
+    let who = t
+        .name
+        .as_ref()
+        .map(|n| format!("thread `{}`", n.name))
+        .unwrap_or_else(|| "thread".to_string());
+    let rst = &t.reset.name;
+    Some(CompileError::general(
+        &format!(
+            "{who}: reset clause `{rst} {clause}` contradicts port `{rst}: Reset<{kind}, \
+             {port_ty}>`, which is active-{port} — either the clause is wrong (write `{rst} \
+             {port}`) or the port declaration is wrong (declare it `Reset<{kind}, {other}>`)",
+            clause = word(t.reset_level),
+            port_ty = cap(*level),
+            port = word(*level),
+            other = cap(t.reset_level),
+        ),
+        t.reset.span,
+    ))
+}
+
 fn lower_module_threads(
     m: ModuleDecl,
     opts: &ThreadLowerOpts,
@@ -232,6 +281,7 @@ fn lower_module_threads(
     };
     let _reg_map = build_module_reg_map(&m);
     let mut errors: Vec<CompileError> = Vec::new();
+    let mut level_errors: Vec<CompileError> = Vec::new();
 
     // Collect threads and non-thread body items
     let mut threads: Vec<(String, ThreadBlock)> = Vec::new();
@@ -300,6 +350,11 @@ fn lower_module_threads(
                         t.span,
                     )]);
                 }
+                if let Some(e) =
+                    thread_reset_level_mismatch(&t, type_map.get(&t.reset.name).map(|si| &si.ty))
+                {
+                    level_errors.push(e);
+                }
                 let name = t.name.as_ref().map(|n| n.name.clone()).unwrap_or_else(|| {
                     let n = if thread_idx == 0 {
                         "thread".to_string()
@@ -322,6 +377,10 @@ fn lower_module_threads(
             }
             other => new_body.push(other),
         }
+    }
+
+    if !level_errors.is_empty() {
+        return Err(level_errors);
     }
 
     if threads.is_empty() {
@@ -383,7 +442,7 @@ fn lower_module_threads(
     }
 
     // Clock and reset ports (from first thread)
-    let (clk_name, rst_name, _rst_level) = {
+    let (clk_name, rst_name, _rst_kind, _rst_level) = {
         let t = &threads[0].1;
         let rk = type_map
             .get(&t.reset.name)
@@ -426,7 +485,12 @@ fn lower_module_threads(
             comb_deps: None,
             span: sp,
         });
-        (t.clock.name.clone(), t.reset.name.clone(), t.reset_level)
+        (
+            t.clock.name.clone(),
+            t.reset.name.clone(),
+            rk,
+            t.reset_level,
+        )
     };
 
     // Collect lock signal names (internal, not ports)
@@ -1019,6 +1083,7 @@ fn lower_module_threads(
             hook,
             &clk_name,
             &rst_name,
+            _rst_kind,
             _rst_level,
             sp,
         );
@@ -1326,6 +1391,19 @@ fn lower_module_threads(
         // `is_folded` and skipped during codegen — it becomes unreachable.
         fold_wait_until_exit_assignments(&mut raw_states, t.once);
 
+        // A folded action may still carry a combinational assignment.  For a
+        // once-thread's final action, retain that state as the terminal hold
+        // state so its output remains asserted after the folded sequential
+        // action fires.  Only the seq portion was folded; dropping the state
+        // would silently drop its terminal comb output as well.
+        if t.once {
+            if let Some(last) = raw_states.last_mut() {
+                if last.is_folded && !last.comb_stmts.is_empty() {
+                    last.is_folded = false;
+                }
+            }
+        }
+
         // Lock release events: for each state marked as the last state of a
         // `lock` body, emit `_<res>_release_<ti> <= 1` sequentially when that
         // state's exit transition fires. The event is registered so the
@@ -1467,6 +1545,37 @@ fn lower_module_threads(
                 LockReleaseFire::Unconditional => pending_assign,
             };
             raw_states[target_idx].comb_stmts.push(pending_stmt);
+        }
+
+        // A once-thread's final sequential action must fire once on entry to
+        // the terminal state, then stop.  The ordinary terminal-state logic
+        // holds the state register in place, which would otherwise execute
+        // that state's seq statements on every subsequent clock edge.  Add a
+        // distinct empty hold state and preserve the terminal state's comb
+        // outputs there; this keeps terminal output semantics while making
+        // the action genuinely one-shot.  Folded wait-exit actions already
+        // fire from their predecessor and therefore do not need a hold state.
+        if t.once {
+            if let Some(last) = raw_states.last() {
+                if !last.seq_stmts.is_empty() {
+                    let terminal_comb = last.comb_stmts.clone();
+                    raw_states.push(ThreadFsmState {
+                        comb_stmts: terminal_comb,
+                        seq_stmts: Vec::new(),
+                        transition_cond: None,
+                        wait_cycles: None,
+                        multi_transitions: Vec::new(),
+                        terminal_return: None,
+                        folded_exit_seq: Vec::new(),
+                        folded_exit_target: None,
+                        is_folded: false,
+                        no_fold_into_prev: false,
+                        lock_release: None,
+                        lock_release_info: None,
+                        is_lock_body: false,
+                    });
+                }
+            }
         }
 
         let n_states = raw_states.len();
@@ -2589,13 +2698,15 @@ pub(crate) fn synthesize_lock_arbiter(
     hook: Option<ArbiterHookDecl>,
     clk_name: &str,
     rst_name: &str,
+    rst_kind: ResetKind,
     rst_level: ResetLevel,
     sp: Span,
 ) -> ArbiterDecl {
-    // Reset kind: synthesized arbiter inherits Async from the merged
-    // module's reset (matches the merged module itself, which uses Async
-    // for thread-driven resets).
-    let rst_ty = TypeExpr::Reset(ResetKind::Async, rst_level);
+    // Reset kind + level both come from the merged module's reset port, so
+    // the synthesized arbiter's flops match the `_threads` logic beside it.
+    // Hard-coding Async here (the old behavior) gave a `Reset<Sync>` design
+    // asynchronous arbiter flops — a reset-methodology mismatch (#1091).
+    let rst_ty = TypeExpr::Reset(rst_kind, rst_level);
     let clk_ty = TypeExpr::Clock(Ident::new("SysDomain".to_string(), sp));
     let n_threads_expr = Expr::new(ExprKind::Literal(LitKind::Dec(n_threads as u64)), sp);
     let gr_width = crate::width::index_width(n_threads as u64);
@@ -4283,13 +4394,14 @@ fn infer_for_cnt_width_inner(stmts: &[ThreadStmt], type_map: &HashMap<String, Si
     let mut max_width: u32 = 0;
     for stmt in stmts {
         match stmt {
-            ThreadStmt::For { end, .. } => {
+            ThreadStmt::For { end, body, .. } => {
                 // Only the end expression determines the counter width.
-                // Do NOT recurse into the for-loop body — no nested for loops,
-                // and recursing would find zero for-loops there, returning 0.
                 let w = infer_expr_uint_width(end, type_map);
 
                 max_width = max_width.max(w);
+                // Nested loops have independent counters, so the shared
+                // counter register width must accommodate their bounds too.
+                max_width = max_width.max(infer_for_cnt_width_inner(body, type_map));
             }
             ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => {
                 max_width = max_width.max(infer_for_cnt_width_inner(body, type_map));

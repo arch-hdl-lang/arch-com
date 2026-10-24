@@ -20,6 +20,29 @@ impl<'a> Codegen<'a> {
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "16".to_string());
 
+        // Resolve the DEPTH literal value (matching the sim codegen's
+        // extraction) to decide which pointer scheme the emitted SV uses.
+        //
+        // The historical sync / latency-1 bodies wrap pointers at the next
+        // power of two and index memory with the low `PTR_W-1` bits, which is
+        // correct ONLY when DEPTH is a power of two (arch#1058). When DEPTH is
+        // a known power-of-two literal (>= 2) we keep emitting that body
+        // verbatim so the output stays byte-identical for the entire (all
+        // pow2) corpus. Otherwise — a non-power-of-two literal, DEPTH==1, or a
+        // non-literal expression we cannot prove is pow2 — we emit the general
+        // modular-pointer body that wraps at `2*DEPTH`, matching arch sim and
+        // the construct formal IR for ANY depth.
+        let depth_val: Option<u64> = f
+            .params
+            .iter()
+            .find(|p| p.name.name == "DEPTH")
+            .and_then(|p| p.default.as_ref())
+            .and_then(|e| match &e.kind {
+                ExprKind::Literal(LitKind::Dec(v)) => Some(*v),
+                _ => None,
+            });
+        let use_general_depth = !matches!(depth_val, Some(d) if d >= 2 && d.is_power_of_two());
+
         // Find the type parameter (any name) and compute its bit-width for DATA_WIDTH
         let type_param_name = f
             .params
@@ -89,7 +112,7 @@ impl<'a> Codegen<'a> {
         } else if f.kind == FifoKind::Lifo {
             self.emit_fifo_lifo_body(f, &port_names);
         } else {
-            self.emit_fifo_sync_body(f, &port_names, has_overflow_param);
+            self.emit_fifo_sync_body(f, &port_names, has_overflow_param, use_general_depth);
         }
 
         // Auto-generated safety assertions for FIFO invariants.
@@ -196,9 +219,24 @@ impl<'a> Codegen<'a> {
         self.emit_port_type_str(ty)
     }
 
-    fn emit_fifo_sync_body(&mut self, f: &FifoDecl, port_names: &[&str], has_overflow_param: bool) {
+    fn emit_fifo_sync_body(
+        &mut self,
+        f: &FifoDecl,
+        port_names: &[&str],
+        has_overflow_param: bool,
+        use_general_depth: bool,
+    ) {
         if f.latency == 1 {
-            self.emit_fifo_sync_fwft_body(f, port_names, has_overflow_param);
+            if use_general_depth {
+                self.emit_fifo_sync_fwft_body_general(f, port_names, has_overflow_param);
+            } else {
+                self.emit_fifo_sync_fwft_body(f, port_names, has_overflow_param);
+            }
+            return;
+        }
+
+        if use_general_depth {
+            self.emit_fifo_sync_body_general(f, port_names, has_overflow_param);
             return;
         }
 
@@ -268,6 +306,99 @@ impl<'a> Codegen<'a> {
         self.line("if (pop_valid && pop_ready) begin");
         self.indent += 1;
         self.line("rd_ptr <= rd_ptr + 1;");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+    }
+
+    /// General (any-DEPTH) latency-0 synchronous FIFO body — arch#1058.
+    ///
+    /// Pointers range over `[0, 2*DEPTH)` and wrap modulo `2*DEPTH` (an
+    /// explicit compare-and-reset, not a bit-width overflow), so DEPTH need
+    /// not be a power of two. This mirrors arch sim (`_wr_ptr % depth`, wrap
+    /// at `2*depth`) and the construct formal IR (`bvurem … 2*DEPTH`). The
+    /// occupancy-based `full`/`empty` and the `ptr mod DEPTH` memory index
+    /// collapse to exactly the historical power-of-two body when DEPTH is a
+    /// power of two, so this path only ever emits for non-pow2 / DEPTH==1 /
+    /// non-literal depths (the pow2 fast path stays byte-identical).
+    fn emit_fifo_sync_body_general(
+        &mut self,
+        f: &FifoDecl,
+        port_names: &[&str],
+        has_overflow_param: bool,
+    ) {
+        self.line("// Modular pointers wrap at 2*DEPTH, so DEPTH need not be a power of two");
+        self.line("localparam int PTR_W = $clog2(DEPTH) + 1;");
+        self.line("localparam logic [PTR_W-1:0] PTR_LAST = (2*DEPTH - 1);");
+        self.line("localparam logic [PTR_W-1:0] DEPTH_P  = DEPTH;");
+        self.line("");
+        self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
+        self.line("logic [PTR_W-1:0]     wr_ptr;");
+        self.line("logic [PTR_W-1:0]     rd_ptr;");
+        self.line("logic [PTR_W-1:0]     wr_idx;");
+        self.line("logic [PTR_W-1:0]     rd_idx;");
+        if !port_names.contains(&"full") {
+            self.line("logic                 full;");
+        }
+        if !port_names.contains(&"empty") {
+            self.line("logic                 empty;");
+        }
+        self.line("");
+        self.line(
+            "// ptr mod DEPTH (pointers are < 2*DEPTH, so one conditional subtract suffices)",
+        );
+        self.line("assign wr_idx      = (wr_ptr >= DEPTH_P) ? (wr_ptr - DEPTH_P) : wr_ptr;");
+        self.line("assign rd_idx      = (rd_ptr >= DEPTH_P) ? (rd_ptr - DEPTH_P) : rd_ptr;");
+        self.line("// Empty when pointers are equal; full when exactly DEPTH apart");
+        self.line("assign empty       = (wr_ptr == rd_ptr);");
+        self.line("assign full        = (wr_ptr != rd_ptr) && (wr_idx == rd_idx);");
+        if has_overflow_param {
+            self.line("// OVERFLOW mode: push_ready always high; overwrite oldest when full");
+            self.line("assign push_ready  = (OVERFLOW != 0) ? 1'b1 : !full;");
+        } else {
+            self.line("assign push_ready  = !full;");
+        }
+        self.line("assign pop_valid   = !empty;");
+        self.line("assign pop_data    = mem[rd_idx];");
+        self.line("");
+
+        let (rst, is_async, is_low) = Self::extract_reset_info(&f.ports);
+        let clk = f
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk");
+        let ff_sens = Self::ff_sensitivity(clk, &rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(&rst, is_low);
+
+        self.line(&format!("always_ff @({ff_sens}) begin"));
+        self.indent += 1;
+        self.line(&format!("if ({rst_cond}) begin"));
+        self.indent += 1;
+        self.line("wr_ptr <= '0;");
+        self.line("rd_ptr <= '0;");
+        self.indent -= 1;
+        self.line("end else begin");
+        self.indent += 1;
+        self.line("if (push_valid && push_ready) begin");
+        self.indent += 1;
+        self.line("mem[wr_idx] <= push_data;");
+        self.line("wr_ptr <= (wr_ptr == PTR_LAST) ? '0 : (wr_ptr + 1'b1);");
+        if has_overflow_param {
+            self.line("// In overflow mode, advance rd_ptr when writing to a full FIFO");
+            self.line(
+                "if ((OVERFLOW != 0) && full && !(pop_ready)) rd_ptr <= (rd_ptr == PTR_LAST) ? '0 : (rd_ptr + 1'b1);",
+            );
+        }
+        self.indent -= 1;
+        self.line("end");
+        self.line("if (pop_valid && pop_ready) begin");
+        self.indent += 1;
+        self.line("rd_ptr <= (rd_ptr == PTR_LAST) ? '0 : (rd_ptr + 1'b1);");
         self.indent -= 1;
         self.line("end");
         self.indent -= 1;
@@ -382,6 +513,130 @@ impl<'a> Codegen<'a> {
         self.line("else if (do_pop || drop_oldest) bypass_valid <= 1'b0;");
         self.line("if (do_push) wr_ptr <= wr_ptr + 1'b1;");
         self.line("if (do_pop || drop_oldest) rd_ptr <= rd_ptr + 1'b1;");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+    }
+
+    /// General (any-DEPTH) registered first-word-fall-through FIFO body —
+    /// arch#1058. Same BRAM-inference structure as [`emit_fifo_sync_fwft_body`]
+    /// (synchronous write port + synchronous read port with a dedicated output
+    /// register and a registered write-data bypass), but with modular pointers
+    /// that wrap at `2*DEPTH` and occupancy-based `full`, so the depth need not
+    /// be a power of two. Collapses to the historical body when DEPTH is a
+    /// power of two, so the pow2 corpus output is unchanged.
+    fn emit_fifo_sync_fwft_body_general(
+        &mut self,
+        f: &FifoDecl,
+        port_names: &[&str],
+        has_overflow_param: bool,
+    ) {
+        self.line("// Modular pointers wrap at 2*DEPTH, so DEPTH need not be a power of two");
+        self.line("localparam int PTR_W = $clog2(DEPTH) + 1;");
+        self.line("localparam logic [PTR_W-1:0] PTR_LAST = (2*DEPTH - 1);");
+        self.line("localparam logic [PTR_W-1:0] DEPTH_P  = DEPTH;");
+        self.line("");
+        self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
+        self.line("logic [DATA_WIDTH-1:0] mem_data_r;");
+        self.line("logic [DATA_WIDTH-1:0] bypass_data_r;");
+        self.line("logic [PTR_W-1:0]     wr_ptr;");
+        self.line("logic [PTR_W-1:0]     rd_ptr;");
+        self.line("logic [PTR_W-1:0]     rd_ptr_next;");
+        self.line("logic [PTR_W-1:0]     wr_idx;");
+        self.line("logic [PTR_W-1:0]     rd_idx;");
+        self.line("logic [PTR_W-1:0]     rd_idx_next;");
+        self.line("logic                 do_push, do_pop, drop_oldest, one_entry, rd_mem_en;");
+        self.line("logic                 bypass_valid, load_bypass;");
+        if !port_names.contains(&"full") {
+            self.line("logic                 full;");
+        }
+        if !port_names.contains(&"empty") {
+            self.line("logic                 empty;");
+        }
+        self.line("");
+        self.line(
+            "// ptr mod DEPTH (pointers are < 2*DEPTH, so one conditional subtract suffices)",
+        );
+        self.line("assign wr_idx      = (wr_ptr >= DEPTH_P) ? (wr_ptr - DEPTH_P) : wr_ptr;");
+        self.line("assign rd_idx      = (rd_ptr >= DEPTH_P) ? (rd_ptr - DEPTH_P) : rd_ptr;");
+        self.line("// Empty when pointers are equal; full when exactly DEPTH apart");
+        self.line("assign empty       = (wr_ptr == rd_ptr);");
+        self.line("assign full        = (wr_ptr != rd_ptr) && (wr_idx == rd_idx);");
+        if has_overflow_param {
+            self.line("// OVERFLOW mode: push_ready always high; overwrite oldest when full");
+            self.line("assign push_ready  = (OVERFLOW != 0) ? 1'b1 : !full;");
+        } else {
+            self.line("assign push_ready  = !full;");
+        }
+        self.line("assign pop_valid   = !empty;");
+        self.line("assign pop_data    = bypass_valid ? bypass_data_r : mem_data_r;");
+        self.line("assign do_push     = push_valid && push_ready;");
+        self.line("assign do_pop      = pop_valid && pop_ready;");
+        self.line("assign rd_ptr_next = (rd_ptr == PTR_LAST) ? '0 : (rd_ptr + 1'b1);");
+        self.line("assign rd_idx_next = (rd_ptr_next >= DEPTH_P) ? (rd_ptr_next - DEPTH_P) : rd_ptr_next;");
+        self.line("assign one_entry   = (wr_ptr == rd_ptr_next);");
+        if has_overflow_param {
+            self.line("assign drop_oldest = (OVERFLOW != 0) && full && do_push && !do_pop;");
+        } else {
+            self.line("assign drop_oldest = 1'b0;");
+        }
+        self.line("assign load_bypass = (empty && do_push) ||");
+        self.line("                     (one_entry && do_pop && do_push) ||");
+        self.line("                     (drop_oldest && (DEPTH == 1));");
+        self.line("assign rd_mem_en   = (do_pop && !one_entry) ||");
+        self.line("                     (drop_oldest && (DEPTH != 1));");
+        self.line("");
+
+        let (rst, is_async, is_low) = Self::extract_reset_info(&f.ports);
+        let clk = f
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk");
+        let ff_sens = Self::ff_sensitivity(clk, &rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(&rst, is_low);
+
+        self.line("// Reset-free memory process: portable simple-dual-port BRAM inference");
+        self.line(&format!("always_ff @(posedge {clk}) begin"));
+        self.indent += 1;
+        self.line("if (do_push)");
+        self.indent += 1;
+        self.line("mem[wr_idx] <= push_data;");
+        self.indent -= 1;
+        self.line("if (rd_mem_en)");
+        self.indent += 1;
+        self.line("mem_data_r <= mem[rd_idx_next];");
+        self.indent -= 1;
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        self.line("// Registered write-data bypass; ignored unless bypass_valid is set");
+        self.line(&format!("always_ff @(posedge {clk}) begin"));
+        self.indent += 1;
+        self.line("if (load_bypass) bypass_data_r <= push_data;");
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        self.line(&format!("always_ff @({ff_sens}) begin"));
+        self.indent += 1;
+        self.line(&format!("if ({rst_cond}) begin"));
+        self.indent += 1;
+        self.line("wr_ptr <= '0;");
+        self.line("rd_ptr <= '0;");
+        self.line("bypass_valid <= 1'b0;");
+        self.indent -= 1;
+        self.line("end else begin");
+        self.indent += 1;
+        self.line("if (load_bypass) bypass_valid <= 1'b1;");
+        self.line("else if (do_pop || drop_oldest) bypass_valid <= 1'b0;");
+        self.line("if (do_push) wr_ptr <= (wr_ptr == PTR_LAST) ? '0 : (wr_ptr + 1'b1);");
+        self.line(
+            "if (do_pop || drop_oldest) rd_ptr <= (rd_ptr == PTR_LAST) ? '0 : (rd_ptr + 1'b1);",
+        );
         self.indent -= 1;
         self.line("end");
         self.indent -= 1;

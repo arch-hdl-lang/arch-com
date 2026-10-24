@@ -2864,9 +2864,20 @@ impl<'a> FormalCtx<'a> {
     /// float-shaped code path must ask this instead.
     fn expr_is_e8m0(&self, e: &Expr) -> bool {
         match &e.kind {
-            ExprKind::Ident(n) => self.sigs.get(n).map(|i| i.is_e8m0).unwrap_or(false),
+            ExprKind::Ident(n) => self
+                .sigs
+                .get(n)
+                .map(|i| i.is_e8m0)
+                .or_else(|| self.let_bindings.get(n).map(|v| self.expr_is_e8m0(v)))
+                .unwrap_or(false),
             ExprKind::MethodCall(_, m, _) => m.name == "to_e8m0",
             ExprKind::LatencyAt(inner, _) => self.expr_is_e8m0(inner),
+            // A ternary is an E8M0 value only when both arms are E8M0.
+            // Requiring both arms keeps an incompatible expression from being
+            // silently reinterpreted as a scale by a later `.to_fp32()`.
+            ExprKind::Ternary(_, then_e, else_e) => {
+                self.expr_is_e8m0(then_e) && self.expr_is_e8m0(else_e)
+            }
             _ => false,
         }
     }
@@ -2902,7 +2913,10 @@ impl<'a> FormalCtx<'a> {
                 }
                 _ => None,
             },
-            Ternary(_, th, el) => self.expr_float_tag(th).or_else(|| self.expr_float_tag(el)),
+            Ternary(_, th, el) => match (self.expr_float_tag(th), self.expr_float_tag(el)) {
+                (Some(a), Some(b)) if a == b => Some(a),
+                _ => None,
+            },
             FunctionCall(name, args) if name == "fma" => {
                 args.first().and_then(|a| self.expr_float_tag(a))
             }
@@ -3200,11 +3214,19 @@ impl<'a> FormalCtx<'a> {
                 width: ta.width,
                 signed: ta.signed,
             }),
-            UnaryOp::Neg => Ok(SmtTerm {
-                s: format!("(bvneg {})", ta.s),
-                width: ta.width,
-                signed: true,
-            }),
+            UnaryOp::Neg => {
+                // Unary negation of an unsigned value widens by one bit in
+                // the type checker (UInt<W> -> SInt<W+1>).  Widen before
+                // bvneg: negating at W bits first loses the sign bit for
+                // values >= 2^(W-1) (e.g. -UInt<2>(3) became +1).
+                let width = if ta.signed { ta.width } else { ta.width + 1 };
+                let operand = coerce(ta, width, true);
+                Ok(SmtTerm {
+                    s: format!("(bvneg {})", operand.s),
+                    width,
+                    signed: true,
+                })
+            }
             UnaryOp::RedAnd => {
                 // (= x ~0)
                 let all_ones = bv_all_ones(ta.width);
@@ -5462,7 +5484,13 @@ impl FormalCtx<'_> {
                 Some(match op {
                     UnaryOp::Not => nv((ta.v == 0) as u64, 1, false),
                     UnaryOp::BitNot => nv(!ta.v, ta.width, ta.signed),
-                    UnaryOp::Neg => nv(ta.v.wrapping_neg(), ta.width, true),
+                    UnaryOp::Neg => {
+                        // Mirror encode_unary: unsigned operands widen before
+                        // negation, while signed operands retain their width.
+                        let width = if ta.signed { ta.width } else { ta.width + 1 };
+                        let operand = nv_coerce(ta, width, true)?;
+                        nv(operand.v.wrapping_neg(), width, true)
+                    }
                     UnaryOp::RedAnd => nv((ta.v == nv_mask(ta.width)) as u64, 1, false),
                     UnaryOp::RedOr => nv((ta.v != 0) as u64, 1, false),
                     UnaryOp::RedXor => nv((ta.v.count_ones() & 1) as u64, 1, false),
@@ -5964,16 +5992,25 @@ impl FormalCtx<'_> {
         let recv_tag = self.expr_float_tag(recv);
         match n {
             "to_fp32" => {
-                return match recv_tag {
-                    Some("f32") => Some(r),
-                    Some(tag) => {
-                        let x = nv_coerce(r, float_tag_width(tag), false)?;
-                        self.replay_fp_call(&format!("arch_{tag}_to_f32"), &[x], 32, fns)
+                return if self.expr_is_e8m0(recv) {
+                    Some(self.replay_fp_call(
+                        "arch_e8m0_to_f32",
+                        &[nv_coerce(r, 8, false)?],
+                        32,
+                        fns,
+                    )?)
+                } else {
+                    match recv_tag {
+                        Some("f32") => Some(r),
+                        Some(tag) => {
+                            let x = nv_coerce(r, float_tag_width(tag), false)?;
+                            self.replay_fp_call(&format!("arch_{tag}_to_f32"), &[x], 32, fns)
+                        }
+                        // The encoder passes an integer receiver through
+                        // unconverted; that shape is suspicious, so replay
+                        // declines to mirror it rather than bless it.
+                        None => None,
                     }
-                    // The encoder passes an integer receiver through
-                    // unconverted; that shape is suspicious, so replay
-                    // declines to mirror it rather than bless it.
-                    None => None,
                 };
             }
             "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" | "to_fp6e2m3"

@@ -1,0 +1,31 @@
+// Q1: the domain-DA register `ra` reaches the domain-DB flop `rb` through
+// a module-scope `let` read directly by the DB `seq` — no comb block on
+// the path. A `let` is a comb signal: the comb->seq check must cover it.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Sync>;
+  port da: in UInt<8>;
+  port qa: out UInt<8>;
+  port qb: out UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg ra2: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+    ra2 <= nxt;
+  end seq
+  let nxt: UInt<8> = ra +% 1;
+  seq on clk_b rising
+    rb <= nxt;
+  end seq
+  let qa = ra2;
+  let qb = rb;
+end module M

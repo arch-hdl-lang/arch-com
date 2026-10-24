@@ -1970,6 +1970,24 @@ fn main() -> miette::Result<()> {
                         continue;
                     }
                     if let Some(content) = arch::interface::emit_interface(item) {
+                        // The `.archi` is read as its own file, so it must
+                        // carry the package imports its port/param types use
+                        // (#1086; visibility enforced since #1065).
+                        let uses = arch::interface::interface_uses(
+                            item,
+                            &ast.items,
+                            &file_scopes,
+                            &content,
+                        );
+                        let content = if uses.is_empty() {
+                            content
+                        } else {
+                            let mut s: String =
+                                uses.iter().map(|p| format!("use {p};\n")).collect();
+                            s.push('\n');
+                            s.push_str(&content);
+                            s
+                        };
                         let name = &item.as_construct().name().name;
                         // Write .archi next to the .sv output
                         let archi_dir = files[0]
@@ -2912,16 +2930,47 @@ fn resolve_stdlib_dir() -> Option<PathBuf> {
 fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
     use std::collections::HashSet;
 
-    let base_dir = files
-        .first()
-        .and_then(|f| f.parent())
-        .unwrap_or(std::path::Path::new("."));
-
     let mut all_files: Vec<PathBuf> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut all_defined_modules: HashSet<String> = HashSet::new();
     let mut all_defined_buses: HashSet<String> = HashSet::new();
     let mut queue: Vec<PathBuf> = files.to_vec();
+
+    // Provider choice is deliberately ordered and short-circuiting: a file
+    // beside the source wins over ARCH_LIB_PATH, which wins over stdlib.  The
+    // parent is supplied by the file currently being scanned; using the first
+    // input's parent here breaks transitive imports in subdirectories.
+    let choose_provider = |parent: &std::path::Path, stem: &str, allow_interface: bool| {
+        let local_arch = parent.join(format!("{stem}.arch"));
+        let local_archi = parent.join(format!("{stem}.archi"));
+        if local_arch.exists() {
+            return Some(local_arch);
+        }
+        if allow_interface && local_archi.exists() {
+            return Some(local_archi);
+        }
+        if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
+            for dir in lib_path.split(':') {
+                let dir = std::path::Path::new(dir);
+                let candidate = dir.join(format!("{stem}.arch"));
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                let candidate = dir.join(format!("{stem}.archi"));
+                if allow_interface && candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+        resolve_stdlib_dir().and_then(|stdlib| {
+            let candidate = stdlib.join(format!("{stem}.arch"));
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            let candidate = stdlib.join(format!("{stem}.archi"));
+            (allow_interface && candidate.exists()).then_some(candidate)
+        })
+    };
 
     // Process files, discovering new dependencies via `use`
     while let Some(file) = queue.pop() {
@@ -2930,6 +2979,8 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
             continue;
         }
         seen.insert(canon);
+
+        let base_dir = file.parent().unwrap_or(std::path::Path::new("."));
 
         let source = fs::read_to_string(&file).into_diagnostic()?;
         let tokens = lexer::tokenize(&source)
@@ -2947,34 +2998,11 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
             if let arch::ast::Item::Use(u) = item {
                 use_names.insert(u.name.name.clone());
                 // Resolution order:
-                //   1. Same-directory relative path
+                //   1. Same-directory relative .arch source (use never selects .archi)
                 //   2. ARCH_LIB_PATH entries (colon-separated)
                 //   3. <install>/stdlib/ (unless ARCH_NO_STDLIB=1)
-                let file_name = format!("{}.arch", u.name.name);
-                let same_dir = base_dir.join(&file_name);
-                if same_dir.exists() {
-                    deps.push(same_dir);
-                    continue;
-                }
-                let mut found = false;
-                if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
-                    for dir in lib_path.split(':') {
-                        let p = std::path::Path::new(dir).join(&file_name);
-                        if p.exists() {
-                            deps.push(p);
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if found {
-                    continue;
-                }
-                if let Some(stdlib) = resolve_stdlib_dir() {
-                    let p = stdlib.join(&file_name);
-                    if p.exists() {
-                        deps.push(p);
-                    }
+                if let Some(provider) = choose_provider(base_dir, &u.name.name, false) {
+                    deps.push(provider);
                 }
             }
         }
@@ -3081,40 +3109,9 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                 if all_defined_modules.contains(inst_name.as_str()) {
                     continue;
                 }
-                // Look for .arch first, then .archi
-                let arch_path = base_dir.join(format!("{inst_name}.arch"));
-                let archi_path = base_dir.join(format!("{inst_name}.archi"));
-                if arch_path.exists() {
-                    deps.push(arch_path);
-                } else if archi_path.exists() {
-                    deps.push(archi_path);
-                }
-                // Also check ARCH_LIB_PATH
-                if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
-                    for dir in lib_path.split(':') {
-                        let p = std::path::Path::new(dir).join(format!("{inst_name}.archi"));
-                        if p.exists() {
-                            deps.push(p);
-                            break;
-                        }
-                        let p = std::path::Path::new(dir).join(format!("{inst_name}.arch"));
-                        if p.exists() {
-                            deps.push(p);
-                            break;
-                        }
-                    }
-                }
-                // Fall back to the shipped standard library.
-                if let Some(stdlib) = resolve_stdlib_dir() {
-                    let p = stdlib.join(format!("{inst_name}.arch"));
-                    if p.exists() {
-                        deps.push(p);
-                        continue;
-                    }
-                    let p = stdlib.join(format!("{inst_name}.archi"));
-                    if p.exists() {
-                        deps.push(p);
-                    }
+                // Choose one provider, preferring local .arch/.archi.
+                if let Some(provider) = choose_provider(base_dir, inst_name, true) {
+                    deps.push(provider);
                 }
             }
         }
@@ -3146,40 +3143,9 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
             if use_names.contains(bus_name.as_str()) {
                 continue;
             }
-            // Same-directory `.arch` first, then `.archi`.
-            let arch_path = base_dir.join(format!("{bus_name}.arch"));
-            let archi_path = base_dir.join(format!("{bus_name}.archi"));
-            if arch_path.exists() {
-                deps.push(arch_path);
-            } else if archi_path.exists() {
-                deps.push(archi_path);
-            }
-            // Then ARCH_LIB_PATH entries.
-            if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
-                for dir in lib_path.split(':') {
-                    let p = std::path::Path::new(dir).join(format!("{bus_name}.arch"));
-                    if p.exists() {
-                        deps.push(p);
-                        break;
-                    }
-                    let p = std::path::Path::new(dir).join(format!("{bus_name}.archi"));
-                    if p.exists() {
-                        deps.push(p);
-                        break;
-                    }
-                }
-            }
-            // Finally the shipped standard library.
-            if let Some(stdlib) = resolve_stdlib_dir() {
-                let p = stdlib.join(format!("{bus_name}.arch"));
-                if p.exists() {
-                    deps.push(p);
-                    continue;
-                }
-                let p = stdlib.join(format!("{bus_name}.archi"));
-                if p.exists() {
-                    deps.push(p);
-                }
+            // Choose one provider, preferring local .arch/.archi.
+            if let Some(provider) = choose_provider(base_dir, &bus_name, true) {
+                deps.push(provider);
             }
         }
 
@@ -4093,20 +4059,17 @@ fn run_check_multi_opts_with_thread_map_and_params(
         apply_top_param_overrides(&mut parsed_ast, overrides)?;
     }
 
-    // Resolve module-scope `type Name = ...;` aliases by inlining them at
-    // every use site. Runs before elaboration so downstream passes see
-    // aliases as if hand-inlined.
+    // Elaborate (alias substitution, then generate expansion). The source
+    // file ranges must reach the alias pass so a package alias is substituted
+    // only in files that can see its package; an unscoped pass would inline
+    // it into files that never `use` the package.
     let source_file_scopes: Vec<std::ops::Range<usize>> = ms
         .segments
         .iter()
         .map(|(start, end, _, _)| *start..*end)
         .collect();
-    let parsed_ast =
-        arch::type_alias::resolve_type_aliases_with_file_scopes(parsed_ast, &source_file_scopes)
-            .map_err(|errs| ms.report_errors(errs))?;
-
-    // Elaborate (expand generate blocks)
-    let ast = elaborate::elaborate(parsed_ast).map_err(|errs| ms.report_errors(errs))?;
+    let ast = elaborate::elaborate_with_file_scopes(parsed_ast, &source_file_scopes)
+        .map_err(|errs| ms.report_errors(errs))?;
 
     // Expand `auto;` inside inst bodies into ordinary connections. Runs
     // here — after elaboration, before every lowering — because at this
