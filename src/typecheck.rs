@@ -4811,11 +4811,41 @@ impl<'a> TypeChecker<'a> {
                     module_name,
                     local_types,
                 );
-                // Return type from first non-wildcard arm
-                match arms.first() {
-                    Some(arm) => self.resolve_expr_type(&arm.value, module_name, local_types),
-                    None => Ty::Error,
+                // Every arm contributes to the result type.  Resolve all arms so
+                // undefined names and incompatible value types cannot hide behind
+                // a valid first arm.  A narrower value is still compatible with a
+                // wider arm (and with a wider enclosing target), so retain the
+                // widest compatible scalar type for the enclosing assignment check.
+                let Some(first) = arms.first() else {
+                    return Ty::Error;
+                };
+                let mut result_ty = self.resolve_expr_type(&first.value, module_name, local_types);
+                for arm in arms.iter().skip(1) {
+                    let arm_ty = self.resolve_expr_type(&arm.value, module_name, local_types);
+                    if matches!(arm_ty, Ty::Error | Ty::Todo) {
+                        continue;
+                    }
+                    if result_ty == Ty::Error {
+                        continue;
+                    }
+                    if result_ty == Ty::Todo {
+                        result_ty = arm_ty;
+                        continue;
+                    }
+                    if types_compatible(&result_ty, &arm_ty) {
+                        continue;
+                    }
+                    if types_compatible(&arm_ty, &result_ty) {
+                        result_ty = arm_ty;
+                        continue;
+                    }
+                    self.errors.push(CompileError::type_mismatch(
+                        &result_ty.display(),
+                        &arm_ty.display(),
+                        arm.value.span,
+                    ));
                 }
+                result_ty
             }
             ExprKind::Concat(parts) => {
                 // Total width = sum of each part's width (Bool=1, UInt<N>=N, else 1)
