@@ -117,6 +117,17 @@ class ArchSignal:
         if self._is_param:
             raise AttributeError(f"Cannot write to parameter '{self._name}'")
         masked = _coerce_integer(value) & ((1 << self._width) - 1)
+        # Scalar SInt ports up to 64 bits are exposed by pybind as their
+        # corresponding signed C++ carrier (int8_t through int64_t).  Pass a
+        # declared-width signed value to those properties after masking;
+        # passing the positive bit pattern (e.g. 0xff for SInt<8>) exceeds
+        # the carrier's range and pybind rejects an otherwise legal write.
+        # Wide bindings use arbitrary-width Python integers and must retain
+        # the raw masked bit pattern.
+        if self._signed and self._width <= 64 and self._width:
+            sign_bit = 1 << (self._width - 1)
+            if masked & sign_bit:
+                masked -= 1 << self._width
         setattr(self._dut._model, self._cpp_name, masked)
         if self._is_input:
             marker = getattr(

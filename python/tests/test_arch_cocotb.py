@@ -5,6 +5,7 @@ import unittest
 
 import cocotb
 from arch_cocotb.dut import ArchDUT
+from arch_cocotb.signal import ArchSignalValue
 from arch_cocotb.simulator import ArchSimulator
 from arch_cocotb.triggers import _to_ps, _unit_ps
 from cocotb.clock import Clock
@@ -54,6 +55,21 @@ class FakeModel:
         if self._clock_previous == 0 and self.clk != 0:
             self.q = self.data
         self._clock_previous = self.clk
+
+
+class SignedScalarModel:
+    """Scalar fields with the same metadata as generated pybind bindings."""
+
+    def __init__(self):
+        for name, *_ in self._port_info():
+            setattr(self, name, 0)
+
+    @staticmethod
+    def _port_info():
+        return [
+            (f"sint{width}", width, True, True, False, False)
+            for width in (7, 8, 16, 32, 64, 65)
+        ] + [("uint8", 8, False, True, False, False)]
 
 
 class IdlessAxiModel:
@@ -378,6 +394,43 @@ class HandleTests(unittest.TestCase):
             self.assertEqual(int(logic), 8)
 
         run_native(body)
+
+    def test_signed_scalar_writes_use_declared_width_for_native_carrier(self):
+        dut = ArchDUT(SignedScalarModel, name="dut")
+
+        for width in (7, 8, 16, 32, 64):
+            signal = getattr(dut, f"sint{width}")
+            all_ones = (1 << width) - 1
+            minimum = -(1 << (width - 1))
+            for value in (-1, minimum, all_ones, 3):
+                signal.value = value
+                expected = value & all_ones
+                if expected & (1 << (width - 1)):
+                    expected -= 1 << width
+                self.assertEqual(getattr(dut._model, f"sint{width}"), expected)
+                self.assertEqual(signal.value.to_signed(), expected)
+
+            # The same bit pattern may arrive through cocotb-compatible value
+            # objects rather than a plain Python integer.
+            signal.value = LogicArray(all_ones, width=width)
+            self.assertEqual(signal.value.signed_integer, -1)
+            signal.value = ArchSignalValue(all_ones, width, signed=True)
+            self.assertEqual(signal.value.signed_integer, -1)
+
+        # Narrow signed values still use their declared width, while the
+        # arbitrary-width binding keeps its positive masked bit pattern.
+        dut.sint7.value = 0x7F
+        self.assertEqual(dut.sint7.value.signed_integer, -1)
+        dut.sint65.value = -1
+        self.assertEqual(dut._model.sint65, (1 << 65) - 1)
+        dut.sint65.value = (1 << 65) - 1
+        self.assertEqual(dut._model.sint65, (1 << 65) - 1)
+
+        # Unsigned scalar bindings retain the positive masked value.
+        dut.uint8.value = -1
+        self.assertEqual(dut._model.uint8, 0xFF)
+        dut.uint8.value = 0x1FF
+        self.assertEqual(dut._model.uint8, 0xFF)
 
     def test_idless_axi_gets_single_id_compatibility_handles(self):
         for model, input_ids in (
