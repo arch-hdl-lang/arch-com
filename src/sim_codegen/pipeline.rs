@@ -1489,6 +1489,7 @@ impl<'a> SimCodegen<'a> {
             decl_types: None,
             struct_defs: None,
             block_helpers: None,
+            function_names: None,
         };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {

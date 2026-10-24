@@ -314,6 +314,8 @@ pub(super) struct Ctx<'a> {
     /// `coverage` above. A `BTreeSet` keeps the emitted order stable.
     pub(super) block_helpers:
         Option<&'a std::cell::RefCell<std::collections::BTreeSet<crate::fp_block::BlockHelper>>>,
+    /// Source-level local function name → emitted C++ name for this module.
+    pub(super) function_names: Option<&'a HashMap<String, String>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -367,6 +369,7 @@ impl<'a> Ctx<'a> {
             decl_types: None,
             struct_defs: None,
             block_helpers: None,
+            function_names: None,
         }
     }
 
@@ -458,6 +461,14 @@ impl<'a> Ctx<'a> {
         self
     }
 
+    pub(super) fn with_function_names(
+        mut self,
+        names: Option<&'a HashMap<String, String>>,
+    ) -> Self {
+        self.function_names = names;
+        self
+    }
+
     pub(super) fn posedge(mut self) -> Self {
         self.posedge_lhs = true;
         self
@@ -502,6 +513,13 @@ impl<'a> Ctx<'a> {
         } else {
             name.to_string()
         }
+    }
+
+    pub(super) fn resolve_function_name(&self, name: &str) -> String {
+        self.function_names
+            .and_then(|names| names.get(name))
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
     }
 
     /// Emit a signal read.
@@ -973,6 +991,7 @@ pub(super) fn lower_vec_method_cpp(
             decl_types: ctx.decl_types,
             struct_defs: ctx.struct_defs,
             block_helpers: None,
+            function_names: ctx.function_names,
         };
         // The sub map must outlive the cpp_expr call. We keep `sub` as a
         // stack-local binding whose lifetime covers the call.
@@ -1682,7 +1701,11 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 }
                 return format!("{}({}, {})", h.cpp_name(), arg_strs[0], arg_strs[1]);
             }
-            format!("{name}({})", arg_strs.join(", "))
+            format!(
+                "{}({})",
+                ctx.resolve_function_name(name),
+                arg_strs.join(", ")
+            )
         }
 
         ExprKind::ExprMatch(scrutinee, arms) => {
