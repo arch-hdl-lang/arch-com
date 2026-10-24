@@ -27,6 +27,7 @@ module tb;
   ConfigSync dut(.*);
   task src; begin #1 src_clk = 1; #1 src_clk = 0; end endtask
   task dst; begin #1 dst_clk = 1; #1 dst_clk = 0; end endtask
+  task both; begin #1 src_clk = 1; dst_clk = 1; #1 src_clk = 0; dst_clk = 0; end endtask
   task check_value; input [7:0] value; begin
     if (data_out !== value) $fatal(1, "expected data_out=%h, got %h", value, data_out);
   end endtask
@@ -42,8 +43,8 @@ module tb;
     rst = 1; dst(); src(); check_value(0);  // both destination output and source state reset
     rst = 0; data_in = 8'h3c; src(); dst(); dst(); dst(); check_value(8'h3c);
     rst = 1; dst(); src(); rst = 0; data_in = 8'h5a;
-    src(); dst(); check_value(0); src(); dst(); check_value(0);
-    src(); dst(); check_value(0); src(); dst(); check_value(8'h5a);
+    both(); check_value(0); both(); check_value(0);
+    both(); check_value(0); both(); check_value(8'h5a);
     $finish;
   end
 endmodule
@@ -79,9 +80,9 @@ int main() {
 }
 "#;
 
-fn available(tool: &str) -> bool {
+fn available(tool: &str, version_arg: &str) -> bool {
     Command::new(tool)
-        .arg("--version")
+        .arg(version_arg)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -93,7 +94,7 @@ fn handshake_destination_capture_native_and_sv() {
     let src = td.path().join("ConfigSync.arch");
     fs::write(&src, SOURCE).expect("write source");
 
-    if available("iverilog") && available("vvp") {
+    if available("iverilog", "-V") && available("vvp", "-V") {
         let build = Command::new(env!("CARGO_BIN_EXE_arch"))
             .args(["build"])
             .arg(&src)
@@ -124,7 +125,8 @@ fn handshake_destination_capture_native_and_sv() {
         let run = Command::new("vvp").arg(&vvp).output().expect("run vvp");
         assert!(
             run.status.success(),
-            "SV handshake regression failed: {}",
+            "SV handshake regression failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
             String::from_utf8_lossy(&run.stderr)
         );
     }
