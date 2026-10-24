@@ -1191,19 +1191,12 @@ fn tlm_bus_field(bus: &str, field: &str, span: Span) -> Expr {
 /// conversion keeps this helper type-correct without teaching integer
 /// literals about scale types.
 fn tlm_zero_for_type(ty: &TypeExpr, span: Span) -> Expr {
-    if let TypeExpr::SInt(width) = ty {
+    if matches!(ty, TypeExpr::SInt(_)) {
         return Expr::new(
-            ExprKind::MethodCall(
-                Box::new(Expr::new(
-                    ExprKind::Signed(Box::new(Expr::new(
-                        ExprKind::Literal(LitKind::Dec(0)),
-                        span,
-                    ))),
-                    span,
-                )),
-                Ident::new("resize".to_string(), span),
-                vec![(*width.clone())],
-            ),
+            ExprKind::Signed(Box::new(Expr::new(
+                ExprKind::Literal(LitKind::Dec(0)),
+                span,
+            ))),
             span,
         );
     }
