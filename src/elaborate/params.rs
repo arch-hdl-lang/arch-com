@@ -651,6 +651,9 @@ pub(super) fn recompute_derived_params(
         }
         if let Some(v) = try_eval_i64(default, effective) {
             effective.insert(p.name.name.clone(), v);
+            // Make the normalized value visible to later derived defaults in
+            // declaration order (e.g. D=BASE+1, then E=D for SInt<8> D).
+            normalize_integer_params(std::slice::from_ref(p), effective);
         }
     }
 }

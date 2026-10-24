@@ -103,3 +103,38 @@ end module FloatParam
         "unexpected error: {err:?}"
     );
 }
+
+#[test]
+fn derived_signed_param_is_normalized_before_downstream_defaults() {
+    let source = r#"
+module DerivedSigned
+  param BASE: SInt<8> = 1;
+  param D: SInt<8> = BASE + 1;
+  param E: const = D;
+  port clk: in Clock<SysDomain>;
+  generate_if E < 0
+    assert negative: true;
+  generate_else
+    assert nonnegative: true;
+  end generate_if
+end module DerivedSigned
+
+module TopDerivedSigned
+  port clk: in Clock<SysDomain>;
+  inst wrapped: DerivedSigned
+    param BASE = 127;
+    clk <- clk;
+  end inst wrapped
+end module TopDerivedSigned
+"#;
+
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("negative"),
+        "downstream const should observe normalized SInt<8> D=-128:\n{sv}"
+    );
+    assert!(
+        sv.contains("parameter signed [7:0] D = 8'd128"),
+        "derived signed parameter should preserve its normalized bit pattern:\n{sv}"
+    );
+}
