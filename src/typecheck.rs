@@ -4659,7 +4659,30 @@ impl<'a> TypeChecker<'a> {
                     UnaryOp::Not => Ty::Bool,
                     UnaryOp::BitNot => t,
                     UnaryOp::Neg => {
-                        if let Ty::UInt(w) = t {
+                        // Storage-only floats and unsigned scale carriers have
+                        // no scalar arithmetic surface (spec §3.9/§9). Unary
+                        // negation must use the same frontend contract as the
+                        // binary arithmetic gates below, rather than silently
+                        // passing the packed carrier to a backend.
+                        if matches!(t, Ty::E8M0 | Ty::UE4M3) {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "operator `-` is not supported on {} — it is a block SCALE type, not an arithmetic type. Use `.to_fp32()` to obtain the scale value and compute on that",
+                                    t.display()
+                                ),
+                                expr.span,
+                            ));
+                            Ty::Error
+                        } else if t.is_float() && !t.is_float_arith() {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "operator `-` is not supported on {} — it is a storage-only float format (conversions and literals only). Convert with `.to_fp32()`, compute, then convert back",
+                                    t.display()
+                                ),
+                                expr.span,
+                            ));
+                            Ty::Error
+                        } else if let Ty::UInt(w) = t {
                             Ty::SInt(w + 1)
                         } else {
                             t
