@@ -2394,9 +2394,10 @@ impl<'a> FormalCtx<'a> {
             Some(w) if !w.is_empty() => w,
             _ => return Ok(format!("{reg}_{t}")), // hold
         };
-        // Build from bottom up: start with "hold" and wrap each (cond, rhs) as outer ite.
+        // Start with the hold value and fold source order forward so each later
+        // assignment wraps the prior value and therefore has priority.
         let mut inner = format!("{reg}_{t}");
-        for (cond_expr, rhs_expr) in writes.iter().rev() {
+        for (cond_expr, rhs_expr) in writes {
             let c = self.encode_expr(cond_expr, t, Some((1, false)))?;
             let r = self.encode_expr(rhs_expr, t, Some((width, signed)))?;
             let c_bool = as_bool(&c);
@@ -2412,9 +2413,10 @@ impl<'a> FormalCtx<'a> {
         width: u32,
         signed: bool,
     ) -> Result<String, CompileError> {
-        // Fallthrough: '0 (zero of width)
+        // Fallthrough: '0 (zero of width). Fold source order forward so the
+        // last executed assignment wins, matching blocking assignment semantics.
         let mut inner = bv_zero(width);
-        for a in assigns.iter().rev() {
+        for a in assigns {
             let rhs = self.encode_expr(&a.value, t, Some((width, signed)))?;
             // AND all guard conditions
             let cond_expr = and_all(&a.guard);
