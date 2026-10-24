@@ -85,6 +85,23 @@ module Target
     return x;
   end thread s.scale
 end module Target
+
+module Initiator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator NarrowMem;
+  port a: in FP4E2M1;
+  port b: in FP6E2M3;
+  port c: in E8M0;
+  reg r4: FP4E2M1 reset rst => 0.0;
+  reg r6: FP6E2M3 reset rst => 0.0;
+  reg rs: E8M0 reset rst => 1.0.to_e8m0();
+  thread main on clk rising, rst high
+    r4 <= m.fp4(a);
+    r6 <= m.fp6(b);
+    rs <= m.scale(c);
+  end thread main
+end module Initiator
 "#,
     )
     .expect("write narrow TLM source");
@@ -114,10 +131,11 @@ module M
   port m: initiator SignedMem;
   port x: in SInt<16>;
   port y: out SInt<8>;
-  let narrowed: SInt<8> = x;
+  reg r: SInt<8> reset rst => signed(0);
   thread main on clk rising, rst high
-    y <= m.scale(x);
+    r <= m.scale(x);
   end thread main
+  comb y = r; end comb
 end module M
 "#,
     )
@@ -162,5 +180,38 @@ end module M
     assert!(
         !out.status.success() && report.contains("ternary branches"),
         "expected ternary rejection:\n{report}"
+    );
+}
+
+#[test]
+fn mixed_unsigned_tlm_arguments_typecheck() {
+    let td = tempfile::tempdir().unwrap();
+    let source = td.path().join("MixedUnsigned.arch");
+    std::fs::write(
+        &source,
+        r#"bus Mem
+  tlm_method read(x: UInt<8>) -> UInt<8>: blocking;
+end bus Mem
+use Mem;
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator Mem;
+  port a: in UInt<4>;
+  port b: in UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  thread main on clk rising, rst high
+    r <= m.read(a);
+    r <= m.read(b);
+  end thread main
+end module M
+"#,
+    )
+    .unwrap();
+    let out = arch_check(&source);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
