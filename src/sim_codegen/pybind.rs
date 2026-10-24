@@ -6,6 +6,18 @@
 use super::*;
 
 impl<'a> SimCodegen<'a> {
+    fn mangle_local_function(module: &str, function: &str) -> String {
+        // Length prefixes keep component boundaries unambiguous: A_B/C and
+        // A/B_C must never collapse to the same native symbol.
+        format!(
+            "__arch_local_m{}_{}_f{}_{}",
+            module.len(),
+            module,
+            function.len(),
+            function
+        )
+    }
+
     pub fn new(
         symbols: &'a SymbolTable,
         source: &'a SourceFile,
@@ -88,38 +100,60 @@ impl<'a> SimCodegen<'a> {
         // and module-internal `function` items. Module-internal functions
         // were previously dropped — calls in the same module's comb body
         // emitted as bare identifiers, which then failed C++ compile with
-        // "use of undeclared identifier <fn_name>". Hoisting to VFunctions.h
-        // mirrors how top-level free functions are exposed; name collisions
-        // across modules are the caller's responsibility (same as today).
-        //
-        // Dedupe by name: a module-internal `function fn` shared between
-        // a parent module and a thread-lowered submodule (the lowering
-        // copies the function decl into the new submodule so its body
-        // can call it) must only emit once into VFunctions.h, otherwise
-        // we get "redefinition of <fn>".
-        let mut fn_items: Vec<&FunctionDecl> = Vec::new();
-        let mut seen_fn_names: HashSet<String> = HashSet::new();
+        // "use of undeclared identifier <fn_name>". Module-local functions
+        // are qualified in the native backend because VFunctions.h is shared
+        // by every generated module. Exact cloned declarations (created by
+        // thread lowering) deliberately reuse the same emitted definition.
+        let local_names = self.local_function_names();
+        let mut fn_items: Vec<FunctionEmit<'_>> = Vec::new();
+        let mut seen_global_names: HashSet<String> = HashSet::new();
+        let mut seen_local_decls: HashSet<String> = HashSet::new();
         for i in &self.source.items {
-            let candidates: Vec<&FunctionDecl> = match i {
-                Item::Function(f) => vec![f],
-                Item::Package(p) => p.functions.iter().collect(),
-                Item::Module(m) => m
-                    .body
-                    .iter()
-                    .filter_map(|b| {
+            match i {
+                Item::Function(f) => {
+                    if seen_global_names.insert(f.name.name.clone()) {
+                        fn_items.push(FunctionEmit {
+                            decl: f,
+                            cpp_name: f.name.name.clone(),
+                            scope: None,
+                        });
+                    }
+                }
+                Item::Package(p) => {
+                    for f in &p.functions {
+                        if seen_global_names.insert(f.name.name.clone()) {
+                            fn_items.push(FunctionEmit {
+                                decl: f,
+                                cpp_name: f.name.name.clone(),
+                                scope: None,
+                            });
+                        }
+                    }
+                }
+                Item::Module(m) => {
+                    for f in m.body.iter().filter_map(|b| {
                         if let ModuleBodyItem::Function(f) = b {
                             Some(f)
                         } else {
                             None
                         }
-                    })
-                    .collect(),
-                _ => vec![],
-            };
-            for f in candidates {
-                if seen_fn_names.insert(f.name.name.clone()) {
-                    fn_items.push(f);
+                    }) {
+                        let fingerprint = format!("{}:{f:?}", f.name.name);
+                        if seen_local_decls.insert(fingerprint) {
+                            let cpp_name = local_names
+                                .get(&m.name.name)
+                                .and_then(|names| names.get(&f.name.name))
+                                .cloned()
+                                .unwrap_or_else(|| f.name.name.clone());
+                            fn_items.push(FunctionEmit {
+                                decl: f,
+                                cpp_name,
+                                scope: Some(m.name.name.clone()),
+                            });
+                        }
+                    }
                 }
+                _ => {}
             }
         }
         if !fn_items.is_empty() {
@@ -215,6 +249,32 @@ impl<'a> SimCodegen<'a> {
             }
         }
         models
+    }
+
+    /// Build the native C++ names for module-local functions. The elaborator
+    /// copies parent functions into thread submodules; those copies retain
+    /// their source spans, so an exact declaration fingerprint identifies a
+    /// deliberate copy and lets it share the parent's emitted definition.
+    pub(super) fn local_function_names(&self) -> HashMap<String, HashMap<String, String>> {
+        let mut names = HashMap::new();
+        let mut canonical: HashMap<String, String> = HashMap::new();
+        for item in &self.source.items {
+            let Item::Module(m) = item else { continue };
+            let mut module_names = HashMap::new();
+            for body in &m.body {
+                let ModuleBodyItem::Function(f) = body else {
+                    continue;
+                };
+                let fingerprint = format!("{}:{f:?}", f.name.name);
+                let cpp_name = canonical
+                    .entry(fingerprint)
+                    .or_insert_with(|| Self::mangle_local_function(&m.name.name, &f.name.name))
+                    .clone();
+                module_names.insert(f.name.name.clone(), cpp_name);
+            }
+            names.insert(m.name.name.clone(), module_names);
+        }
+        names
     }
 
     /// Generate pybind11 wrapper `.cpp` files for each model.

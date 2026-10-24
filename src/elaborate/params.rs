@@ -172,6 +172,7 @@ pub(crate) fn compute_all_variants(
                 for raw in raw_list {
                     let mut effective = defaults.clone();
                     effective.extend(raw.iter().map(|(k, v)| (k.clone(), *v)));
+                    normalize_integer_params(&m.params, &mut effective);
                     // Re-evaluate derived params (defaults that reference other
                     // params) against the overridden values. Without this, an
                     // inst override of a base param (`param W = 5`) leaves a
@@ -180,6 +181,7 @@ pub(crate) fn compute_all_variants(
                     // derived param resolve to the wrong width. Params the inst
                     // explicitly overrode are pinned and never recomputed.
                     recompute_derived_params(&m.params, raw, &mut effective);
+                    normalize_integer_params(&m.params, &mut effective);
                     if !effective_sets.contains(&effective) {
                         effective_sets.push(effective);
                     }
@@ -230,6 +232,66 @@ fn find_varying_params(param_sets: &[HashMap<String, i64>]) -> Vec<String> {
 
     varying.sort(); // deterministic order
     varying
+}
+
+/// Normalize values represented in the elaboration `i64` environment to the
+/// declared packed integer type.  Sized literals are bit patterns, so an
+/// all-ones SInt<8> value is -1 for constant folding even though its emitted
+/// SV initializer remains 8'd255.
+fn normalize_integer_params(params: &[ParamDecl], values: &mut HashMap<String, i64>) {
+    for p in params {
+        let Some(value) = values.get(&p.name.name).copied() else {
+            continue;
+        };
+        let ty = match &p.kind {
+            ParamKind::Logic(ty) => ty,
+            _ => continue,
+        };
+        let normalized = match ty {
+            TypeExpr::UInt(width) | TypeExpr::SInt(width) => {
+                let Some(width) = try_eval_i64(width, values).filter(|&w| w > 0) else {
+                    continue;
+                };
+                normalize_integer_bits(value, width as u32, matches!(ty, TypeExpr::SInt(_)))
+            }
+            TypeExpr::Bool | TypeExpr::Bit => i64::from(value != 0),
+            _ => continue,
+        };
+        values.insert(p.name.name.clone(), normalized);
+    }
+}
+
+fn normalize_integer_bits(value: i64, width: u32, signed: bool) -> i64 {
+    if width >= 64 {
+        return value;
+    }
+    let mask = (1u64 << width) - 1;
+    let bits = (value as u64) & mask;
+    if signed && (bits & (1u64 << (width - 1))) != 0 {
+        (bits | !mask) as i64
+    } else {
+        bits as i64
+    }
+}
+
+fn typed_integer_literal_bits(
+    ty: &TypeExpr,
+    value: i64,
+    param_vals: &HashMap<String, i64>,
+) -> Option<(u32, u64)> {
+    match ty {
+        TypeExpr::UInt(width) | TypeExpr::SInt(width) => {
+            let width = try_eval_i64(width, param_vals).filter(|&w| w > 0)? as u32;
+            let bits = if width < 64 {
+                (value as u64) & ((1u64 << width) - 1)
+            } else {
+                value as u64
+            };
+            Some((width, bits))
+        }
+        TypeExpr::Bool | TypeExpr::Bit => Some((1, (value != 0) as u64)),
+        _ => None,
+    }
 }
 
 fn make_variant_name(base: &str, params: &HashMap<String, i64>, varying: &[String]) -> String {
@@ -360,6 +422,27 @@ pub(crate) fn elaborate_module_variant(
                 module_params,
                 &param_vals,
             )),
+            ModuleBodyItem::Generate(GenerateDecl::For(mut gf)) => {
+                // Shape-stable generate-for bodies remain as SV genvar loops.
+                // Rewrite their child module names here just as we do for
+                // ordinary instances.  Loop-dependent overrides are rejected
+                // by the shape classifier and take the unrolled path, so the
+                // enclosing parameter map is sufficient for every preserved
+                // instance in this branch.
+                for item in &mut gf.items {
+                    if let GenItem::Inst(inst) = item {
+                        let rewritten = rewrite_inst(
+                            inst.clone(),
+                            module_variants,
+                            module_defaults,
+                            module_params,
+                            &param_vals,
+                        );
+                        *inst = rewritten;
+                    }
+                }
+                ModuleBodyItem::Generate(GenerateDecl::For(gf))
+            }
             other => other,
         })
         .collect();
@@ -439,18 +522,22 @@ pub(crate) fn elaborate_module_variant(
                     // Verilator's WIDTHTRUNC fires on the parameter init when
                     // the typed width is narrower. Emit a sized literal that
                     // matches the declared width so the init is width-clean.
-                    let lit = if let ParamKind::WidthConst(hi, lo) = &p.kind {
-                        let hi_val = try_eval_i64(hi, &param_vals);
-                        let lo_val = try_eval_i64(lo, &param_vals);
-                        match (hi_val, lo_val) {
-                            (Some(h), Some(l)) if h >= l => {
-                                let width = (h - l + 1) as u32;
-                                LitKind::Sized(width, val as u64)
+                    let lit = match &p.kind {
+                        ParamKind::WidthConst(hi, lo) => {
+                            let hi_val = try_eval_i64(hi, &param_vals);
+                            let lo_val = try_eval_i64(lo, &param_vals);
+                            match (hi_val, lo_val) {
+                                (Some(h), Some(l)) if h >= l => {
+                                    let width = (h - l + 1) as u32;
+                                    LitKind::Sized(width, val as u64)
+                                }
+                                _ => LitKind::Dec(val as u64),
                             }
-                            _ => LitKind::Dec(val as u64),
                         }
-                    } else {
-                        LitKind::Dec(val as u64)
+                        ParamKind::Logic(ty) => typed_integer_literal_bits(ty, val, &param_vals)
+                            .map(|(width, bits)| LitKind::Sized(width, bits))
+                            .unwrap_or(LitKind::Dec(val as u64)),
+                        _ => LitKind::Dec(val as u64),
                     };
                     p.default = Some(Expr::new(ExprKind::Literal(lit), p.name.span));
                 }
@@ -503,7 +590,9 @@ fn rewrite_inst(
     let mut effective = defaults;
     effective.extend(raw.iter().map(|(name, value)| (name.clone(), *value)));
     if let Some(params) = module_params.get(&inst.module_name.name) {
+        normalize_integer_params(params, &mut effective);
         recompute_derived_params(params, &raw, &mut effective);
+        normalize_integer_params(params, &mut effective);
     }
 
     // Find matching variant
@@ -575,6 +664,9 @@ pub(super) fn recompute_derived_params(
         }
         if let Some(v) = try_eval_i64(default, effective) {
             effective.insert(p.name.name.clone(), v);
+            // Make the normalized value visible to later derived defaults in
+            // declaration order (e.g. D=BASE+1, then E=D for SInt<8> D).
+            normalize_integer_params(std::slice::from_ref(p), effective);
         }
     }
 }
@@ -609,6 +701,20 @@ pub(crate) fn compute_defaults_with_enums(
                     }
                 }
             }
+            // Logic-typed integer params participate in the same constant
+            // environment as untyped/width-qualified params.  Float formats
+            // also use ParamKind::Logic, but their defaults are bit patterns
+            // and are intentionally left to their existing float handling.
+            ParamKind::Logic(
+                TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit,
+            ) => {
+                if let Some(default) = &p.default {
+                    if let Some(v) = try_eval_i64(default, &map) {
+                        map.insert(p.name.name.clone(), v);
+                        normalize_integer_params(std::slice::from_ref(p), &mut map);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -618,6 +724,7 @@ pub(crate) fn compute_defaults_with_enums(
 /// Evaluate an expression to an i64 using `param_vals` for identifier lookups.
 pub fn try_eval_i64(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<i64> {
     match &expr.kind {
+        ExprKind::Bool(b) => Some(i64::from(*b)),
         ExprKind::Literal(LitKind::Dec(v)) => Some(*v as i64),
         ExprKind::Literal(LitKind::Hex(v)) => Some(*v as i64),
         ExprKind::Literal(LitKind::Bin(v)) => Some(*v as i64),
@@ -737,8 +844,6 @@ pub fn try_eval_i64(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<i6
                 try_eval_i64(else_expr, param_vals)
             }
         }
-        // Bool literals
-        ExprKind::Bool(b) => Some(if *b { 1 } else { 0 }),
         ExprKind::Clog2(arg) => {
             let v = try_eval_i64(arg, param_vals)? as u64;
             if v <= 1 {

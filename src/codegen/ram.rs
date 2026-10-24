@@ -363,9 +363,19 @@ impl<'a> Codegen<'a> {
                     match write_mode {
                         RamWriteMode::WriteFirst => {
                             if has_wen {
+                                self.line(&format!("if ({pfx}_wen) begin"));
+                                self.indent += 1;
                                 self.line(&format!("mem[{pfx}_addr] <= {pfx}_wdata;"));
+                                self.line(&format!("{rdata_r} <= {pfx}_wdata;"));
+                                self.indent -= 1;
+                                self.line("end else begin");
+                                self.indent += 1;
+                                self.line(&format!("{rdata_r} <= mem[{pfx}_addr];"));
+                                self.indent -= 1;
+                                self.line("end");
+                            } else {
+                                self.line(&format!("{rdata_r} <= mem[{pfx}_addr];"));
                             }
-                            self.line(&format!("{rdata_r} <= mem[{pfx}_addr];"));
                         }
                         RamWriteMode::ReadFirst => {
                             self.line(&format!("{rdata_r} <= mem[{pfx}_addr];"));

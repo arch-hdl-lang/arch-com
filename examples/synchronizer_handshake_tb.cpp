@@ -1,8 +1,8 @@
-#include "BusSync.h"
+#include "VBusSync.h"
 #include <cstdio>
 
 int main() {
-    BusSync dut;
+    VBusSync dut;
     int errors = 0;
 
     // Reset

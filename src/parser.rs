@@ -4594,6 +4594,14 @@ impl Parser {
 
             // `inside` set membership operator
             if self.check(TokenKind::Inside) {
+                // `inside` has the same precedence as the other relational
+                // operators.  Respect the Pratt binding-power floor so an
+                // operator being parsed at a higher precedence (for example
+                // the RHS of `a + b`) remains outside the membership test.
+                let (l_bp, _) = inside_binding_power();
+                if l_bp < min_bp {
+                    break;
+                }
                 let lhs_span = lhs.span;
                 self.advance();
                 self.expect(TokenKind::LBrace)?;
@@ -4662,7 +4670,10 @@ impl Parser {
                 // SVA `##N expr` — forward cycle-shift sugar. Only legal
                 // inside assert/cover bodies (typecheck enforces).
                 let tok = self.advance();
-                let n_tok = self.advance();
+                let n_tok = match self.peek_kind() {
+                    Some(_) => self.advance(),
+                    None => return Err(CompileError::UnexpectedEof),
+                };
                 let n_val: u32 = match &n_tok.kind {
                     TokenKind::DecLiteral(s) => s.parse().map_err(|_| {
                         CompileError::general("`##N` cycle count out of range", n_tok.span)
@@ -7768,6 +7779,12 @@ fn infix_binding_power(op: BinOp) -> (u8, u8) {
     }
 }
 
+fn inside_binding_power() -> (u8, u8) {
+    // SystemVerilog's `inside` operator is relational, so it binds below
+    // shifts and arithmetic and above equality/logical operators.
+    (7, 8)
+}
+
 impl Parser {
     // ── Function ──────────────────────────────────────────────────────────────
 
@@ -8348,5 +8365,33 @@ mod tests {
             Item::Module(m) => assert_eq!(m.body.len(), 1),
             _ => panic!("expected module"),
         }
+    }
+
+    #[test]
+    fn inside_respects_relational_precedence() {
+        let parse_value = |value: &str| {
+            let src = format!("module M\n  let x: Bool = {value};\nend module M");
+            let sf = parse(&src);
+            match &sf.items[0] {
+                Item::Module(m) => match &m.body[0] {
+                    ModuleBodyItem::LetBinding(let_binding) => let_binding.value.kind.clone(),
+                    _ => panic!("expected let binding"),
+                },
+                _ => panic!("expected module"),
+            }
+        };
+
+        assert!(matches!(
+            parse_value("a + b inside {3}"),
+            ExprKind::Inside(scrutinee, _) if matches!(scrutinee.kind, ExprKind::Binary(BinOp::Add, _, _))
+        ));
+        assert!(matches!(
+            parse_value("(a + b) inside {3}"),
+            ExprKind::Inside(scrutinee, _) if matches!(scrutinee.kind, ExprKind::Binary(BinOp::Add, _, _))
+        ));
+        assert!(matches!(
+            parse_value("a + (b inside {3})"),
+            ExprKind::Binary(BinOp::Add, _, rhs) if matches!(rhs.kind, ExprKind::Inside(_, _))
+        ));
     }
 }

@@ -61,7 +61,7 @@ use width::*;
 // functions.rs also holds a free helper (collect_stmt_assigns) alongside
 // gen_functions; re-export it too so the remaining call site in gen_module
 // still resolves it unqualified.
-use functions::collect_stmt_assigns;
+use functions::{collect_stmt_assigns, FunctionEmit};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -543,6 +543,8 @@ impl<'a> SimCodegen<'a> {
         let name = &m.name.name;
         let class = format!("V{name}");
         let enum_map = build_enum_map(self.symbols);
+        let local_function_names = self.local_function_names();
+        let function_names = local_function_names.get(name);
 
         // --coverage: per-module branch-coverage registry. emit_reg_if_else
         // and (later phase 1b) emit_comb_if_else allocate counter ids here.
@@ -2743,6 +2745,7 @@ impl<'a> SimCodegen<'a> {
             .posedge()
             .with_coverage(cov_handle)
             .with_block_helpers(Some(&block_helpers))
+            .with_function_names(function_names)
             .with_let_values(&let_values)
             .with_params(&m.params)
             .with_vinit_regs(&vinit_regs);
@@ -2806,6 +2809,7 @@ impl<'a> SimCodegen<'a> {
                                             &bus_port_names,
                                         )
                                         .with_signed_names(&signed_names)
+                                        .with_function_names(function_names)
                                         .with_reset_levels(&reset_levels)
                                         .with_float_names(&float_names)
                                         .with_decl_types(&decl_types, &struct_defs);
@@ -3032,6 +3036,7 @@ impl<'a> SimCodegen<'a> {
                         &bus_port_names,
                     )
                     .with_signed_names(&signed_names)
+                    .with_function_names(function_names)
                     .with_float_names(&float_names)
                     .with_decl_types(&decl_types, &struct_defs)
                     .with_reset_levels(&reset_levels)
@@ -3297,6 +3302,7 @@ impl<'a> SimCodegen<'a> {
             &bus_port_names,
         )
         .with_signed_names(&signed_names)
+        .with_function_names(function_names)
         .with_float_names(&float_names)
         .with_decl_types(&decl_types, &struct_defs)
         .with_reset_levels(&reset_levels)
@@ -3436,6 +3442,7 @@ impl<'a> SimCodegen<'a> {
                                     decl_types: ctx_comb.decl_types,
                                     struct_defs: ctx_comb.struct_defs,
                                     block_helpers: ctx_comb.block_helpers,
+                                    function_names: ctx_comb.function_names,
                                 };
                                 hits.push(cpp_expr(&margs[0], &sub_ctx));
                             }

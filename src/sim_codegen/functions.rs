@@ -5,8 +5,14 @@
 
 use super::*;
 
+pub(super) struct FunctionEmit<'a> {
+    pub(super) decl: &'a FunctionDecl,
+    pub(super) cpp_name: String,
+    pub(super) scope: Option<String>,
+}
+
 impl<'a> SimCodegen<'a> {
-    pub(super) fn gen_functions(&self, fns: &[&FunctionDecl]) -> SimModel {
+    pub(super) fn gen_functions(&self, fns: &[FunctionEmit<'_>]) -> SimModel {
         let mut h = String::new();
         h.push_str("#pragma once\n#include \"verilated.h\"\n\n");
 
@@ -46,8 +52,10 @@ impl<'a> SimCodegen<'a> {
             }
         }
         h.push('\n');
+        let local_function_names = self.local_function_names();
 
-        for f in fns {
+        for item in fns {
+            let f = item.decl;
             // Free functions hoisted out of a module body. The function's
             // param-resolving context is the enclosing module's params (see
             // L4329 above where param defines are emitted from the module's
@@ -69,7 +77,7 @@ impl<'a> SimCodegen<'a> {
                 .collect();
             h.push_str(&format!(
                 "inline {ret_ty} {}({}) {{\n",
-                f.name.name,
+                item.cpp_name,
                 args_str.join(", ")
             ));
 
@@ -188,7 +196,12 @@ impl<'a> SimCodegen<'a> {
             let ctx = Ctx {
                 loop_var_subst: Some(&function_loop_var_subst),
                 ..ctx_base
-            };
+            }
+            .with_function_names(
+                item.scope
+                    .as_ref()
+                    .and_then(|scope| local_function_names.get(scope)),
+            );
 
             // Recursive emitter for nested function-body items (if/elsif/else
             // with return statements inside). Pre-fix the if/for/assign arms

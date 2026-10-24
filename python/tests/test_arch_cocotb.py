@@ -5,7 +5,9 @@ import unittest
 
 import cocotb
 from arch_cocotb.dut import ArchDUT
+from arch_cocotb.signal import ArchSignalValue
 from arch_cocotb.simulator import ArchSimulator
+from arch_cocotb.triggers import _to_ps, _unit_ps
 from cocotb.clock import Clock
 from cocotb.queue import Queue, QueueEmpty, QueueFull
 from cocotb.triggers import (
@@ -53,6 +55,21 @@ class FakeModel:
         if self._clock_previous == 0 and self.clk != 0:
             self.q = self.data
         self._clock_previous = self.clk
+
+
+class SignedScalarModel:
+    """Scalar fields with the same metadata as generated pybind bindings."""
+
+    def __init__(self):
+        for name, *_ in self._port_info():
+            setattr(self, name, 0)
+
+    @staticmethod
+    def _port_info():
+        return [
+            (f"sint{width}", width, True, True, False, False)
+            for width in (7, 8, 16, 32, 64, 65)
+        ] + [("uint8", 8, False, True, False, False)]
 
 
 class IdlessAxiModel:
@@ -166,6 +183,23 @@ def run_native(test_body):
 
 
 class TimingTests(unittest.TestCase):
+    def test_timer_unit_normalization_preserves_seconds_abbreviation(self):
+        self.assertEqual(_to_ps(1, "s"), 1_000_000_000_000)
+        self.assertEqual(_to_ps(1, "S"), 1_000_000_000_000)
+        for unit in ("fs", "ps", "ns", "us", "ms", "sec", "step"):
+            self.assertEqual(_unit_ps(unit.upper()), _unit_ps(unit))
+            self.assertEqual(_unit_ps(unit + "s"), _unit_ps(unit))
+        self.assertEqual(_unit_ps("secs"), 1_000_000_000_000)
+        self.assertEqual(_unit_ps("steps"), 1000)
+
+    def test_seconds_timer_and_sim_time(self):
+        async def body(dut):
+            await Timer(1, units="s")
+            self.assertEqual(get_sim_time("ps"), 1_000_000_000_000)
+            self.assertEqual(get_sim_time("s"), 1)
+
+        run_native(body)
+
     def test_exact_picosecond_clock_and_time_conversion(self):
         async def body(dut):
             cocotb.start_soon(
@@ -360,6 +394,43 @@ class HandleTests(unittest.TestCase):
             self.assertEqual(int(logic), 8)
 
         run_native(body)
+
+    def test_signed_scalar_writes_use_declared_width_for_native_carrier(self):
+        dut = ArchDUT(SignedScalarModel, name="dut")
+
+        for width in (7, 8, 16, 32, 64):
+            signal = getattr(dut, f"sint{width}")
+            all_ones = (1 << width) - 1
+            minimum = -(1 << (width - 1))
+            for value in (-1, minimum, all_ones, 3):
+                signal.value = value
+                expected = value & all_ones
+                if expected & (1 << (width - 1)):
+                    expected -= 1 << width
+                self.assertEqual(getattr(dut._model, f"sint{width}"), expected)
+                self.assertEqual(signal.value.to_signed(), expected)
+
+            # The same bit pattern may arrive through cocotb-compatible value
+            # objects rather than a plain Python integer.
+            signal.value = LogicArray(all_ones, width=width)
+            self.assertEqual(signal.value.signed_integer, -1)
+            signal.value = ArchSignalValue(all_ones, width, signed=True)
+            self.assertEqual(signal.value.signed_integer, -1)
+
+        # Narrow signed values still use their declared width, while the
+        # arbitrary-width binding keeps its positive masked bit pattern.
+        dut.sint7.value = 0x7F
+        self.assertEqual(dut.sint7.value.signed_integer, -1)
+        dut.sint65.value = -1
+        self.assertEqual(dut._model.sint65, (1 << 65) - 1)
+        dut.sint65.value = (1 << 65) - 1
+        self.assertEqual(dut._model.sint65, (1 << 65) - 1)
+
+        # Unsigned scalar bindings retain the positive masked value.
+        dut.uint8.value = -1
+        self.assertEqual(dut._model.uint8, 0xFF)
+        dut.uint8.value = 0x1FF
+        self.assertEqual(dut._model.uint8, 0xFF)
 
     def test_idless_axi_gets_single_id_compatibility_handles(self):
         for model, input_ids in (

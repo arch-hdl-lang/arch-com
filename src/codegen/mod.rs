@@ -2855,13 +2855,10 @@ impl<'a> Codegen<'a> {
             ExprKind::Ternary(_, t, e) => self.expr_float_fmt(t).or_else(|| self.expr_float_fmt(e)),
             // Composite accesses: Vec element and struct field reads carry
             // their declared element/field float type.
-            ExprKind::Index(..) | ExprKind::FieldAccess(..) => match self.expr_decl_type(expr) {
-                Some(TypeExpr::FP32) => Some("f32"),
-                Some(TypeExpr::BF16) => Some("bf16"),
-                Some(TypeExpr::FP8E4M3) => Some("e4m3"),
-                Some(TypeExpr::FP8E5M2) => Some("e5m2"),
-                _ => None,
-            },
+            ExprKind::Index(..) | ExprKind::FieldAccess(..) => self
+                .expr_decl_type(expr)
+                .and_then(|ty| crate::fp_format::by_type_expr(&ty))
+                .map(|fmt| fmt.tag),
             _ => None,
         }
     }
@@ -8222,7 +8219,25 @@ impl<'a> Codegen<'a> {
                 match op {
                     UnaryOp::Not => format!("!{o}"),
                     UnaryOp::BitNot => format!("~{o}"),
-                    UnaryOp::Neg => format!("-{o}"),
+                    UnaryOp::Neg => {
+                        // Float values are packed IEEE/OCP encodings, so SV's
+                        // integer unary minus would negate the bit pattern
+                        // instead of the represented value.  Arithmetic float
+                        // formats all use a sign bit in the MSB; toggling it
+                        // preserves the exponent and mantissa for ordinary
+                        // values, as well as the signed-zero contract.
+                        // Storage-only formats are rejected by the type checker.
+                        if let Some(fmt) = self
+                            .expr_float_fmt(operand)
+                            .and_then(crate::fp_format::by_tag)
+                            .filter(|f| f.arith)
+                        {
+                            let sign_mask = 1u64 << (fmt.width - 1);
+                            format!("({o} ^ {}'h{:X})", fmt.width, sign_mask)
+                        } else {
+                            format!("-{o}")
+                        }
+                    }
                     UnaryOp::RedAnd => format!("&{o}"),
                     UnaryOp::RedOr => format!("|{o}"),
                     UnaryOp::RedXor => format!("^{o}"),

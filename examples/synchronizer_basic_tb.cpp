@@ -1,8 +1,8 @@
-#include "FlagSync.h"
+#include "VFlagSync.h"
 #include <cstdio>
 
 int main() {
-    FlagSync dut;
+    VFlagSync dut;
     int errors = 0;
 
     // Initialize

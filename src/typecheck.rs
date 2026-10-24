@@ -5018,7 +5018,30 @@ impl<'a> TypeChecker<'a> {
                     UnaryOp::Not => Ty::Bool,
                     UnaryOp::BitNot => t,
                     UnaryOp::Neg => {
-                        if let Ty::UInt(w) = t {
+                        // Storage-only floats and unsigned scale carriers have
+                        // no scalar arithmetic surface (spec §3.9/§3.10). Unary
+                        // negation must use the same frontend contract as the
+                        // binary arithmetic gates below, rather than silently
+                        // passing the packed carrier to a backend.
+                        if matches!(t, Ty::E8M0 | Ty::UE4M3) {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "operator `-` is not supported on {} — it is a block SCALE type, not an arithmetic type. Use `.to_fp32()` to obtain the scale value and compute on that",
+                                    t.display()
+                                ),
+                                expr.span,
+                            ));
+                            Ty::Error
+                        } else if t.is_float() && !t.is_float_arith() {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "operator `-` is not supported on {} — it is a storage-only float format (conversions and literals only). Convert with `.to_fp32()`, compute, then convert back",
+                                    t.display()
+                                ),
+                                expr.span,
+                            ));
+                            Ty::Error
+                        } else if let Ty::UInt(w) = t {
                             Ty::SInt(w + 1)
                         } else {
                             t
@@ -5170,11 +5193,44 @@ impl<'a> TypeChecker<'a> {
                     module_name,
                     local_types,
                 );
-                // Return type from first non-wildcard arm
-                match arms.first() {
-                    Some(arm) => self.resolve_expr_type(&arm.value, module_name, local_types),
-                    None => Ty::Error,
+                // Every arm contributes to the result type.  Resolve all arms so
+                // undefined names and incompatible value types cannot hide behind
+                // a valid first arm.  A narrower value is still compatible with a
+                // wider arm (and with a wider enclosing target), so retain the
+                // widest compatible scalar type for the enclosing assignment check.
+                let Some(first) = arms.first() else {
+                    return Ty::Error;
+                };
+                let mut result_ty = self.resolve_expr_type(&first.value, module_name, local_types);
+                for arm in arms.iter().skip(1) {
+                    let arm_ty = self.resolve_expr_type(&arm.value, module_name, local_types);
+                    if matches!(arm_ty, Ty::Error | Ty::Todo) {
+                        continue;
+                    }
+                    if result_ty == Ty::Error {
+                        continue;
+                    }
+                    if result_ty == Ty::Todo {
+                        result_ty = arm_ty;
+                        continue;
+                    }
+                    if result_ty == arm_ty {
+                        continue;
+                    }
+                    if types_compatible(&result_ty, &arm_ty) {
+                        continue;
+                    }
+                    if types_compatible(&arm_ty, &result_ty) {
+                        result_ty = arm_ty;
+                        continue;
+                    }
+                    self.errors.push(CompileError::type_mismatch(
+                        &result_ty.display(),
+                        &arm_ty.display(),
+                        arm.value.span,
+                    ));
                 }
+                result_ty
             }
             ExprKind::Concat(parts) => {
                 // Total width = sum of each part's width (Bool=1, UInt<N>=N, else 1)
@@ -5646,21 +5702,55 @@ impl<'a> TypeChecker<'a> {
             },
             _ => return Vec::new(),
         };
-        let Some(port) = self.source.items.iter().find_map(|item| {
-            let ports: &[PortDecl] = match item {
-                Item::Module(m) if m.name.name == module_name => &m.ports,
-                Item::Fsm(f) if f.name.name == module_name => &f.ports,
-                Item::Pipeline(p) if p.name.name == module_name => &p.ports,
-                _ => return None,
+        // Ports and wires carry the same per-site bus parameter assignments,
+        // but wires store them directly on `WireDecl` rather than in
+        // `BusPortInfo`. Keep the evaluation path shared so a field read from
+        // either spelling sees the same effective bus parameters that codegen
+        // uses for flattening.
+        let params = self.source.items.iter().find_map(|item| {
+            let port_params = |ports: &[PortDecl]| {
+                ports
+                    .iter()
+                    .find(|p| p.name.name == *base_name)
+                    .and_then(|p| p.bus_info.as_ref())
+                    .map(|bi| bi.params.clone())
             };
-            ports.iter().find(|p| p.name.name == *base_name)
-        }) else {
+            let body_wire_params = |body: &[ModuleBodyItem]| {
+                body.iter().find_map(|item| match item {
+                    ModuleBodyItem::WireDecl(w) if w.name.name == *base_name => {
+                        Some(w.bus_params.clone())
+                    }
+                    _ => None,
+                })
+            };
+            let fsm_wire_params = |wires: &[WireDecl]| {
+                wires
+                    .iter()
+                    .find(|w| w.name.name == *base_name)
+                    .map(|w| w.bus_params.clone())
+            };
+
+            match item {
+                Item::Module(m) if m.name.name == module_name => {
+                    port_params(&m.ports).or_else(|| body_wire_params(&m.body))
+                }
+                Item::Fsm(f) if f.name.name == module_name => {
+                    port_params(&f.ports).or_else(|| fsm_wire_params(&f.wires))
+                }
+                Item::Pipeline(p) if p.name.name == module_name => {
+                    port_params(&p.ports).or_else(|| {
+                        p.stages
+                            .iter()
+                            .find_map(|stage| body_wire_params(&stage.body))
+                    })
+                }
+                _ => None,
+            }
+        });
+        let Some(params) = params else {
             return Vec::new();
         };
-        let Some(ref bi) = port.bus_info else {
-            return Vec::new();
-        };
-        bi.params
+        params
             .iter()
             .filter_map(|pa| {
                 let v = self.eval_const_expr(&pa.value, local_types)?;

@@ -1,8 +1,8 @@
-#include "DataSync.h"
+#include "VDataSync.h"
 #include <cstdio>
 
 int main() {
-    DataSync dut;
+    VDataSync dut;
     int errors = 0;
 
     // Reset (sync reset)

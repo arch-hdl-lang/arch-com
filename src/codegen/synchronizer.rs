@@ -275,6 +275,7 @@ impl<'a> Codegen<'a> {
             "logic ack_sync [0:STAGES-1];  // ack synchronized to {src_clk}"
         ));
         self.line("logic ack_dst;");
+        self.line(&format!("{data_ty} data_out_reg;"));
         self.line("");
 
         let rst_name = rst_port.map(|rp| rp.name.name.as_str()).unwrap_or("1'b0");
@@ -321,11 +322,13 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         self.line("for (int i = 0; i < STAGES; i++) req_sync[i] <= 1'b0;");
         self.line("ack_dst <= 1'b0;");
+        self.line("data_out_reg <= '0;");
         self.indent -= 1;
         self.line("end else begin");
         self.indent += 1;
         self.line("req_sync[0] <= req_src;");
         self.line("for (int i = 1; i < STAGES; i++) req_sync[i] <= req_sync[i-1];");
+        self.line("if (req_sync[STAGES-1] != ack_dst) data_out_reg <= data_reg;");
         self.line("ack_dst <= req_sync[STAGES-1];");
         self.indent -= 1;
         self.line("end");
@@ -352,7 +355,7 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         self.line("assign ack_src = ack_sync[STAGES-1];");
-        self.line("assign data_out = data_reg;");
+        self.line("assign data_out = data_out_reg;");
     }
 
     fn emit_sync_reset(&mut self, dst_clk: &str, _rst_port: Option<&PortDecl>, _stages: usize) {

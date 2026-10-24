@@ -9,7 +9,11 @@ impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_synchronizer(&self, s: &crate::ast::SynchronizerDecl) -> SimModel {
         use crate::ast::SyncKind;
 
-        let class = s.name.name.clone();
+        // All generated native simulation models use the Verilator-compatible
+        // `V<Name>` class/file naming contract.  Parent modules already refer
+        // to synchronizer instances through that name when they emit child
+        // fields and includes.
+        let class = format!("V{}", s.name.name);
 
         let stages: usize = s
             .params
@@ -82,45 +86,51 @@ impl<'a> SimCodegen<'a> {
             );
         }
         h.push_str("private:\n");
-        h.push_str("  uint8_t _clk_prev_src;\n  uint8_t _clk_prev_dst;\n");
-        h.push_str("  bool _rising_src;\n  bool _rising_dst;\n");
+        // Parent modules call eval_posedge() directly for every settling pass.
+        // Initialize the edge state here so the first call is deterministic,
+        // and let eval_posedge own edge detection for both entry paths.
+        h.push_str("  uint8_t _clk_prev_src = 0;\n  uint8_t _clk_prev_dst = 0;\n");
+        h.push_str("  bool _rising_src = false;\n  bool _rising_dst = false;\n");
         match s.kind {
             SyncKind::Ff => {
                 for i in 0..stages {
-                    h.push_str(&format!("  {} _stage{};\n", data_ctype, i));
+                    h.push_str(&format!("  {} _stage{}{{}};\n", data_ctype, i));
                 }
             }
             SyncKind::Gray => {
                 for i in 0..stages {
-                    h.push_str(&format!("  {} _gray_stage{};\n", data_ctype, i));
+                    h.push_str(&format!("  {} _gray_stage{}{{}};\n", data_ctype, i));
                 }
             }
             SyncKind::Handshake => {
-                h.push_str(&format!("  {} _data_reg;\n", data_ctype));
-                h.push_str("  uint8_t _req_src;\n  uint8_t _ack_src;\n  uint8_t _ack_dst;\n");
+                h.push_str(&format!("  {} _data_reg{{}};\n", data_ctype));
+                h.push_str(&format!("  {} _data_out_reg{{}};\n", data_ctype));
+                h.push_str(
+                    "  uint8_t _req_src = 0;\n  uint8_t _ack_src = 0;\n  uint8_t _ack_dst = 0;\n",
+                );
                 for i in 0..stages {
                     h.push_str(&format!(
-                        "  uint8_t _req_sync{};\n  uint8_t _ack_sync{};\n",
+                        "  uint8_t _req_sync{} = 0;\n  uint8_t _ack_sync{} = 0;\n",
                         i, i
                     ));
                 }
             }
             SyncKind::Reset => {
                 for i in 0..stages {
-                    h.push_str(&format!("  uint8_t _stage{};\n", i));
+                    h.push_str(&format!("  uint8_t _stage{} = 0;\n", i));
                 }
             }
             SyncKind::Pulse => {
-                h.push_str("  uint8_t _toggle_src;\n");
+                h.push_str("  uint8_t _toggle_src = 0;\n");
                 // sync_chain needs STAGES entries + previous value for edge detect
                 for i in 0..stages {
-                    h.push_str(&format!("  uint8_t _sync{};\n", i));
+                    h.push_str(&format!("  uint8_t _sync{} = 0;\n", i));
                 }
-                h.push_str("  uint8_t _sync_prev;\n");
+                h.push_str("  uint8_t _sync_prev = 0;\n");
             }
         }
         if cdc_random {
-            h.push_str("  uint32_t _cdc_lfsr;\n");
+            h.push_str("  uint32_t _cdc_lfsr = 0xACE1u;\n");
         }
 
         // ── Implementation ──
@@ -131,21 +141,26 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
-        cpp.push_str(&format!("  _rising_src = ({src_clk} && !_clk_prev_src);\n"));
-        cpp.push_str(&format!("  _rising_dst = ({dst_clk} && !_clk_prev_dst);\n"));
-        cpp.push_str(&format!(
-            "  _clk_prev_src = {src_clk};\n  _clk_prev_dst = {dst_clk};\n"
-        ));
-        if s.kind == SyncKind::Reset {
-            cpp.push_str("  eval_posedge();\n  eval_comb();\n");
-        } else {
-            cpp.push_str("  if (_rising_src || _rising_dst) eval_posedge();\n  eval_comb();\n");
-        }
+        // eval_posedge() performs edge detection itself.  This is required for
+        // parent-driven instances, which never call a child's eval(), and also
+        // keeps the top-level path from updating the edge history twice.
+        cpp.push_str("  eval_posedge();\n  eval_comb();\n");
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
         // eval_posedge()
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        cpp.push_str(&format!("  _rising_src = ({src_clk} && !_clk_prev_src);\n"));
+        cpp.push_str(&format!("  _rising_dst = ({dst_clk} && !_clk_prev_dst);\n"));
+        cpp.push_str(&format!(
+            "  _clk_prev_src = {src_clk};\n  _clk_prev_dst = {dst_clk};\n"
+        ));
+        // Data synchronizers with synchronous reset only respond on a clock
+        // edge.  `kind reset` is the exception: its assertion is intentionally
+        // asynchronous and must remain active on every call.
+        if s.kind != SyncKind::Reset {
+            cpp.push_str("  if (!_rising_src && !_rising_dst) return;\n");
+        }
         if let Some(ref cond) = rst_guard {
             cpp.push_str(&format!("  if ({cond}) {{\n"));
             match s.kind {
@@ -160,7 +175,7 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
                 SyncKind::Handshake => {
-                    cpp.push_str("    _data_reg = 0; _req_src = 0; _ack_src = 0; _ack_dst = 0;\n");
+                    cpp.push_str("    _data_reg = 0; _data_out_reg = 0; _req_src = 0; _ack_src = 0; _ack_dst = 0;\n");
                     for i in 0..stages {
                         cpp.push_str(&format!("    _req_sync{i} = 0; _ack_sync{i} = 0;\n"));
                     }
@@ -185,10 +200,20 @@ impl<'a> SimCodegen<'a> {
         // CDC randomization: LFSR step + skip flag
         if cdc_random {
             cpp.push_str("  // LFSR-based CDC randomization (models metastability settling)\n");
+            if s.kind != SyncKind::Reset {
+                cpp.push_str("  bool _cdc_skip = false;\n  if (_rising_src || _rising_dst) {\n");
+            }
             cpp.push_str(
                 "  _cdc_lfsr = (_cdc_lfsr >> 1) ^ ((_cdc_lfsr & 1) ? 0xB4BCD35Cu : 0u);\n",
             );
-            cpp.push_str("  bool _cdc_skip = (_cdc_lfsr % 100) < cdc_skip_pct;\n");
+            if s.kind == SyncKind::Reset {
+                cpp.push_str("  bool _cdc_skip = (_cdc_lfsr % 100) < cdc_skip_pct;\n");
+            } else {
+                cpp.push_str("    _cdc_skip = (_cdc_lfsr % 100) < cdc_skip_pct;\n");
+            }
+            if s.kind != SyncKind::Reset {
+                cpp.push_str("  }\n");
+            }
         }
 
         // Open dst guard with optional random skip
@@ -214,6 +239,10 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("    _gray_stage0 = data_in ^ (data_in >> 1);\n  }\n");
             }
             SyncKind::Handshake => {
+                // Both clocked SV blocks sample the pre-edge source holding
+                // register when the clocks coincide.
+                cpp.push_str("  auto _data_reg_before = _data_reg;\n");
+                cpp.push_str("  auto _req_src_before = _req_src;\n");
                 cpp.push_str("  if (_rising_src) {\n");
                 cpp.push_str("    if (data_in != _data_reg && _req_src == _ack_src) {\n");
                 cpp.push_str("      _data_reg = data_in;\n      _req_src ^= 1;\n    }\n");
@@ -223,11 +252,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("    _ack_sync0 = _ack_dst;\n");
                 cpp.push_str(&format!("    _ack_src = _ack_sync{};\n  }}\n", stages - 1));
                 cpp.push_str(dst_guard);
+                cpp.push_str(&format!(
+                    "    if (_req_sync{} != _ack_dst) _data_out_reg = _data_reg_before;\n",
+                    stages - 1
+                ));
+                cpp.push_str(&format!("    _ack_dst = _req_sync{};\n", stages - 1));
                 for i in (1..stages).rev() {
                     cpp.push_str(&format!("    _req_sync{i} = _req_sync{};\n", i - 1));
                 }
-                cpp.push_str("    _req_sync0 = _req_src;\n");
-                cpp.push_str(&format!("    _ack_dst = _req_sync{};\n  }}\n", stages - 1));
+                cpp.push_str("    _req_sync0 = _req_src_before;\n");
+                cpp.push_str("  }\n");
             }
             SyncKind::Reset => {
                 // Async assert is always immediate (no randomization)
@@ -280,7 +314,7 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("  data_out = b;\n");
             }
             SyncKind::Handshake => {
-                cpp.push_str("  data_out = _data_reg;\n");
+                cpp.push_str("  data_out = _data_out_reg;\n");
             }
             SyncKind::Reset => {
                 cpp.push_str(&format!("  data_out = _stage{};\n", stages - 1));

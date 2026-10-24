@@ -1795,6 +1795,12 @@ The `inside` operator tests whether an expression matches any value or falls wit
 expr inside {val1, val2, lo..hi}
 ```
 
+`inside` has relational precedence: arithmetic and shifts bind before the membership test. For example, `a + b inside {3}` means `(a + b) inside {3}` and tests whether the sum is three. Use parentheses to make this grouping explicit:
+
+```
+let sum_is_three: Bool = (a + b) inside {3};
+```
+
 Individual values and inclusive ranges (`lo..hi`) may be freely mixed inside the braces. The compiler emits the SystemVerilog `inside` operator directly:
 
 ```systemverilog

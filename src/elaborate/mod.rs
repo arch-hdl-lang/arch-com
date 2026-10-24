@@ -1693,7 +1693,12 @@ fn expand_generate_for(
     let inst_items_shape_stable = only_inst_items
         && gf.items.iter().all(|item| {
             if let GenItem::Inst(inst) = item {
-                inst_is_shape_stable_for_genvar(inst, parent_shape, child_module_ports)
+                inst_is_shape_stable_for_genvar(
+                    inst,
+                    &gf.var.name,
+                    parent_shape,
+                    child_module_ports,
+                )
             } else {
                 true
             }
@@ -1836,11 +1841,24 @@ fn expand_generate_for(
 // names that SV genvar can't carry.
 fn inst_is_shape_stable_for_genvar(
     inst: &InstDecl,
+    loop_var: &str,
     parent_shape: &ParentShapeInfo,
     child_module_ports: &HashMap<String, Vec<PortDecl>>,
 ) -> bool {
     // Inst-body for-loops produce per-iteration flat wiring — always unsafe.
     if !inst.for_loops.is_empty() {
+        return false;
+    }
+
+    // A parameter override that depends on the loop variable selects a
+    // different monomorphized child for each iteration.  Such a body cannot
+    // remain a single SV genvar instance: the elaborator emits distinct child
+    // definitions, so unroll it and rewrite each instance to its variant.
+    if inst
+        .param_assigns
+        .iter()
+        .any(|pa| expr_mentions_ident(&pa.value, loop_var))
+    {
         return false;
     }
 
@@ -2282,8 +2300,17 @@ fn unroll_inst_for_loop(
 }
 
 pub(crate) fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
+    let mut name = subst_ident(&inst.name, var, val);
+    // An instance name need not contain the generate variable (for example
+    // `inst leaves: Leaf`).  Once a parameter-dependent generate is forced
+    // through the elaboration-time unroll path, each copy still needs a
+    // distinct scope-local name.  Preserve the existing `_i` substitution
+    // when present, and suffix otherwise.
+    if name.name == inst.name.name {
+        name.name = format!("{}_{}", name.name, val);
+    }
     InstDecl {
-        name: subst_ident(&inst.name, var, val),
+        name,
         module_name: inst.module_name.clone(),
         param_assigns: inst
             .param_assigns

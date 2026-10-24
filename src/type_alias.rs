@@ -66,7 +66,9 @@ pub fn resolve_type_aliases_with_file_scopes(
                 // alias may build on an earlier one.
                 let mut ty = a.ty.clone();
                 substitute_type(&mut ty, &package_aliases, &mut errors);
-                package_aliases.insert(name.clone(), (ty, a.bus_params.clone()));
+                let inherited_bus_params = alias_bus_params(&a.ty, &package_aliases);
+                let bus_params = merge_bus_params(&inherited_bus_params, &a.bus_params);
+                package_aliases.insert(name.clone(), (ty, bus_params));
                 package_alias_owners.insert(name.clone(), pkg.name.name.clone());
                 package_alias_spans.insert(name, a.name.span);
             }
@@ -140,6 +142,17 @@ fn packages_for_span(
 /// Resolved alias table: `name -> (TypeExpr, bus_params)`.
 type AliasMap = HashMap<String, (TypeExpr, Vec<ParamAssign>)>;
 
+/// Merge inherited bindings with the current site's bindings. A later
+/// binding for a key is the nearest explicit override and wins.
+fn merge_bus_params(inherited: &[ParamAssign], overrides: &[ParamAssign]) -> Vec<ParamAssign> {
+    let mut merged = inherited.to_vec();
+    for override_param in overrides {
+        merged.retain(|param| param.name.name != override_param.name.name);
+        merged.push(override_param.clone());
+    }
+    merged
+}
+
 const PRIMITIVE_TYPE_NAMES: &[&str] = &["UInt", "SInt", "Bool", "Bit", "Clock", "Reset", "Vec"];
 
 fn resolve_module(m: &mut ModuleDecl, package_aliases: &AliasMap) -> Result<(), Vec<CompileError>> {
@@ -193,9 +206,10 @@ fn resolve_module(m: &mut ModuleDecl, package_aliases: &AliasMap) -> Result<(), 
                     continue;
                 }
             };
-            // Bus params declared on the alias are kept as-is (no inner
-            // alias substitution — they're value expressions, not types).
-            let resolved_bus_params = a.bus_params.clone();
+            // Preserve bindings carried by an alias RHS, then apply this
+            // alias's bindings as the nearest explicit overrides.
+            let inherited_bus_params = alias_bus_params(&a.ty, &aliases);
+            let resolved_bus_params = merge_bus_params(&inherited_bus_params, &a.bus_params);
 
             aliases.insert(name.clone(), (resolved_ty, resolved_bus_params));
             alias_order.push((name, a.name.span));
@@ -339,12 +353,9 @@ fn substitute_in_port(p: &mut PortDecl, aliases: &AliasMap, errors: &mut Vec<Com
                 TypeExpr::Named(real_bus) => {
                     bi.bus_name = real_bus.clone();
                     p.ty = TypeExpr::Named(real_bus);
-                    // Prepend alias params (so explicit port-level params
-                    // take precedence on key collisions — last-wins
-                    // matches parse_port_decl's existing merge order).
-                    let mut merged = alias_params;
-                    merged.append(&mut bi.params);
-                    bi.params = merged;
+                    // Inherited alias params are layered before explicit
+                    // port-level params, so the latter win on collisions.
+                    bi.params = merge_bus_params(&alias_params, &bi.params);
                 }
                 _ => {
                     errors.push(CompileError::general(
@@ -378,13 +389,9 @@ fn substitute_in_body_item(
             // slot before substituting the type tree.
             let extra = alias_bus_params(&w.ty, aliases);
             if !extra.is_empty() {
-                // Wire's own bus_params (explicit) take precedence on
-                // collision — append alias params last, then dedupe
-                // last-wins by walking through. Matches the merge
-                // strategy in parse_port_decl.
-                let mut merged = extra;
-                merged.append(&mut w.bus_params);
-                w.bus_params = merged;
+                // Layer explicit wire params after inherited alias params,
+                // so the wire site wins on collisions.
+                w.bus_params = merge_bus_params(&extra, &w.bus_params);
             }
             substitute_type(&mut w.ty, aliases, errors);
         }
@@ -478,13 +485,9 @@ fn substitute_in_gen_items(
                 // (issue #423).
                 let extra = alias_bus_params(&w.ty, aliases);
                 if !extra.is_empty() {
-                    // Wire's own bus_params (explicit) take precedence on
-                    // collision — append alias params first, then the
-                    // wire's existing params, so the wire's params win
-                    // last-wins. Matches the top-level WireDecl arm.
-                    let mut merged = extra;
-                    merged.append(&mut w.bus_params);
-                    w.bus_params = merged;
+                    // Layer explicit wire params after inherited alias
+                    // params, so the wire site wins on collisions.
+                    w.bus_params = merge_bus_params(&extra, &w.bus_params);
                 }
                 substitute_type(&mut w.ty, aliases, errors);
                 for pa in w.bus_params.iter_mut() {
