@@ -34,6 +34,7 @@ impl<'a> SimCodegen<'a> {
 
         let has_inc = c.ports.iter().any(|p| p.name.name == "inc");
         let has_dec = c.ports.iter().any(|p| p.name.name == "dec");
+        let has_load = c.ports.iter().any(|p| p.name.name == "load");
         let has_clear = c.ports.iter().any(|p| p.name.name == "clear");
         let has_at_max = c.ports.iter().any(|p| p.name.name == "at_max");
         let has_at_min = c.ports.iter().any(|p| p.name.name == "at_min");
@@ -125,9 +126,16 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  if (!_rising) return;\n");
         cpp.push_str(&format!("  {count_ty} _n = _count_r;\n"));
-        cpp.push_str(&format!(
-            "  if ({rst_cond}) {{\n    _n = {init_val};\n  }} else {{\n"
-        ));
+        cpp.push_str(&format!("  if ({rst_cond}) {{\n    _n = {init_val};\n"));
+        if has_clear {
+            cpp.push_str(&format!("  }} else if (clear) {{\n    _n = {init_val};\n"));
+        }
+        if has_load {
+            cpp.push_str(&format!(
+                "  }} else if (load) {{\n    _n = ({count_ty})load_data;\n"
+            ));
+        }
+        cpp.push_str("  } else {\n");
 
         use CounterDirection::*;
         use CounterMode::*;
@@ -164,7 +172,18 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("      if (_count_r > 0) _n = _count_r - 1;\n    }\n");
             }
             (Up, Gray) => {
-                cpp.push_str("    if (inc) {\n      uint32_t _bin = _count_r + 1;\n");
+                // The register stores Gray encoding. Decode it before adding;
+                // incrementing the encoded value directly breaks the
+                // one-bit transition invariant (e.g. Gray 3 -> 6).
+                cpp.push_str("    if (inc) {\n      uint64_t _gray = (uint64_t)_count_r;\n      uint64_t _bin = 0;\n");
+                let mask = if count_bits >= 64 {
+                    "~uint64_t(0)".to_string()
+                } else {
+                    format!("((uint64_t(1) << {count_bits}) - uint64_t(1))")
+                };
+                cpp.push_str(&format!(
+                    "      for (uint64_t _shift = _gray; _shift; _shift >>= 1) _bin ^= _shift;\n      _bin = (_bin + 1) & {mask};\n"
+                ));
                 cpp.push_str(&format!(
                     "      _n = ({count_ty})(_bin ^ (_bin >> 1));\n    }}\n"
                 ));
@@ -172,7 +191,21 @@ impl<'a> SimCodegen<'a> {
             (Up, OneHot) => {
                 let inc_cond = if has_inc { "    if (inc) {" } else { "    {" };
                 cpp.push_str(&format!("{inc_cond}\n"));
-                cpp.push_str(&format!("      _n = ({count_ty})((_count_r >> 1) | (_count_r << ({count_bits} - 1)));\n    }}\n"));
+                // Match the SV emitter's `{count_r[W-2:0], count_r[W-1]}`
+                // recurrence: rotate toward the MSB, wrapping the old MSB
+                // into bit zero.  Do the arithmetic in a full-width carrier
+                // before narrowing back to the declared C++ storage type.
+                // Integer promotion of uint8_t/uint16_t operands otherwise
+                // makes the left shift wider than the HDL value and the
+                // previous right-rotation went in the opposite direction.
+                let mask = if count_bits >= 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << count_bits) - 1
+                };
+                cpp.push_str(&format!(
+                    "      _n = ({count_ty})((((uint64_t)_count_r << 1) | ((uint64_t)_count_r >> ({count_bits} - 1))) & 0x{mask:X}ULL);\n    }}\n"
+                ));
             }
             (Up, Johnson) => {
                 let inc_cond = if has_inc { "    if (inc) {" } else { "    {" };
@@ -189,11 +222,6 @@ impl<'a> SimCodegen<'a> {
                     "    {inc_cond} _n = ({count_ty})(_count_r + 1);\n"
                 ));
             }
-        }
-        if has_clear {
-            cpp.push_str(&format!(
-                "    if (clear) _n = {init_val}; // clear overrides inc\n"
-            ));
         }
         cpp.push_str("  }\n  _count_r = _n;\n}\n\n");
 

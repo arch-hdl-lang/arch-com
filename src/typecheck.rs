@@ -1408,8 +1408,12 @@ impl<'a> TypeChecker<'a> {
                             ));
                         } else if is_output_port {
                             // Comb assignment to output port
-                            let rhs_ty =
-                                self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                            let rhs_ty = self.resolve_expr_type_in_context(
+                                &l.value,
+                                &m.name.name,
+                                &local_types,
+                                local_types.get(name),
+                            );
                             if let Some(port_ty) = local_types.get(name).cloned() {
                                 if rhs_ty != Ty::Error
                                     && rhs_ty != Ty::Todo
@@ -1433,8 +1437,12 @@ impl<'a> TypeChecker<'a> {
                             }
                         } else if local_types.contains_key(name) {
                             // Wire or previously declared let
-                            let rhs_ty =
-                                self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                            let rhs_ty = self.resolve_expr_type_in_context(
+                                &l.value,
+                                &m.name.name,
+                                &local_types,
+                                local_types.get(name),
+                            );
                             if let Some(wire_ty) = local_types.get(name).cloned() {
                                 if rhs_ty != Ty::Error
                                     && rhs_ty != Ty::Todo
@@ -1464,7 +1472,15 @@ impl<'a> TypeChecker<'a> {
                         }
                         // Do NOT insert into local_types or driven here — handled above per case
                     } else {
-                        let ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                        let expected = l.ty.as_ref().map(|declared_ty| {
+                            self.resolve_type_expr(declared_ty, &m.name.name, &local_types)
+                        });
+                        let ty = self.resolve_expr_type_in_context(
+                            &l.value,
+                            &m.name.name,
+                            &local_types,
+                            expected.as_ref(),
+                        );
                         // `let` bindings are always a fixed combinational
                         // expression (spec: "declaration (fixed combinational
                         // expr)") — a latency-N (N>0) `<pipelined, N>` result
@@ -1481,8 +1497,9 @@ impl<'a> TypeChecker<'a> {
                             ));
                         }
                         if let Some(declared_ty) = &l.ty {
-                            let expected =
-                                self.resolve_type_expr(declared_ty, &m.name.name, &local_types);
+                            let expected = expected.unwrap_or_else(|| {
+                                self.resolve_type_expr(declared_ty, &m.name.name, &local_types)
+                            });
                             if expected != Ty::Error
                                 && ty != Ty::Error
                                 && ty != Ty::Todo
@@ -3670,9 +3687,33 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
-                self.check_pipelined_call_binding(a, in_comb);
                 let is_indexed = !matches!(&a.target.kind, ExprKind::Ident(_));
+                // Resolve the RHS with the assignment target as context.  In
+                // particular, `onehot(index)` is width-polymorphic: its
+                // result width is the destination width, while the index is
+                // still resolved and checked normally.
+                let lhs_context = if in_comb {
+                    if is_indexed {
+                        let t = self.resolve_expr_type(&a.target, module_name, local_types);
+                        (t != Ty::Error).then_some(t)
+                    } else {
+                        local_types.get(&target_name).cloned()
+                    }
+                } else {
+                    let t = self.resolve_expr_type(&a.target, module_name, local_types);
+                    if t != Ty::Error && local_types.contains_key(&target_name) {
+                        Some(t)
+                    } else {
+                        None
+                    }
+                };
+                let rhs_ty = self.resolve_expr_type_in_context(
+                    &a.value,
+                    module_name,
+                    local_types,
+                    lhs_context.as_ref(),
+                );
+                self.check_pipelined_call_binding(a, in_comb);
                 // LHS-type lookup: comb uses local_types directly so missing
                 // entries silently skip the width check (matches historical
                 // behavior); seq uses resolve_expr_type to handle Index /
@@ -4588,6 +4629,130 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Resolve an expression in an assignment context. `onehot(index)` is
+    /// target-typed per the ARCH specification; the index is still resolved
+    /// normally so name and operand diagnostics are preserved.
+    fn resolve_expr_type_in_context(
+        &mut self,
+        expr: &Expr,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        match (&expr.kind, expected) {
+            (ExprKind::Onehot(index), Some(Ty::UInt(width))) => {
+                self.resolve_expr_type(index, module_name, local_types);
+                Ty::UInt(*width)
+            }
+            (ExprKind::Ternary(..), Some(expected_ty)) => {
+                self.resolve_ternary_type(expr, module_name, local_types, Some(expected_ty))
+            }
+            _ => self.resolve_expr_type(expr, module_name, local_types),
+        }
+    }
+
+    fn resolve_ternary_type(
+        &mut self,
+        expr: &Expr,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        let ExprKind::Ternary(cond, then_expr, else_expr) = &expr.kind else {
+            unreachable!("ternary resolver requires a ternary expression");
+        };
+        // All three children must be resolved.  In particular, do not
+        // let a valid then-branch hide an undefined condition or
+        // else-branch (the old implementation only resolved the
+        // else branch when the then branch was already `Error`).
+        let cond_ty = self.resolve_expr_type(cond, module_name, local_types);
+        let then_ty =
+            self.resolve_expr_type_in_context(then_expr, module_name, local_types, expected);
+        let else_ty =
+            self.resolve_expr_type_in_context(else_expr, module_name, local_types, expected);
+
+        if !matches!(cond_ty, Ty::Bool | Ty::UInt(1) | Ty::Error | Ty::Todo) {
+            self.errors.push(CompileError::type_mismatch(
+                &Ty::Bool.display(),
+                &cond_ty.display(),
+                cond.span,
+            ));
+        }
+        if matches!(cond_ty, Ty::Error)
+            || matches!(then_ty, Ty::Error)
+            || matches!(else_ty, Ty::Error)
+        {
+            return Ty::Error;
+        }
+        if matches!(cond_ty, Ty::Todo) || matches!(then_ty, Ty::Todo) || matches!(else_ty, Ty::Todo)
+        {
+            return Ty::Todo;
+        }
+
+        // A conditional value has one hardware width and type on both
+        // runtime paths.  Requiring matching branch types prevents a
+        // narrower runtime arm from silently truncating the other arm.
+        // Unsized integer literals retain their usual contextual
+        // typing, so `sel ? data_u8 : 0` is the same as assigning the
+        // literal to a UInt<8> target.  Users can make conversions of
+        // runtime values explicit with `.trunc`, `.zext`, `.sext`, or
+        // a cast; float literals are context-typed by elaboration.
+        let then_is_unsized_int = matches!(
+            &then_expr.kind,
+            ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
+        ) || matches!(
+            &then_expr.kind,
+            ExprKind::Unary(
+                UnaryOp::Neg,
+                inner,
+            ) if matches!(
+                &inner.kind,
+                ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
+            )
+        ) || matches!(&then_expr.kind, ExprKind::Signed(inner) | ExprKind::Unsigned(inner)
+            if matches!(&inner.kind, ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))));
+        let else_is_unsized_int = matches!(
+            &else_expr.kind,
+            ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
+        ) || matches!(
+            &else_expr.kind,
+            ExprKind::Unary(
+                UnaryOp::Neg,
+                inner,
+            ) if matches!(
+                &inner.kind,
+                ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
+            )
+        ) || matches!(&else_expr.kind, ExprKind::Signed(inner) | ExprKind::Unsigned(inner)
+            if matches!(&inner.kind, ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))));
+        let bool_uint1_pair = matches!(
+            (&then_ty, &else_ty),
+            (Ty::Bool, Ty::UInt(1)) | (Ty::UInt(1), Ty::Bool)
+        );
+        let branches_compatible = then_ty == else_ty
+            || bool_uint1_pair
+            || (then_is_unsized_int && types_compatible(&else_ty, &then_ty))
+            || (else_is_unsized_int && types_compatible(&then_ty, &else_ty));
+        if !branches_compatible {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "ternary branches must have matching types: then is {}, else is {}; use an explicit cast or width conversion",
+                    then_ty.display(),
+                    else_ty.display(),
+                ),
+                expr.span,
+            ));
+            return Ty::Error;
+        }
+        if then_ty == else_ty {
+            then_ty
+        } else if then_is_unsized_int && types_compatible(&else_ty, &then_ty) {
+            else_ty
+        } else {
+            then_ty
+        }
+    }
+
     fn resolve_expr_type(
         &mut self,
         expr: &Expr,
@@ -5050,11 +5215,12 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::Onehot(index) => {
                 // onehot(index) returns a one-hot value; width = 2^index_width
-                // but we can't easily compute that, so infer from context (assignment target).
-                // Return a generic UInt that will be width-checked at assignment.
+                // With no assignment context, retain the legacy index-width
+                // result where representable, but never perform an unchecked
+                // shift (a UInt<32> index used to panic in debug builds).
                 let idx_ty = self.resolve_expr_type(index, module_name, local_types);
                 match idx_ty {
-                    Ty::UInt(w) => Ty::UInt(1 << w),
+                    Ty::UInt(w) if w < 32 => Ty::UInt(1u32 << w),
                     _ => Ty::UInt(32),
                 }
             }
@@ -5094,14 +5260,8 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            ExprKind::Ternary(_cond, then_expr, else_expr) => {
-                // Return the type of the then branch; else branch should match.
-                let then_ty = self.resolve_expr_type(then_expr, module_name, local_types);
-                if matches!(then_ty, Ty::Error) {
-                    self.resolve_expr_type(else_expr, module_name, local_types)
-                } else {
-                    then_ty
-                }
+            ExprKind::Ternary(..) => {
+                self.resolve_ternary_type(expr, module_name, local_types, None)
             }
             ExprKind::Inside(scrutinee, members) => {
                 self.resolve_expr_type(scrutinee, module_name, local_types);

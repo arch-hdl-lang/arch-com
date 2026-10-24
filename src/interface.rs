@@ -725,6 +725,18 @@ pub(crate) fn expr_str(expr: &Expr) -> String {
         }
         ExprKind::Ident(name) => name.clone(),
         ExprKind::Binary(op, l, r) => format!("({} {} {})", expr_str(l), op, expr_str(r)),
+        // Keep conditional parameter expressions intact across the `.archi`
+        // boundary.  The parentheses are required both for nested ternaries
+        // and when this expression is embedded in a type such as `UInt<D>`.
+        // Falling through to the generic fallback here silently changed a
+        // derived width to zero, so a consumer of the interface could no
+        // longer elaborate the same module as its source.
+        ExprKind::Ternary(cond, then_expr, else_expr) => format!(
+            "({} ? {} : {})",
+            expr_str(cond),
+            expr_str(then_expr),
+            expr_str(else_expr)
+        ),
         ExprKind::Clog2(inner) => format!("clog2({})", expr_str(inner)),
         _ => "0".to_string(), // fallback for complex expressions
     }

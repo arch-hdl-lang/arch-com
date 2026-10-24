@@ -249,25 +249,38 @@ fn make_variant_name(base: &str, params: &HashMap<String, i64>, varying: &[Strin
         })
         .collect();
 
-    // Reset-override suffixes: group by port name for a clean suffix like rst_Async_Low
-    let mut ro_ports: Vec<String> = varying
+    // Reset-override suffixes: group by port name for a clean suffix like
+    // `rst_Async_Low`.  Either component can be the only one that varies:
+    // same-kind opposite-polarity variants only put `__level` in `varying`,
+    // while opposite-kind same-polarity variants only put `__kind` there.
+    // Looking only for `__kind` used to make the former variants collide and
+    // left instance references pointing at the wrong generated definition.
+    let ro_ports: std::collections::BTreeSet<String> = varying
         .iter()
-        .filter(|k| k.starts_with("__ro__") && k.ends_with("__kind"))
-        .map(|k| {
-            // Extract port name: "__ro__PORT__kind" → "PORT"
-            let port = &k["__ro__".len()..k.len() - "__kind".len()];
-            let kind_val = params.get(k.as_str()).copied().unwrap_or(0);
+        .filter_map(|key| {
+            let rest = key.strip_prefix("__ro__")?;
+            let port = rest
+                .strip_suffix("__kind")
+                .or_else(|| rest.strip_suffix("__level"))?;
+            Some(port.to_string())
+        })
+        .collect();
+
+    let ro_parts: Vec<String> = ro_ports
+        .into_iter()
+        .map(|port| {
+            let kind_key = format!("__ro__{port}__kind");
             let level_key = format!("__ro__{port}__level");
+            let kind_val = params.get(&kind_key).copied().unwrap_or(0);
             let level_val = params.get(&level_key).copied().unwrap_or(0);
             let kind_str = if kind_val == 1 { "Async" } else { "Sync" };
             let level_str = if level_val == 1 { "Low" } else { "High" };
             format!("{port}_{kind_str}_{level_str}")
         })
         .collect();
-    ro_ports.sort();
 
     let mut parts = regular;
-    parts.extend(ro_ports);
+    parts.extend(ro_parts);
 
     if parts.is_empty() {
         base.to_string()

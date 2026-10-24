@@ -6278,6 +6278,11 @@ impl Parser {
         self.expect(TokenKind::Init)?;
         self.expect(TokenKind::Colon)?;
         match self.peek_kind() {
+            Some(TokenKind::None) => {
+                self.advance();
+                self.expect(TokenKind::Semi)?;
+                Ok(RamInit::None)
+            }
             Some(TokenKind::Ident(ref s)) => {
                 let s = s.clone();
                 match s.as_str() {
@@ -8300,6 +8305,28 @@ mod tests {
                 assert_eq!(m.ports.len(), 2);
             }
             _ => panic!("expected module"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ram_init_none_and_zero() {
+        let source = |init| {
+            format!(
+                "domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n\
+                 ram Mem\n  kind single;\n  latency 1;\n  init: {init};\n  param DEPTH: const = 4;\n  param T: type = UInt<8>;\n  port clk: in Clock<SysDomain>;\n  store\n    data: Vec<T, DEPTH>;\n  end store\n  ports access\n    en: in Bool;\n    wen: in Bool;\n    addr: in UInt<2>;\n    wdata: in T;\n    rdata: out T;\n  end ports access\nend ram Mem"
+            )
+        };
+
+        let none = parse(&source("none"));
+        match &none.items[1] {
+            Item::Ram(r) => assert!(matches!(r.init, Some(RamInit::None))),
+            _ => panic!("expected RAM"),
+        }
+
+        let zero = parse(&source("zero"));
+        match &zero.items[1] {
+            Item::Ram(r) => assert!(matches!(r.init, Some(RamInit::Zero))),
+            _ => panic!("expected RAM"),
         }
     }
 
