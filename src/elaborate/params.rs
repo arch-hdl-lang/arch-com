@@ -447,18 +447,28 @@ pub(crate) fn elaborate_module_variant(
                     // Verilator's WIDTHTRUNC fires on the parameter init when
                     // the typed width is narrower. Emit a sized literal that
                     // matches the declared width so the init is width-clean.
-                    let lit = if let ParamKind::WidthConst(hi, lo) = &p.kind {
-                        let hi_val = try_eval_i64(hi, &param_vals);
-                        let lo_val = try_eval_i64(lo, &param_vals);
-                        match (hi_val, lo_val) {
-                            (Some(h), Some(l)) if h >= l => {
-                                let width = (h - l + 1) as u32;
-                                LitKind::Sized(width, val as u64)
+                    let lit = match &p.kind {
+                        ParamKind::WidthConst(hi, lo) => {
+                            let hi_val = try_eval_i64(hi, &param_vals);
+                            let lo_val = try_eval_i64(lo, &param_vals);
+                            match (hi_val, lo_val) {
+                                (Some(h), Some(l)) if h >= l => {
+                                    let width = (h - l + 1) as u32;
+                                    LitKind::Sized(width, val as u64)
+                                }
+                                _ => LitKind::Dec(val as u64),
                             }
-                            _ => LitKind::Dec(val as u64),
                         }
-                    } else {
-                        LitKind::Dec(val as u64)
+                        ParamKind::Logic(TypeExpr::UInt(width) | TypeExpr::SInt(width)) => {
+                            try_eval_i64(width, &param_vals)
+                                .filter(|&w| w > 0)
+                                .map(|w| LitKind::Sized(w as u32, val as u64))
+                                .unwrap_or(LitKind::Dec(val as u64))
+                        }
+                        ParamKind::Logic(TypeExpr::Bool | TypeExpr::Bit) => {
+                            LitKind::Sized(1, val as u64)
+                        }
+                        _ => LitKind::Dec(val as u64),
                     };
                     p.default = Some(Expr::new(ExprKind::Literal(lit), p.name.span));
                 }
@@ -617,6 +627,19 @@ pub(crate) fn compute_defaults_with_enums(
                     }
                 }
             }
+            // Logic-typed integer params participate in the same constant
+            // environment as untyped/width-qualified params.  Float formats
+            // also use ParamKind::Logic, but their defaults are bit patterns
+            // and are intentionally left to their existing float handling.
+            ParamKind::Logic(
+                TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit,
+            ) => {
+                if let Some(default) = &p.default {
+                    if let Some(v) = try_eval_i64(default, &map) {
+                        map.insert(p.name.name.clone(), v);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -626,6 +649,7 @@ pub(crate) fn compute_defaults_with_enums(
 /// Evaluate an expression to an i64 using `param_vals` for identifier lookups.
 pub fn try_eval_i64(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<i64> {
     match &expr.kind {
+        ExprKind::Bool(b) => Some(i64::from(*b)),
         ExprKind::Literal(LitKind::Dec(v)) => Some(*v as i64),
         ExprKind::Literal(LitKind::Hex(v)) => Some(*v as i64),
         ExprKind::Literal(LitKind::Bin(v)) => Some(*v as i64),
@@ -745,8 +769,6 @@ pub fn try_eval_i64(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<i6
                 try_eval_i64(else_expr, param_vals)
             }
         }
-        // Bool literals
-        ExprKind::Bool(b) => Some(if *b { 1 } else { 0 }),
         ExprKind::Clog2(arg) => {
             let v = try_eval_i64(arg, param_vals)? as u64;
             if v <= 1 {
