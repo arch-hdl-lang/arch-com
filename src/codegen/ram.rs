@@ -374,8 +374,7 @@ impl<'a> Codegen<'a> {
                                 self.indent -= 1;
                                 self.line("end");
                             } else {
-                                self.line(&format!("mem[{pfx}_addr] <= {pfx}_wdata;"));
-                                self.line(&format!("{rdata_r} <= {pfx}_wdata;"));
+                                self.line(&format!("{rdata_r} <= mem[{pfx}_addr];"));
                             }
                         }
                         RamWriteMode::ReadFirst => {

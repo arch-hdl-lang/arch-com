@@ -134,4 +134,36 @@ fn single_write_first_emits_runtime_wen_and_forwarding() {
             String::from_utf8_lossy(&run.stderr)
         );
     }
+
+    let source = td.path().join("write_first_without_wen.arch");
+    let output = td.path().join("write_first_without_wen.sv");
+    std::fs::write(
+        &source,
+        "\
+ram ReadOnly
+  kind single;
+  latency 1;
+  write: first;
+  param DEPTH: const = 4;
+  port clk: in Clock<SysDomain>;
+  ports access
+    en: in Bool;
+    addr: in UInt<2>;
+    rdata: out UInt<8>;
+  end ports access
+  init: zero;
+end ram ReadOnly
+",
+    )
+    .expect("write no-wen ARCH source");
+    run_arch_build(td.path(), &source, &output);
+    let sv = std::fs::read_to_string(&output).expect("read no-wen generated SV");
+    assert!(
+        !sv.contains("access_wdata") && !sv.contains("access_wen"),
+        "no-wen read-only RAM must not reference absent write signals:\n{sv}"
+    );
+    assert!(
+        sv.contains("access_rdata_r <= mem[access_addr]"),
+        "no-wen write-first RAM must preserve registered reads:\n{sv}"
+    );
 }
