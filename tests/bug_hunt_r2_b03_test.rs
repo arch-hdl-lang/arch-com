@@ -192,3 +192,72 @@ end module MatchFloat
         "incompatible float match arms were accepted: {diagnostics}"
     );
 }
+
+#[test]
+fn expr_match_accepts_identical_storage_and_composite_types() {
+    let cases = [
+        r#"
+module MatchStorageFloat
+  port c: in Bool;
+  port a: in FP4E2M1;
+  port b: in FP4E2M1;
+  port o: out FP4E2M1;
+  let value: FP4E2M1 = match c
+    0 => a,
+    _ => b,
+  end match;
+  comb o = value; end comb
+end module MatchStorageFloat
+"#,
+        r#"
+module MatchScale
+  port c: in Bool;
+  port a: in ScaledVec<FP4E2M1, 4, E8M0>;
+  port b: in ScaledVec<FP4E2M1, 4, E8M0>;
+  port o: out ScaledVec<FP4E2M1, 4, E8M0>;
+  let value: ScaledVec<FP4E2M1, 4, E8M0> = match c
+    0 => a,
+    _ => b,
+  end match;
+  comb o = value; end comb
+end module MatchScale
+"#,
+        r#"
+struct MatchRecord
+  value: UInt<8>;
+end struct MatchRecord
+
+module MatchStruct
+  port c: in Bool;
+  port a: in MatchRecord;
+  port b: in MatchRecord;
+  port o: out MatchRecord;
+  let value: MatchRecord = match c
+    0 => a,
+    _ => b,
+  end match;
+  comb o = value; end comb
+end module MatchStruct
+"#,
+        r#"
+module MatchVec
+  port c: in Bool;
+  port a: in Vec<UInt<8>, 2>;
+  port b: in Vec<UInt<8>, 2>;
+  port o: out Vec<UInt<8>, 2>;
+  let value: Vec<UInt<8>, 2> = match c
+    0 => a,
+    _ => b,
+  end match;
+  comb o = value; end comb
+end module MatchVec
+"#,
+    ];
+    for source in cases {
+        let (ok, diagnostics) = check_source(source);
+        assert!(
+            ok,
+            "identical expression-match types were rejected: {diagnostics}"
+        );
+    }
+}

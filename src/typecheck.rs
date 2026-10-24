@@ -4855,6 +4855,9 @@ impl<'a> TypeChecker<'a> {
                         result_ty = arm_ty;
                         continue;
                     }
+                    if result_ty == arm_ty {
+                        continue;
+                    }
                     if types_compatible(&result_ty, &arm_ty) {
                         continue;
                     }
