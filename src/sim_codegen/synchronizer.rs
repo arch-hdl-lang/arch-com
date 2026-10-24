@@ -155,6 +155,12 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!(
             "  _clk_prev_src = {src_clk};\n  _clk_prev_dst = {dst_clk};\n"
         ));
+        // Data synchronizers with synchronous reset only respond on a clock
+        // edge.  `kind reset` is the exception: its assertion is intentionally
+        // asynchronous and must remain active on every call.
+        if s.kind != SyncKind::Reset {
+            cpp.push_str("  if (!_rising_src && !_rising_dst) return;\n");
+        }
         if let Some(ref cond) = rst_guard {
             cpp.push_str(&format!("  if ({cond}) {{\n"));
             match s.kind {
