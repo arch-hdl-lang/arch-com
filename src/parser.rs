@@ -4674,7 +4674,10 @@ impl Parser {
                 // SVA `##N expr` — forward cycle-shift sugar. Only legal
                 // inside assert/cover bodies (typecheck enforces).
                 let tok = self.advance();
-                let n_tok = self.advance();
+                let n_tok = match self.peek_kind() {
+                    Some(_) => self.advance(),
+                    None => return Err(CompileError::UnexpectedEof),
+                };
                 let n_val: u32 = match &n_tok.kind {
                     TokenKind::DecLiteral(s) => s.parse().map_err(|_| {
                         CompileError::general("`##N` cycle count out of range", n_tok.span)
