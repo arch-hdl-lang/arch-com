@@ -21,13 +21,18 @@ fn typed_integer_params_drive_generate_if_and_preserve_types() {
     let source = r#"
 module Child
   param N: UInt<8> = 8'd2;
-  param S: SInt<8> = 8'd1;
+  param S: SInt<8> = 8'hff;
   param B: Bool = true;
   port clk: in Clock<SysDomain>;
   generate_if N > 0
     assert active: true;
   generate_else
     assert inactive: true;
+  end generate_if
+  generate_if S < 0
+    assert signed_negative: true;
+  generate_else
+    assert signed_nonnegative: true;
   end generate_if
 end module Child
 
@@ -38,7 +43,7 @@ module Top
   end inst enabled
   inst disabled: Child
     param N = 0;
-    param S = -1;
+    param S = 1;
     param B = false;
     clk <- clk;
   end inst disabled
@@ -55,12 +60,20 @@ end module Top
         "typed UInt override should select false branch:\n{sv}"
     );
     assert!(
+        sv.contains("signed_negative"),
+        "8-bit all-ones SInt default should fold as -1:\n{sv}"
+    );
+    assert!(
+        sv.contains("signed_nonnegative"),
+        "SInt override should select the nonnegative branch:\n{sv}"
+    );
+    assert!(
         sv.contains("parameter [7:0] N = 8'd2"),
         "UInt width should be preserved:\n{sv}"
     );
     assert!(
-        sv.contains("parameter signed [7:0] S = 8'd1"),
-        "SInt width/sign should be preserved:\n{sv}"
+        sv.contains("parameter signed [7:0] S = 8'd255"),
+        "SInt width/sign and bit pattern should be preserved:\n{sv}"
     );
     assert!(
         sv.contains("parameter B = 1'd1"),
