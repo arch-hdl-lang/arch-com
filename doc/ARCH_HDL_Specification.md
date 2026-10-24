@@ -113,6 +113,8 @@ For genuinely library-style reuse that doesn't fit a built-in pattern — custom
 
 **2. Lexical Conventions**
 
+Line comments start with `//`. Block comments use `/* ... */` and end at the first `*/`; they do not nest. Runs of stars are valid, including `/**/` and `/***/`. An unterminated block comment is a lexical error.
+
 **2.1 Naming Rules (recommended, not compiler-enforced)**
 
   -------------------------------------------------------------------------------------------------------
@@ -3692,6 +3694,8 @@ Any Arch struct can be used as the word type of a ram. The compiler packs the st
 > ◈ When a struct is the word type, the compiler automatically generates the packing/unpacking bit slices in the emitted SystemVerilog. Designers work entirely with named fields --- no manual \[hi:lo\] indexing into packed words.
 
 **11.8 RAM Initialization**
+
+Initialization clauses end with a semicolon. Use `init: none;` to explicitly leave writable RAM contents uninitialized, or `init: zero;` for zero initialization. ROMs require initialized contents and cannot use `init: none;`.
 
   ----------------------------------------------------------------------------------------------------------------------------
   **Annotation**                **Behaviour**                                 **Supported In**

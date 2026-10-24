@@ -14436,7 +14436,13 @@ fn test_tlm_method_param_widths_substitute_in_lowered_target_and_initiator() {
         "target response data should use substituted TOKEN_W:\n{sv}"
     );
     assert!(
-        sv.contains("assign m_read_tile = _tlm_init_m_read_grant_0 ? 5'd3 : 0;"),
+        sv.contains("logic [4:0] _tlm_init_m_read_argtile_3;")
+            && sv.contains(
+                "assign _tlm_init_m_read_argtile_3 = _tlm_init_m_read_grant_0 ? 5'd3 : 0;"
+            )
+            && sv.contains(
+                "assign m_read_tile = _tlm_init_m_read_grant_0 ? _tlm_init_m_read_argtile_3 : 0;"
+            ),
         "initiator request drive should use substituted TILE_W:\n{sv}"
     );
     assert!(
