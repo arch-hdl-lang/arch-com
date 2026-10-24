@@ -50,12 +50,12 @@ endmodule
 "#;
 
 const CPP_TB: &str = r#"
-#include "ConfigSync.h"
+#include "VConfigSync.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
-static ConfigSync dut;
+static VConfigSync dut;
 static void eval() { dut.eval(); }
 static void src_tick() { dut.src_clk = 0; eval(); dut.src_clk = 1; eval(); dut.src_clk = 0; eval(); }
 static void dst_tick() { dut.dst_clk = 0; eval(); dut.dst_clk = 1; eval(); dut.dst_clk = 0; eval(); }
