@@ -2251,8 +2251,17 @@ fn unroll_inst_for_loop(
 }
 
 pub(crate) fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
+    let mut name = subst_ident(&inst.name, var, val);
+    // An instance name need not contain the generate variable (for example
+    // `inst leaves: Leaf`).  Once a parameter-dependent generate is forced
+    // through the elaboration-time unroll path, each copy still needs a
+    // distinct scope-local name.  Preserve the existing `_i` substitution
+    // when present, and suffix otherwise.
+    if name.name == inst.name.name {
+        name.name = format!("{}_{}", name.name, val);
+    }
     InstDecl {
-        name: subst_ident(&inst.name, var, val),
+        name,
         module_name: inst.module_name.clone(),
         param_assigns: inst
             .param_assigns

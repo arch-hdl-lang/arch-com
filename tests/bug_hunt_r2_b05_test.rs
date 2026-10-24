@@ -31,11 +31,11 @@ module Top
   port a: in Vec<UInt<8>, N>;
   port y: out Vec<UInt<8>, N>;
   generate_for i in 0..N-1
-    inst c_i: Child
+    inst leaves: Child
       param W = i + 1;
       a <- a[i];
       y -> y[i];
-    end inst c_i
+    end inst leaves
   end generate_for
 end module Top
 "#;
@@ -48,11 +48,11 @@ end module Top
         "unspecialized child remains:\n{sv}"
     );
     assert!(
-        sv.contains("Child__W_1 #(.W(0 + 1)) c_0"),
+        sv.contains("Child__W_1 #(.W(0 + 1)) leaves_0"),
         "missing first specialized instance:\n{sv}"
     );
     assert!(
-        sv.contains("Child__W_2 #(.W(1 + 1)) c_1"),
+        sv.contains("Child__W_2 #(.W(1 + 1)) leaves_1"),
         "missing second specialized instance:\n{sv}"
     );
 }
