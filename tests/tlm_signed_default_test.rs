@@ -34,11 +34,13 @@ module Initiator
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port m: initiator SignedMem;
-  port x: in SInt<8>;
+  port x: in SInt<4>;
+  port z: in SInt<8>;
   port y: out SInt<8>;
   reg r: SInt<8> reset rst => signed(0);
   thread main on clk rising, rst high
     r <= m.scale(x, signed(3));
+    r <= m.scale(z, signed(3));
   end thread main
   comb y = r; end comb
 end module Initiator

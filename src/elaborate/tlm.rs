@@ -2806,7 +2806,24 @@ fn lower_tlm_initiator_cohort(
     for (arg_i, (arg_ident, arg_ty)) in method_meta.args.iter().enumerate() {
         let mut value = tlm_zero_for_type(arg_ty, span);
         for (i, dt) in group.iter().enumerate().rev() {
-            value = tern(grants[i].clone(), dt.call.args[arg_i].clone(), value);
+            let arg = if matches!(arg_ty, TypeExpr::UInt(_) | TypeExpr::SInt(_)) {
+                let name = format!("_tlm_pool_{}_{}_arg{}_{}", port, method, arg_ident.name, i);
+                items.push(ModuleBodyItem::LetBinding(LetBinding {
+                    name: ident(name.clone()),
+                    ty: Some(arg_ty.clone()),
+                    value: tern(
+                        grants[i].clone(),
+                        dt.call.args[arg_i].clone(),
+                        tlm_zero_for_type(arg_ty, span),
+                    ),
+                    span,
+                    destructure_fields: Vec::new(),
+                }));
+                id(name)
+            } else {
+                dt.call.args[arg_i].clone()
+            };
+            value = tern(grants[i].clone(), arg, value);
         }
         comb_stmts.push(Stmt::Assign(CombAssign {
             target: port_member(format!("{}_{}", method, arg_ident.name)),
@@ -4177,7 +4194,31 @@ fn inline_lower_tlm_initiator_group(
                 .iter()
                 .zip(agg.issues.iter())
                 .filter_map(|(grant, (_, args, _, _, _))| {
-                    args.get(arg_i).map(|arg| (grant.clone(), arg.clone()))
+                    args.get(arg_i).map(|arg| {
+                        if matches!(arg_ty, TypeExpr::UInt(_) | TypeExpr::SInt(_)) {
+                            let temp_name = format!(
+                                "_tlm_init_{}_{}_arg{}_{}",
+                                agg.port,
+                                agg.method,
+                                arg_ident.name,
+                                items.len()
+                            );
+                            items.push(ModuleBodyItem::LetBinding(LetBinding {
+                                name: mk_ident(temp_name.clone()),
+                                ty: Some(arg_ty.clone()),
+                                value: tern(
+                                    grant.clone(),
+                                    arg.clone(),
+                                    tlm_zero_for_type(arg_ty, span),
+                                ),
+                                span,
+                                destructure_fields: Vec::new(),
+                            }));
+                            (grant.clone(), id(temp_name))
+                        } else {
+                            (grant.clone(), arg.clone())
+                        }
+                    })
                 })
                 .collect();
             let arg_value = emit_mux_tree(
@@ -4606,7 +4647,24 @@ fn inline_lower_tlm_fork_join_all(
     for (arg_i, (arg_ident, arg_ty)) in method_meta.args.iter().enumerate() {
         let mut value = tlm_zero_for_type(arg_ty, span);
         for (i, issue) in issues.iter().enumerate().rev() {
-            value = tern(grants[i].clone(), issue.call.args[arg_i].clone(), value);
+            let arg = if matches!(arg_ty, TypeExpr::UInt(_) | TypeExpr::SInt(_)) {
+                let name = format!("_tlm_pool_{}_{}_arg{}_{}", port, method, arg_ident.name, i);
+                items.push(ModuleBodyItem::LetBinding(LetBinding {
+                    name: ident(name.clone()),
+                    ty: Some(arg_ty.clone()),
+                    value: tern(
+                        grants[i].clone(),
+                        issue.call.args[arg_i].clone(),
+                        tlm_zero_for_type(arg_ty, span),
+                    ),
+                    span,
+                    destructure_fields: Vec::new(),
+                }));
+                id(name)
+            } else {
+                issue.call.args[arg_i].clone()
+            };
+            value = tern(grants[i].clone(), arg, value);
         }
         comb_stmts.push(Stmt::Assign(CombAssign {
             target: port_member(format!("{}_{}", method, arg_ident.name)),
@@ -5183,6 +5241,7 @@ fn inline_lower_tlm_initiator(
     // Build comb drives: one unconditional CombAssign per wire, with
     // state-dependent RHS. OR-of-state-eq for booleans; ternary-mux for
     // argument values (default 0 when not in an issue state).
+    let mut temp_items: Vec<ModuleBodyItem> = Vec::new();
     let mut comb_stmts: Vec<Stmt> = Vec::new();
     let or_of_states = |indices: &[u64]| -> Expr {
         if indices.is_empty() {
@@ -5210,10 +5269,33 @@ fn inline_lower_tlm_initiator(
             let mut value_expr = tlm_zero_for_type(arg_ty, span);
             for (state_idx, args) in agg.issues.iter().rev() {
                 if let Some(a) = args.get(arg_i) {
+                    let a = if matches!(arg_ty, TypeExpr::UInt(_) | TypeExpr::SInt(_)) {
+                        let temp_name = format!(
+                            "_tlm_init_{}_{}_arg{}_s{}",
+                            agg.port, agg.method, arg_ident.name, state_idx
+                        );
+                        temp_items.push(ModuleBodyItem::LetBinding(LetBinding {
+                            name: mk_ident(temp_name.clone()),
+                            ty: Some(arg_ty.clone()),
+                            value: Expr::new(
+                                ExprKind::Ternary(
+                                    Box::new(state_eq(*state_idx)),
+                                    Box::new(a.clone()),
+                                    Box::new(tlm_zero_for_type(arg_ty, span)),
+                                ),
+                                span,
+                            ),
+                            span,
+                            destructure_fields: Vec::new(),
+                        }));
+                        Expr::new(ExprKind::Ident(temp_name), span)
+                    } else {
+                        a.clone()
+                    };
                     value_expr = Expr::new(
                         ExprKind::Ternary(
                             Box::new(state_eq(*state_idx)),
-                            Box::new(a.clone()),
+                            Box::new(a),
                             Box::new(value_expr),
                         ),
                         span,
@@ -5254,11 +5336,12 @@ fn inline_lower_tlm_initiator(
         span,
     };
 
-    Ok(vec![
+    temp_items.extend([
         ModuleBodyItem::RegDecl(state_reg_decl),
         ModuleBodyItem::RegBlock(reg_block),
         ModuleBodyItem::CombBlock(comb_block),
-    ])
+    ]);
+    Ok(temp_items)
 }
 
 #[derive(Clone)]
