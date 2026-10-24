@@ -97,6 +97,7 @@ impl<'a> SimCodegen<'a> {
             }
             SyncKind::Handshake => {
                 h.push_str(&format!("  {} _data_reg;\n", data_ctype));
+                h.push_str(&format!("  {} _data_out_reg;\n", data_ctype));
                 h.push_str("  uint8_t _req_src;\n  uint8_t _ack_src;\n  uint8_t _ack_dst;\n");
                 for i in 0..stages {
                     h.push_str(&format!(
@@ -160,7 +161,7 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
                 SyncKind::Handshake => {
-                    cpp.push_str("    _data_reg = 0; _req_src = 0; _ack_src = 0; _ack_dst = 0;\n");
+                    cpp.push_str("    _data_reg = 0; _data_out_reg = 0; _req_src = 0; _ack_src = 0; _ack_dst = 0;\n");
                     for i in 0..stages {
                         cpp.push_str(&format!("    _req_sync{i} = 0; _ack_sync{i} = 0;\n"));
                     }
@@ -214,6 +215,9 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("    _gray_stage0 = data_in ^ (data_in >> 1);\n  }\n");
             }
             SyncKind::Handshake => {
+                // Both clocked SV blocks sample the pre-edge source holding
+                // register when the clocks coincide.
+                cpp.push_str("  auto _data_reg_before = _data_reg;\n");
                 cpp.push_str("  if (_rising_src) {\n");
                 cpp.push_str("    if (data_in != _data_reg && _req_src == _ack_src) {\n");
                 cpp.push_str("      _data_reg = data_in;\n      _req_src ^= 1;\n    }\n");
@@ -223,11 +227,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("    _ack_sync0 = _ack_dst;\n");
                 cpp.push_str(&format!("    _ack_src = _ack_sync{};\n  }}\n", stages - 1));
                 cpp.push_str(dst_guard);
+                cpp.push_str(&format!(
+                    "    if (_req_sync{} != _ack_dst) _data_out_reg = _data_reg_before;\n",
+                    stages - 1
+                ));
+                cpp.push_str(&format!("    _ack_dst = _req_sync{};\n", stages - 1));
                 for i in (1..stages).rev() {
                     cpp.push_str(&format!("    _req_sync{i} = _req_sync{};\n", i - 1));
                 }
                 cpp.push_str("    _req_sync0 = _req_src;\n");
-                cpp.push_str(&format!("    _ack_dst = _req_sync{};\n  }}\n", stages - 1));
+                cpp.push_str("  }\n");
             }
             SyncKind::Reset => {
                 // Async assert is always immediate (no randomization)
@@ -280,7 +289,7 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("  data_out = b;\n");
             }
             SyncKind::Handshake => {
-                cpp.push_str("  data_out = _data_reg;\n");
+                cpp.push_str("  data_out = _data_out_reg;\n");
             }
             SyncKind::Reset => {
                 cpp.push_str(&format!("  data_out = _stage{};\n", stages - 1));
