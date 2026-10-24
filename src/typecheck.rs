@@ -5345,21 +5345,55 @@ impl<'a> TypeChecker<'a> {
             },
             _ => return Vec::new(),
         };
-        let Some(port) = self.source.items.iter().find_map(|item| {
-            let ports: &[PortDecl] = match item {
-                Item::Module(m) if m.name.name == module_name => &m.ports,
-                Item::Fsm(f) if f.name.name == module_name => &f.ports,
-                Item::Pipeline(p) if p.name.name == module_name => &p.ports,
-                _ => return None,
+        // Ports and wires carry the same per-site bus parameter assignments,
+        // but wires store them directly on `WireDecl` rather than in
+        // `BusPortInfo`. Keep the evaluation path shared so a field read from
+        // either spelling sees the same effective bus parameters that codegen
+        // uses for flattening.
+        let params = self.source.items.iter().find_map(|item| {
+            let port_params = |ports: &[PortDecl]| {
+                ports
+                    .iter()
+                    .find(|p| p.name.name == *base_name)
+                    .and_then(|p| p.bus_info.as_ref())
+                    .map(|bi| bi.params.clone())
             };
-            ports.iter().find(|p| p.name.name == *base_name)
-        }) else {
+            let body_wire_params = |body: &[ModuleBodyItem]| {
+                body.iter().find_map(|item| match item {
+                    ModuleBodyItem::WireDecl(w) if w.name.name == *base_name => {
+                        Some(w.bus_params.clone())
+                    }
+                    _ => None,
+                })
+            };
+            let fsm_wire_params = |wires: &[WireDecl]| {
+                wires
+                    .iter()
+                    .find(|w| w.name.name == *base_name)
+                    .map(|w| w.bus_params.clone())
+            };
+
+            match item {
+                Item::Module(m) if m.name.name == module_name => {
+                    port_params(&m.ports).or_else(|| body_wire_params(&m.body))
+                }
+                Item::Fsm(f) if f.name.name == module_name => {
+                    port_params(&f.ports).or_else(|| fsm_wire_params(&f.wires))
+                }
+                Item::Pipeline(p) if p.name.name == module_name => {
+                    port_params(&p.ports).or_else(|| {
+                        p.stages
+                            .iter()
+                            .find_map(|stage| body_wire_params(&stage.body))
+                    })
+                }
+                _ => None,
+            }
+        });
+        let Some(params) = params else {
             return Vec::new();
         };
-        let Some(ref bi) = port.bus_info else {
-            return Vec::new();
-        };
-        bi.params
+        params
             .iter()
             .filter_map(|pa| {
                 let v = self.eval_const_expr(&pa.value, local_types)?;
