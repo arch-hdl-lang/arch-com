@@ -24,7 +24,7 @@ module QosArbiter #(
     fair_pick = masked != 0 ? masked : req_mask;
     urgent = (qos & 'h80) != 0;
     pick = urgent ? req_mask : fair_pick;
-    pick_neg = 6'(5'($unsigned(pick ^ 'hF)) + 1);
+    pick_neg = 5'($unsigned(pick ^ 'hF)) + 1;
     QosGrant = pick & 4'(pick_neg);
   endfunction
   
