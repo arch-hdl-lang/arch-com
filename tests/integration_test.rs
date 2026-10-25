@@ -36653,7 +36653,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
 
     // 1. ceil-div sub-burst count: (ar_len + 16) >> 4.
     assert!(
-        flat.contains("num_sub_r <= 5'(9'(10'(9'($unsigned(m_ar_len)) + 16)) >> 4)"),
+        flat.contains("num_sub_r <= 5'(9'(9'($unsigned(m_ar_len)) + 16) >> 4)"),
         "num_sub must be ceil((ar_len+1)/16) = (ar_len+16)>>4:\n{sv}",
     );
     // 2. INCR-stepped sub-burst start address: base + (beats_done << size).
@@ -43414,4 +43414,80 @@ fn tlm_target_thread_reset_clause_must_match_the_port_polarity() {
         "{errs}"
     );
     assert_eq!(lower_thread_errors(&src.replace("rst low", "rst high")), "");
+}
+
+/// The carry-retaining size cast is omitted only where it is provably
+/// redundant: `+`/`*` with a bare decimal literal and a narrow unsigned
+/// operand (same value in any context), and `lit - x` directly as an index
+/// when `2^(W-1) >= N` (negative results are out of range either way). As an
+/// index the redundant cast (`v[6'(30 - cnt)]` into 32 entries) trips
+/// Verilator's WIDTHTRUNC. Everywhere else, notably Sub in a comparison, the
+/// cast stays: ARCH wraps modulo 2^W, SV at 32 bits does not.
+#[test]
+fn carry_cast_omitted_only_when_sv_width_already_keeps_the_carry() {
+    let sv = compile_to_sv(
+        "module CarryCast\n  port v: in UInt<32>;\n  port v64: in UInt<64>;\n  port cnt: in UInt<5>;\n  port a: in UInt<5>;\n  port b: in UInt<5>;\n  port s: in SInt<5>;\n  port w: in UInt<32>;\n  port y0: out Bool;\n  port y1: out Bool;\n  port y2: out SInt<6>;\n  port y3: out UInt<33>;\n  port y4: out Bool;\n  port y5: out Bool;\n  port y6: out UInt<6>;\n  comb\n    y0 = v[30 - cnt];\n    y1 = v[a + b];\n    y2 = s + 1;\n    y3 = w + 1;\n    y4 = (cnt - 1) == 6'd63;\n    y5 = v64[30 - cnt];\n    y6 = cnt + 1;\n  end comb\nend module CarryCast\n",
+    );
+    // Redundant: as an index into 32 entries, `30 - cnt` (W = 6, 2^5 >= 32)
+    // agrees with SV's 32-bit evaluation in range and is out of range in
+    // both readings otherwise.
+    assert!(
+        sv.contains("v[30 - cnt]"),
+        "literal-sub index: no cast\n{sv}"
+    );
+    // Redundant anywhere: a narrow add with a literal cannot exceed 6 bits.
+    assert!(
+        sv.contains("y6 = cnt + 1;"),
+        "narrow add + literal: no cast\n{sv}"
+    );
+    // Load-bearing Sub: in a comparison (0 - 1 is 63 in ARCH, 2^32-1 in SV)
+    // and as an index into 64 entries (2^5 < 64: 63..33 are in range).
+    assert!(
+        sv.contains("6'(cnt - 1) == 6'd63"),
+        "sub in a comparison keeps the cast\n{sv}"
+    );
+    assert!(
+        sv.contains("v64[6'(30 - cnt)]"),
+        "sub index into 64 entries keeps the cast\n{sv}"
+    );
+    // Load-bearing: two 5-bit operands evaluate at 5 bits in SV.
+    assert!(
+        sv.contains("v[6'(a + b)]"),
+        "sized operands keep the cast\n{sv}"
+    );
+    // Signed operand and a 32-bit operand (SV width 32 < ARCH 33) keep it.
+    assert!(
+        sv.contains("6'(s + 1)"),
+        "signed operand keeps the cast\n{sv}"
+    );
+    assert!(
+        sv.contains("33'(w + 1)"),
+        "32-bit operand keeps the cast\n{sv}"
+    );
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping lint half: verilator not available");
+        return;
+    }
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("CarryCast.sv");
+    // The two load-bearing index casts warn by design (the index can exceed
+    // the range); neutralize them so the check isolates the redundant form.
+    let lint_sv = sv
+        .replace("v[6'(a + b)]", "v[0]")
+        .replace("v64[6'(30 - cnt)]", "v64[0]");
+    std::fs::write(&path, lint_sv).unwrap();
+    let out = std::process::Command::new("verilator")
+        .args(["--lint-only", "-Wno-UNUSEDSIGNAL"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !log.contains("WIDTHTRUNC"),
+        "the literal-index form lints clean:\n{log}"
+    );
 }

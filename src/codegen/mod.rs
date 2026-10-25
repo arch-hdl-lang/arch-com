@@ -2796,6 +2796,110 @@ impl<'a> Codegen<'a> {
     }
 
     /// Check if an expression produces a signed (SInt) value.
+    /// Number of positions `base` can be indexed over (bit width of a
+    /// scalar, element count of a `Vec`), when it is a compile-time constant.
+    fn index_range_size(&self, base: &Expr) -> Option<u64> {
+        let mut params: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for p in self.current_construct_params().unwrap_or_default().iter() {
+            if let Some(d) = &p.default {
+                if let Some(v) = crate::elaborate::try_eval_i64(d, &params) {
+                    params.insert(p.name.name.clone(), v);
+                }
+            }
+        }
+        let eval = |e: &Expr| {
+            literal_expr_u64(e).or_else(|| {
+                crate::elaborate::try_eval_i64(e, &params).and_then(|v| u64::try_from(v).ok())
+            })
+        };
+        match self.expr_decl_type(base)? {
+            TypeExpr::Vec(_, n) => eval(&n),
+            TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval(&w),
+            _ => None,
+        }
+    }
+
+    /// The SV text of an index expression. A top-level `lit - x` / `x - lit`
+    /// (bare decimal literal, unsigned `x` of known width) is emitted without
+    /// the carry cast when `2^(W-1) >= N` for an `N`-position base and ARCH
+    /// width `W <= 32`. The index is self-determined, so SV evaluates it at
+    /// 32 bits. Every non-negative result is then identical, and every
+    /// negative one is out of range under both readings: ARCH's `2^W - k` is
+    /// at least `2^(W-1)`. The cast form (`v[6'(30 - cnt)]` into 32 entries)
+    /// trips Verilator's WIDTHTRUNC, which the uncast form does not.
+    fn emit_index_operand_str(&self, base: &Expr, idx: &Expr) -> String {
+        if let ExprKind::Binary(BinOp::Sub, lhs, rhs) = &idx.kind {
+            let l = self.emit_expr_prec(lhs, Self::sv_binop_prec(&BinOp::Sub));
+            let r = self.emit_expr_prec(rhs, Self::sv_binop_prec(&BinOp::Sub) + 1);
+            let bare_decimal = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+            let other = if bare_decimal(&l) {
+                Some(rhs)
+            } else if bare_decimal(&r) {
+                Some(lhs)
+            } else {
+                None
+            };
+            if let (Some(other), Some(n)) = (other, self.index_range_size(base)) {
+                let widths = (
+                    self.infer_sv_width_str(other).parse::<u64>(),
+                    self.infer_sv_width_str(idx).parse::<u64>(),
+                );
+                if let (Ok(_), Ok(w)) = widths {
+                    if !self.expr_is_signed(other)
+                        && (1..=32).contains(&w)
+                        && (1u64 << (w - 1)) >= n
+                    {
+                        return format!("{l} - {r}");
+                    }
+                }
+            }
+        }
+        self.emit_expr_str(idx)
+    }
+
+    /// Whether SV's own width rules already evaluate `lhs op rhs` (Add or
+    /// Mul) at least as wide as the ARCH result, so the carry-retaining size
+    /// cast would be redundant. That holds when one emitted operand is
+    /// an unsized decimal literal -- a 32-bit integer in SV, which widens the
+    /// whole expression to `max(w, 32)` -- the other operand is unsigned with
+    /// a known width, and `max(w, 32)` covers the ARCH width. Signed operands
+    /// and codegen-sized literals (`2'd1`) keep the cast.
+    fn sv_width_already_keeps_carry(
+        &self,
+        expr: &Expr,
+        lhs: &Expr,
+        rhs: &Expr,
+        l: &str,
+        r: &str,
+    ) -> bool {
+        // Only Add and Mul: with a narrow operand their value fits the ARCH
+        // width, so SV's wider evaluation yields the same number in every
+        // context. Sub can go negative, where ARCH wraps modulo 2^W and SV
+        // modulo 2^32 -- different values in a comparison. See
+        // `emit_index_operand_str` for the one Sub position that is safe.
+        if !matches!(expr.kind, ExprKind::Binary(BinOp::Add | BinOp::Mul, ..)) {
+            return false;
+        }
+        let bare_decimal = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+        let other = if bare_decimal(l) {
+            rhs
+        } else if bare_decimal(r) {
+            lhs
+        } else {
+            return false;
+        };
+        if self.expr_is_signed(other) {
+            return false;
+        }
+        let (Ok(other_w), Ok(arch_w)) = (
+            self.infer_sv_width_str(other).parse::<u64>(),
+            self.infer_sv_width_str(expr).parse::<u64>(),
+        ) else {
+            return false;
+        };
+        other_w.max(32) >= arch_w
+    }
+
     fn expr_is_signed(&self, expr: &Expr) -> bool {
         if matches!(self.expr_decl_type(expr), Some(TypeExpr::SInt(_))) {
             return true;
@@ -8168,15 +8272,18 @@ impl<'a> Codegen<'a> {
                     };
                     let wp = Self::paren_width(&w);
                     format!("{wp}'({l} {op_str} {r})")
-                } else if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) && {
-                    let const_params = self
-                        .current_construct_params()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|p| p.name.name.clone())
-                        .collect();
-                    !Self::is_const_reducible_with(expr, &const_params)
-                } {
+                } else if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
+                    && {
+                        let const_params = self
+                            .current_construct_params()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|p| p.name.name.clone())
+                            .collect();
+                        !Self::is_const_reducible_with(expr, &const_params)
+                    }
+                    && !self.sv_width_already_keeps_carry(expr, lhs, rhs, &l, &r)
+                {
                     // A size cast supplies the ARCH result width as the SV
                     // evaluation context and prevents a parent expression
                     // from resizing the arithmetic before it is evaluated.
@@ -8439,7 +8546,7 @@ impl<'a> Codegen<'a> {
                 let unwrapped = Self::unwrap_reinterpret_cast(base);
                 if Self::is_atomic_index_base(unwrapped) {
                     let b = self.emit_expr_str(unwrapped);
-                    let i = self.emit_expr_str(idx);
+                    let i = self.emit_index_operand_str(unwrapped, idx);
                     return format!("{b}[{i}]");
                 }
                 // Remaining case: a real computation (arithmetic, logical,
