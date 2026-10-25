@@ -1,7 +1,10 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-10-24
-> Compiler version: 0.74.0
+> Last updated: 2026-10-25
+> Compiler version: 0.74.1
+>
+> **0.74.1 release highlights:**
+> - **The carry cast is dropped where it is provably redundant** (PR #1099). 0.74.0's `v[6'(30 - cnt)]` index casts tripped Verilator `WIDTHTRUNC`. `+`/`*` with a narrow literal operand, and `lit - x` as an index when `2^(W-1) >= N`, are emitted as in 0.73.0. Subtraction elsewhere keeps the cast. See the [v0.74.1 release notes](../docs/release-notes/v0.74.1.md).
 >
 > **0.74.0 release highlights:**
 > - **`inst` connections are type-checked** (PR #1092, closes #737/#738) — width, signedness, `Vec` length and reset kind/polarity must match the port, evaluated with param overrides. Clock-domain rebinds and compile-time constants are allowed. Compiler-generated thread/TLM instances are checked too (#1097).
