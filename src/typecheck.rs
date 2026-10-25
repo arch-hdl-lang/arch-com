@@ -8889,18 +8889,16 @@ impl<'a> TypeChecker<'a> {
     /// skipped. Typing the parent-side expression must not add diagnostics
     /// of its own (inst connection RHS checking is #1026's scope), so any
     /// it produces are discarded and the connection is then skipped.
+    /// Compiler-generated insts (`_<Mod>_threads`, `_arb_*` from thread/TLM
+    /// lowering) are checked like any other: since #1094 (arbiter reset
+    /// kind) and the thread reset-level rule, lowering wires them
+    /// type-correctly, so a mismatch reported there is a lowering bug.
     pub(crate) fn check_inst_connection_types(
         &mut self,
         inst: &InstDecl,
         module_name: &str,
         local_types: &HashMap<String, Ty>,
     ) {
-        // Compiler-generated constructs (`_<Mod>_threads`, `_arb_...` from
-        // thread/TLM lowering) are wired by the compiler, not the user; their
-        // connections are checked at the source construct, not here.
-        if inst.module_name.name.starts_with('_') {
-            return;
-        }
         let Some(ports) = self.child_ports(&inst.module_name.name) else {
             return;
         };
