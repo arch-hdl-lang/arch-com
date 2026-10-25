@@ -1,7 +1,13 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-10-20
-> Compiler version: 0.73.0
+> Last updated: 2026-10-24
+> Compiler version: 0.74.0
+>
+> **0.74.0 release highlights:**
+> - **`inst` connections are type-checked** (PR #1092, closes #737/#738) — width, signedness, `Vec` length and reset kind/polarity must match the port, evaluated with param overrides. Clock-domain rebinds and compile-time constants are allowed. Compiler-generated thread/TLM instances are checked too (#1097).
+> - **A thread's reset level must match its reset port** (PR #1093, language rule) — `rst low` on a `Reset<_, High>` port is an error, for every thread form including TLM targets.
+> - **Thread lock arbiters take the module's reset kind** (#1094, closes #1091) — `Reset<Sync>` designs no longer get async arbiter flops.
+> - **44 further fixes** (#1095, #1096) across SV emission (carries, counter MAX, Gray, write-first RAM enables, handshake capture, synchronizer naming), native sim, formal (unsigned negation, shift counts), floating point and Python bindings. Plus `.archi` imports for param-typed ports (#1090). See the [v0.74.0 release notes](../docs/release-notes/v0.74.0.md).
 >
 > **0.73.0 release highlights:**
 > - **`shared(when EXPR) function`** (PR #1088) — chooses operator sharing per parameter: `EXPR` is a 1-bit constant over the module's params. Each bound call site emits `((EXPR) ? __shared_<SVNAME>_out : <SVNAME>(args))`, which folds to exactly the plain-`shared` netlist when true and the plain-`function` netlist when false (Yosys-tested). One source, per-target synthesis choice.
