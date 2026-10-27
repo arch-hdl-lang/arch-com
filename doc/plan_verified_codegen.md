@@ -234,6 +234,7 @@ as its target. Each gets a validator of the same shape:
 ## 7. Usage
 
 ```sh
+scripts/cloud_setup.sh                                 # Lean + Verilator 5.034 (fresh box / cloud session)
 (cd proofs/lean_thread_lowering && lake build)        # once per checkout
 arch build Foo.arch --check-codegen-proof-lean         # emit + replay
 arch build Foo.arch --emit-codegen-proof-lean=Foo.lean # emit only
