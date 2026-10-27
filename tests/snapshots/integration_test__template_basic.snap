@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -25,3 +26,5 @@ module MyArbiter #(
   assign grant_out = grant;
 
 endmodule
+
+`default_nettype wire

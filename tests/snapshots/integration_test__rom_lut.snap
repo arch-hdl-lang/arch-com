@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 module RomLut #(
   parameter int DEPTH = 8,
   parameter int DATA_WIDTH = 8
@@ -33,3 +34,5 @@ module RomLut #(
   end
 
 endmodule
+
+`default_nettype wire

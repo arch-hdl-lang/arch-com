@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 // domain CoreDomain
 //   freq_mhz: 200
 
@@ -162,3 +163,5 @@ module CpuPipe #(
   assign pc_out = writeback_pc;
 
 endmodule
+
+`default_nettype wire

@@ -527,6 +527,7 @@ fn flatten_for_formal(
                                 .map(|s| subst_stmt_for_formal(s, &port_map, &locals, &prefix))
                                 .collect::<Result<_, _>>()?;
                             new_body.push(ModuleBodyItem::RegBlock(RegBlock {
+                                compiler_generated: rb.compiler_generated,
                                 clock,
                                 clock_edge: rb.clock_edge,
                                 stmts: new_stmts,
@@ -7021,6 +7022,7 @@ fn fsm_to_module(f: &FsmDecl) -> Result<ModuleDecl, CompileError> {
         ));
     }
     body.push(ModuleBodyItem::RegBlock(RegBlock {
+        compiler_generated: true,
         clock: f_ident(&clk, sp),
         clock_edge: ClockEdge::Rising,
         stmts: seq,

@@ -2273,6 +2273,7 @@ impl Parser {
                 .map(|t| t.span)
                 .unwrap_or(start);
             return Ok(RegBlock {
+                compiler_generated: false,
                 clock,
                 clock_edge,
                 stmts,
@@ -2300,6 +2301,7 @@ impl Parser {
             .map(|t| t.span)
             .unwrap_or(start);
         Ok(RegBlock {
+            compiler_generated: false,
             clock,
             clock_edge,
             stmts,

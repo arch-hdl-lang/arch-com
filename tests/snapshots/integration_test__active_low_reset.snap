@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -25,3 +26,5 @@ module ActiveLowRst (
   assign count = count_r;
 
 endmodule
+
+`default_nettype wire

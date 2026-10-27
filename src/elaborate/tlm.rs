@@ -1017,6 +1017,7 @@ fn lower_decoded_tlm_connect(
         span,
     }));
     logic.push(ModuleBodyItem::RegBlock(RegBlock {
+        compiler_generated: true,
         clock: clk,
         clock_edge: ClockEdge::Rising,
         stmts: seq_stmts,
@@ -2968,6 +2969,7 @@ fn lower_tlm_initiator_cohort(
     }));
 
     items.push(ModuleBodyItem::RegBlock(RegBlock {
+        compiler_generated: true,
         clock: clk,
         clock_edge,
         stmts: seq_body,
@@ -4257,6 +4259,7 @@ fn inline_lower_tlm_initiator_group(
     }
 
     items.push(ModuleBodyItem::RegBlock(RegBlock {
+        compiler_generated: true,
         clock: clk,
         clock_edge,
         stmts: seq_body,
@@ -4886,6 +4889,7 @@ fn inline_lower_tlm_fork_join_all(
     }));
 
     items.push(ModuleBodyItem::RegBlock(RegBlock {
+        compiler_generated: true,
         clock: t.clock,
         clock_edge: t.clock_edge,
         stmts: seq_body,
@@ -5326,6 +5330,7 @@ fn inline_lower_tlm_initiator(
     }
 
     let reg_block = RegBlock {
+        compiler_generated: true,
         clock: t.clock.clone(),
         clock_edge: t.clock_edge,
         stmts: seq_body,
@@ -5949,6 +5954,7 @@ fn lower_indexed_tlm_target_group(
     }));
     let rsp_ready_member = port_member(format!("{method_name}_rsp_ready"));
     out.push(ModuleBodyItem::RegBlock(RegBlock {
+        compiler_generated: true,
         clock: Ident::new(group_clk.clone(), span),
         clock_edge: group_clock_edge,
         stmts: vec![
@@ -6586,6 +6592,7 @@ fn inline_lower_tlm_target_with_io(
     }
 
     let reg_block = RegBlock {
+        compiler_generated: true,
         clock: t.clock.clone(),
         clock_edge: t.clock_edge,
         stmts: seq_body,

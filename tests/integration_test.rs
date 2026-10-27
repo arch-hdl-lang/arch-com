@@ -19626,8 +19626,8 @@ fn test_lowered_threads_codegen_has_no_extra_blank_separator_or_eof_blank() {
         "helper/public boundary must not contain a blank separator:\n{sv}"
     );
     assert!(
-        sv.ends_with("endmodule\n") && !sv.ends_with("endmodule\n\n"),
-        "generated SV must end with one newline after final endmodule:\n{sv:?}"
+        sv.ends_with("endmodule\n`default_nettype wire\n"),
+        "generated SV must restore the net default directly after final endmodule:\n{sv:?}"
     );
 }
 
@@ -32372,6 +32372,9 @@ fn test_generate_for_wire_decls() {
             wire w_i: UInt<8>;
           end generate_for
           comb
+            w_0 = 0;
+            w_1 = 1;
+            w_2 = 2;
             out = w_0 +% w_1 +% w_2;
           end comb
         end module M
@@ -41669,6 +41672,216 @@ end module Scope
             errs.iter().any(|e| e.contains(ghost)),
             "`{ghost}` must be reported as undefined, got: {errs:?}"
         );
+    }
+}
+
+const CHILD_1074: &str = r#"
+module Child
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  comb
+    y = a;
+  end comb
+end module Child
+"#;
+
+#[test]
+fn test_undefined_inst_input_rejected_1074_case1() {
+    for expr in ["dinn", "din +% dinn"] {
+        let source = format!(
+            "{CHILD_1074}\nmodule Parent
+  port din: in UInt<8>;
+  port o: out UInt<8>;
+  inst c: Child
+    a <- {expr};
+    y -> o;
+  end inst c
+end module Parent
+"
+        );
+        let errs = typecheck_errors(&source).expect_err("undefined inst input must fail");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("undefined name") && e.contains("dinn")),
+            "{errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_undriven_wire_rejected_1074_case2() {
+    let source = format!(
+        "{CHILD_1074}\nmodule Parent
+  port din: in UInt<8>;
+  port o: out UInt<8>;
+  wire w: UInt<8>;
+  inst c: Child
+    a <- din;
+    y -> ww;
+  end inst c
+  comb
+    o = w;
+  end comb
+end module Parent
+"
+    );
+    let errs = typecheck_errors(&source).expect_err("declared undriven wire must fail");
+    assert!(
+        errs.iter().any(|e| e.contains("wire `w` has no driver")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn test_seq_multiple_drivers_rejected_1074_case4() {
+    let source = r#"
+module Parent
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port o: out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= a;
+  end seq
+  seq on clk rising
+    r <= b;
+  end seq
+  comb
+    o = r;
+  end comb
+end module Parent
+"#;
+    let errs = typecheck_errors(source).expect_err("two seq drivers must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("multiple drivers") && e.contains("`r`")),
+        "{errs:?}"
+    );
+    let single_block = source.replace("  end seq\n  seq on clk rising\n    r <= b;", "    r <= b;");
+    typecheck_errors(&single_block).expect("repeated writes within one seq block are legal");
+}
+
+#[test]
+fn test_seq_indexed_driver_ownership_1074() {
+    for (second_target, same_block, valid) in [
+        ("r[1]", false, true),
+        ("r[0]", false, false),
+        ("r[idx]", false, false),
+        ("r", false, false),
+        ("r", true, true),
+    ] {
+        let rhs = if second_target == "r" { "r" } else { "b" };
+        let boundary = if same_block {
+            ""
+        } else {
+            "end seq\nseq on clk rising"
+        };
+        let source = format!(
+            r#"
+module IndexedDrivers
+  port clk: in Clock<SysDomain>;
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port idx: in UInt<1>;
+  port o: out UInt<8>;
+  reg r: Vec<UInt<8>, 2> reset none;
+  seq on clk rising
+    r[0] <= a;
+  {boundary}
+    {second_target} <= {rhs};
+  end seq
+  comb
+    o = r[0];
+  end comb
+end module IndexedDrivers
+"#
+        );
+        let result = typecheck_errors(&source);
+        if valid {
+            result.expect("disjoint elements or writes in one block are legal");
+        } else {
+            let errs = result.expect_err("overlapping sequential writers must fail");
+            assert!(
+                errs.iter().any(|e| e.contains("multiple drivers")),
+                "{errs:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_inst_input_resolution_in_preserved_generate_1074() {
+    for (input, valid) in [("din[i]", true), ("dinn[i]", false)] {
+        let source = format!(
+            r#"{CHILD_1074}
+module GeneratedInputs
+  param N: const = 2;
+  port din: in Vec<UInt<8>, N>;
+  port o: out Vec<UInt<8>, N>;
+  generate_for i in 0..N-1
+    inst c_i: Child
+      a <- {input};
+      y -> o[i];
+    end inst c_i
+  end generate_for
+end module GeneratedInputs
+"#
+        );
+        let result = typecheck_errors(&source);
+        if valid {
+            result.expect("the generate iterator must resolve in input expressions");
+        } else {
+            let errs = result.expect_err("undefined generated instance input must fail");
+            assert!(
+                errs.iter()
+                    .any(|e| e.contains("undefined name") && e.contains("dinn")),
+                "{errs:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_inst_output_nets_and_declared_wires_remain_legal_1074() {
+    for target in ["w", "child_result"] {
+        let source = format!(
+            "{CHILD_1074}\nmodule Parent
+  port din: in UInt<8>;
+  port o: out UInt<8>;
+  wire w: UInt<8>;
+  inst c: Child
+    a <- din;
+    y -> {target};
+  end inst c
+  comb
+    {}
+    o = w;
+  end comb
+end module Parent
+",
+            if target == "w" {
+                ""
+            } else {
+                "w = child_result;"
+            }
+        );
+        typecheck_errors(&source)
+            .expect("instance outputs can drive declared or newly bound wires");
+    }
+}
+
+#[test]
+fn test_sv_disables_implicit_nets_1074() {
+    let tokens = lexer::tokenize(CHILD_1074).unwrap();
+    let ast = Parser::new(tokens, CHILD_1074).parse_source_file().unwrap();
+    let ast = elaborate::elaborate(ast).unwrap();
+    let symbols = resolve::resolve(&ast).unwrap();
+    let mut cg = Codegen::new(&symbols, &ast, Default::default());
+    for sv in [cg.generate(), cg.generate_items(&ast.items)] {
+        assert!(sv.starts_with("`default_nettype none\n"), "{sv}");
+        assert!(sv.ends_with("`default_nettype wire\n"), "{sv}");
     }
 }
 

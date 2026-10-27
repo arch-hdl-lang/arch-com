@@ -2042,6 +2042,7 @@ fn check_gen_for_comb_stmts(stmts: &[Stmt], var: &str, errors: &mut Vec<CompileE
 
 fn subst_reg_block(rb: &RegBlock, var: &str, val: i64) -> RegBlock {
     RegBlock {
+        compiler_generated: rb.compiler_generated,
         clock: rb.clock.clone(),
         clock_edge: rb.clock_edge,
         stmts: rb

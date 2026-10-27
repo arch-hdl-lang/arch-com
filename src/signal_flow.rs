@@ -50,13 +50,16 @@ pub enum DriveKind {
     Comb,
     /// An `inst` output connection — a continuous driver.
     Inst,
-    /// A `seq` or `latch` block. Compared ONLY against `Inst` drivers; see
-    /// [`check_multi_driver`].
+    /// A user-written `seq` or `latch` block.
     Seq,
+    /// Compiler-synthesized sequential logic, which may share registers.
+    GeneratedSeq,
 }
 
 /// One block-level drive record for a signal.
 pub struct DriveEntry {
+    /// Distinguishes blocks, even after a generate loop clones source spans.
+    pub block_id: usize,
     pub span: Span,
     pub kind: DriveKind,
 }
@@ -127,11 +130,10 @@ fn lhs_base_name(expr: &Expr) -> Option<String> {
 /// inst items driving the same constant element (`edges[1][0]` twice) still
 /// collide, preserving genuine multi-driver detection.
 ///
-/// This granularity is deliberately NOT applied to `comb`/`seq` blocks:
-/// each such block is one `always_comb`/`always_ff` over the whole array,
-/// so two blocks writing different constant indices of one Vec ARE a real
-/// SV conflict and must keep erroring (see
-/// `test_multi_driver_vec_index_from_two_blocks_errors`).
+/// Sequential blocks also retain constant elements: a generate loop may
+/// legitimately emit one always_ff per element. Whole-vector or dynamic-index
+/// writes alias those elements in `check_multi_driver`. Comb blocks keep the
+/// conservative whole-array rule (`test_multi_driver_vec_index_from_two_blocks_errors`).
 fn inst_conn_driver_name(expr: &Expr) -> Option<String> {
     // Walk down the chain of `Index` accesses (outermost first), collecting
     // leading constant indices until a non-index base or a non-constant index
@@ -269,30 +271,47 @@ fn target_mentions_loop_var(expr: &Expr, loop_var: &str) -> bool {
 /// span of the first assignment to each name.
 fn collect_stmts(stmts: &[Stmt], out: &mut HashMap<String, Span>) {
     for s in stmts {
-        collect_one_stmt(s, out);
+        collect_one_stmt(s, out, false);
     }
 }
 
-fn collect_one_stmt(stmt: &Stmt, out: &mut HashMap<String, Span>) {
+fn collect_seq_stmts(stmts: &[Stmt], out: &mut HashMap<String, Span>) {
+    for s in stmts {
+        collect_one_stmt(s, out, true);
+    }
+}
+
+fn collect_one_stmt(stmt: &Stmt, out: &mut HashMap<String, Span>, sequential: bool) {
     match stmt {
         Stmt::Assign(a) => {
-            if let Some(name) = lhs_base_name(&a.target) {
+            let name = if sequential {
+                inst_conn_driver_name(&a.target)
+            } else {
+                lhs_base_name(&a.target)
+            };
+            if let Some(name) = name {
                 out.entry(name).or_insert(a.span);
             }
         }
         Stmt::IfElse(ie) => {
-            collect_stmts(&ie.then_stmts, out);
-            collect_stmts(&ie.else_stmts, out);
+            collect_nested_stmts(&ie.then_stmts, out, sequential);
+            collect_nested_stmts(&ie.else_stmts, out, sequential);
         }
         Stmt::Match(ms) => {
             for arm in &ms.arms {
-                collect_stmts(&arm.body, out);
+                collect_nested_stmts(&arm.body, out, sequential);
             }
         }
-        Stmt::For(fl) => collect_stmts(&fl.body, out),
-        Stmt::Init(ib) => collect_stmts(&ib.body, out),
-        Stmt::DoUntil { body, .. } => collect_stmts(body, out),
+        Stmt::For(fl) => collect_nested_stmts(&fl.body, out, sequential),
+        Stmt::Init(ib) => collect_nested_stmts(&ib.body, out, sequential),
+        Stmt::DoUntil { body, .. } => collect_nested_stmts(body, out, sequential),
         Stmt::Log(_) | Stmt::WaitUntil(_, _) => {}
+    }
+}
+
+fn collect_nested_stmts(stmts: &[Stmt], out: &mut HashMap<String, Span>, sequential: bool) {
+    for stmt in stmts {
+        collect_one_stmt(stmt, out, sequential);
     }
 }
 
@@ -369,7 +388,7 @@ pub fn collect_module_drivers(
     // the design's checked point in parameter space (see the Generate arm).
     let param_defaults = param_default_values(m);
 
-    for item in &m.body {
+    for (block_id, item) in m.body.iter().enumerate() {
         // Collect signals driven by this block (one entry per signal —
         // deduplicates repeated assignments inside the same block).
         let (kind, block_targets): (DriveKind, HashMap<String, Span>) = match item {
@@ -390,26 +409,24 @@ pub fn collect_module_drivers(
                 }
                 (DriveKind::Comb, t)
             }
-            // RegBlock (seq) targets are recorded as `Seq` drivers, which
-            // `check_multi_driver` compares only against `inst` outputs.
-            // Seq-vs-seq checking stays deferred: the TLM target-thread
-            // inline lowering generates multiple RegBlocks that legitimately
-            // share register assignments (gated by state conditions), so a
-            // naive count-of-writers check produces false positives.  The
-            // C-seq repro from issue #375 needs a follow-up that can
-            // distinguish user-written from compiler-generated blocks.  An
-            // `inst` output on a seq-driven signal, by contrast, is never
-            // compiler-generated sharing: it is always two drivers in the SV
-            // (`always_ff` + port map) — issue #1063.
+            // Lowered TLM/thread blocks may intentionally share registers.
+            // Preserve that exemption without exempting user-written seq blocks.
             ModuleBodyItem::RegBlock(rb) => {
                 let mut t = HashMap::new();
-                collect_stmts(&rb.stmts, &mut t);
-                (DriveKind::Seq, t)
+                collect_seq_stmts(&rb.stmts, &mut t);
+                (
+                    if rb.compiler_generated {
+                        DriveKind::GeneratedSeq
+                    } else {
+                        DriveKind::Seq
+                    },
+                    t,
+                )
             }
             // Latch blocks: same treatment as seq blocks.
             ModuleBodyItem::LatchBlock(lb) => {
                 let mut t = HashMap::new();
-                collect_stmts(&lb.stmts, &mut t);
+                collect_seq_stmts(&lb.stmts, &mut t);
                 (DriveKind::Seq, t)
             }
             // Thread items are only present at typecheck time when threads
@@ -467,6 +484,7 @@ pub fn collect_module_drivers(
                             let self_conflict = !varies && iters.map(|n| n >= 2).unwrap_or(false);
                             let list = drivers.entry(name).or_default();
                             list.push(DriveEntry {
+                                block_id,
                                 span,
                                 kind: DriveKind::Inst,
                             });
@@ -475,6 +493,7 @@ pub fn collect_module_drivers(
                                 // second continuous driver so the conflict is
                                 // reported even with no module-scope driver.
                                 list.push(DriveEntry {
+                                    block_id,
                                     span,
                                     kind: DriveKind::Inst,
                                 });
@@ -497,10 +516,11 @@ pub fn collect_module_drivers(
         };
 
         for (name, span) in block_targets {
-            drivers
-                .entry(name)
-                .or_default()
-                .push(DriveEntry { span, kind });
+            drivers.entry(name).or_default().push(DriveEntry {
+                block_id,
+                span,
+                kind,
+            });
         }
     }
 
@@ -509,14 +529,10 @@ pub fn collect_module_drivers(
 
 /// Check for multi-driver conflicts.
 ///
-/// Returns one `CompileError::MultipleDrivers` per signal that is driven
-/// by two or more distinct continuous blocks (`comb`, `let`, `inst`
-/// output), or by a `seq`/`latch` block AND an `inst` output.  Seq/latch
-/// drivers are not compared with each other (deferred, see
-/// `collect_module_drivers`) nor with `comb`/`let` (a comb write to a `reg`
-/// is rejected separately by the typechecker).  Signals annotated `shared(or)` or
-/// `shared(and)` on the enclosing module's port list are exempt — they are
-/// intentionally multi-driven with compiler-synthesized reduction logic.
+/// Returns one error per signal with multiple continuous drivers, an instance
+/// output and sequential driver, or multiple sequential drivers with at least
+/// one user-written block. Only compiler-generated sequential sharing is exempt.
+/// Ports annotated `shared(or)` / `shared(and)` use synthesized reductions.
 pub fn check_multi_driver(
     m: &ModuleDecl,
     drivers: &HashMap<String, Vec<DriveEntry>>,
@@ -530,27 +546,57 @@ pub fn check_multi_driver(
 
     let mut errors: Vec<CompileError> = Vec::new();
     for (name, entries) in drivers {
-        if shared.contains(name.as_str()) {
+        if shared.contains(name.split('[').next().unwrap_or(name)) {
             continue;
         }
+        let has_seq = |es: &[DriveEntry]| {
+            es.iter()
+                .any(|e| matches!(e.kind, DriveKind::Seq | DriveKind::GeneratedSeq))
+        };
+        // A constant-index write aliases an explicit write of its enclosing
+        // vector, but not a sibling element. Look up only ancestor keys: large
+        // lowered modules must not pay for an all-pairs driver scan.
+        let mut overlapping: Vec<&DriveEntry> = entries.iter().collect();
+        for (offset, _) in name.match_indices('[') {
+            if let Some(parent) = drivers.get(&name[..offset]) {
+                if has_seq(entries) || has_seq(parent) {
+                    overlapping.extend(parent);
+                }
+            }
+        }
+        let entries = overlapping;
         let continuous: Vec<&DriveEntry> = entries
             .iter()
-            .filter(|e| e.kind != DriveKind::Seq)
+            .filter(|e| matches!(e.kind, DriveKind::Comb | DriveKind::Inst))
+            .copied()
             .collect();
-        let report_span = if continuous.len() >= 2 {
-            Some(continuous[1].span)
-        } else if entries.iter().any(|e| e.kind == DriveKind::Inst) {
-            // Seq/latch target that an `inst` output also drives: report at
-            // the seq/latch write. That is always user-written, whereas the
-            // inst may be compiler-generated (a lowered `thread` lives in a
-            // `_<Module>_threads` child, whose inst has no source span).
-            entries
-                .iter()
-                .find(|e| e.kind == DriveKind::Seq)
-                .map(|e| e.span)
-        } else {
-            None
-        };
+        let mut seq_blocks = HashSet::new();
+        let sequential: Vec<&DriveEntry> = entries
+            .iter()
+            .filter(|e| matches!(e.kind, DriveKind::Seq | DriveKind::GeneratedSeq))
+            .filter(|e| seq_blocks.insert(e.block_id))
+            .copied()
+            .collect();
+        let report_span =
+            if sequential.len() >= 2 && sequential.iter().any(|e| e.kind == DriveKind::Seq) {
+                sequential
+                    .iter()
+                    .find(|e| e.kind == DriveKind::Seq)
+                    .map(|e| e.span)
+            } else if continuous.len() >= 2 {
+                Some(continuous[1].span)
+            } else if entries.iter().any(|e| e.kind == DriveKind::Inst) {
+                // Seq/latch target that an `inst` output also drives: report at
+                // the seq/latch write. That is always user-written, whereas the
+                // inst may be compiler-generated (a lowered `thread` lives in a
+                // `_<Module>_threads` child, whose inst has no source span).
+                entries
+                    .iter()
+                    .find(|e| matches!(e.kind, DriveKind::Seq | DriveKind::GeneratedSeq))
+                    .map(|e| e.span)
+            } else {
+                None
+            };
         if let Some(span) = report_span {
             errors.push(CompileError::MultipleDrivers {
                 name: name.clone(),
