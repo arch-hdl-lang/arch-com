@@ -189,18 +189,39 @@ structure Module where
   procs : List Proc
   /-- Clock of the single `always_ff @(posedge clk)`, if any. -/
   ffClk : Option Sig
+  /-- Second sensitivity entry `or posedge s` (`(s, true)`) / `or negedge s`
+  (`(s, false)`): an asynchronous reset. -/
+  ffAsync : Option (Sig × Bool) := none
   ffBody : Stmts
 
 namespace Module
 
 def W (m : Module) : Sig → Nat := widthOf (declsOf m.ports m.locals)
 
+/-- The asynchronous sensitivity entry is at its active level (bit 0 high for
+`posedge`, low for `negedge`). -/
+def levelActive (W : Sig → Nat) (s : Sig × Bool) (σ : Env) : Bool :=
+  if s.2 then mask 1 (mask (W s.1) (σ s.1)) != 0 else mask 1 (mask (W s.1) (σ s.1)) == 0
+
+/-- `always_ff` variables in the cycle whose state is `post`, following the
+cycle `pre`. The clock edge between them runs the body on the pre-edge state.
+With an asynchronous entry, a cycle in which it is at its active level has
+seen that edge (or holds the level across the clock edge), so the body runs
+on the cycle's own state. This reading of IEEE 1800 event semantics is exact
+for the shape `Module.asyncShaped` admits: the body is
+`if (<active level>) <constant assignments> else …`. -/
+def next (m : Module) (pre post : Env) : Env :=
+  match m.ffAsync with
+  | some s => if levelActive m.W s post then execN m.W post m.ffBody post
+    else execN m.W pre m.ffBody pre
+  | none => execN m.W pre m.ffBody pre
+
 /-- Trace semantics: every continuous process is settled in every cycle;
-every variable written by `always_ff` takes its nonblocking next value at the
-next cycle. Inputs are unconstrained. -/
+every variable written by `always_ff` takes its `next` value at the next
+cycle. Inputs are unconstrained. -/
 def Run (m : Module) (tr : Nat → Env) : Prop :=
   ∀ t, (∀ p ∈ m.procs, ∀ y, p.exec m.W (tr t) y = tr t y) ∧
-    ∀ r ∈ targets m.ffBody, tr (t + 1) r = execN m.W (tr t) m.ffBody (tr t) r
+    ∀ r ∈ targets m.ffBody, tr (t + 1) r = m.next (tr t) (tr (t + 1)) r
 
 end Module
 
@@ -368,18 +389,54 @@ end
 
 namespace Module
 
+def levelCond (W : Sig → Nat) (s : Sig × Bool) : Sir :=
+  if s.2 then .resize 1 (.var s.1 (W s.1)) else .lnot (.resize 1 (.var s.1 (W s.1)))
+
 def toNetlist (m : Module) : Netlist where
   combs := m.procs.map (Proc.lower m.W)
   seq := lowerStmts m.W m.ffBody
   regs := targets m.ffBody
+  async := m.ffAsync.map (levelCond m.W)
+
+def constAssigns : Stmts → Bool
+  | .nil => true
+  | .assign _ (.lit ..) r => constAssigns r
+  | _ => false
+
+/-- Shape under which `Module.next` is a faithful reading of an asynchronous
+`always_ff`: the body first tests the reset's active level and the reset
+branch only assigns constants. Not needed for `check_sound` (which relates
+the two models), but required by `check` so the SV model is trustworthy. -/
+def asyncShaped (m : Module) : Bool :=
+  match m.ffAsync with
+  | none => true
+  | some s =>
+    match m.ffBody with
+    | .ite c t _ .nil => decide ((lowerCond m.W c).norm = (levelCond m.W s).norm) && constAssigns t
+    | _ => false
+
+theorem next_toNetlist (m : Module) (h : m.ffBody.supported = true) (pre post : Env) :
+    m.toNetlist.next pre post = m.next pre post := by
+  have hseq : ∀ σ, m.toNetlist.seq.execN σ σ = execN m.W σ m.ffBody σ :=
+    fun σ => execN_lower m.W σ m.ffBody h σ
+  unfold Netlist.next next Netlist.edge
+  have ha : m.toNetlist.async = m.ffAsync.map (levelCond m.W) := rfl
+  rw [ha]
+  cases m.ffAsync with
+  | none => simp [hseq]
+  | some s =>
+    obtain ⟨sig, pos⟩ := s
+    have hc : ((levelCond m.W (sig, pos)).eval post ≠ 0) = (levelActive m.W (sig, pos) post = true) := by
+      cases pos <;> simp [levelCond, levelActive, Sir.eval, b2n]
+    simp only [Option.map_some, hc, hseq]
 
 theorem run_iff (m : Module) (h : m.supported = true) (tr : Nat → Env) :
     m.Run tr ↔ m.toNetlist.Run tr := by
   simp only [Module.supported, Bool.and_eq_true, List.all_eq_true] at h
   obtain ⟨hp, hff⟩ := h
-  simp only [Run, Netlist.Run, AllStable, Arch.CodegenProof.Stmts.Stable, Netlist.edge,
-    toNetlist, List.mem_map, forall_exists_index, and_imp, forall_apply_eq_imp_iff₂,
-    execN_lower m.W _ m.ffBody hff]
+  simp only [Run, Netlist.Run, AllStable, Arch.CodegenProof.Stmts.Stable,
+    next_toNetlist m hff]
+  simp only [toNetlist, List.mem_map, forall_exists_index, and_imp, forall_apply_eq_imp_iff₂]
   constructor
   · intro hr t
     refine ⟨fun p hpm y => ?_, (hr t).2⟩

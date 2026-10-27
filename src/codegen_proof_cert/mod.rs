@@ -21,7 +21,7 @@ mod sv_reader;
 
 use crate::ast::{
     BinOp as AstBinOp, ClockEdge, Expr, ExprKind, Item, LitKind, ModuleBodyItem, ModuleDecl,
-    RegReset, ResetKind, ResetLevel, Stmt, TypeExpr, UnaryOp,
+    ParamKind, RegReset, ResetKind, ResetLevel, Stmt, TypeExpr, UnaryOp,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -92,6 +92,7 @@ struct CoreModule {
     locals: Vec<(u32, u32)>,
     clk: Option<u32>,
     rst: Option<(u32, bool)>,
+    rst_async: bool,
     regs: Vec<(u32, CoreExpr)>,
     combs: Vec<Vec<CoreStmt>>,
     seq: Vec<CoreStmt>,
@@ -138,6 +139,8 @@ struct SvModule {
     locals: Vec<(u32, u32)>,
     procs: Vec<SvProc>,
     ff_clk: Option<u32>,
+    /// `or posedge s` → `(s, true)`, `or negedge s` → `(s, false)`.
+    ff_async: Option<(u32, bool)>,
     ff_body: Vec<SvStmt>,
 }
 
@@ -147,6 +150,10 @@ struct SvModule {
 struct SigTable {
     names: Vec<String>,
     ids: HashMap<String, u32>,
+    /// Default values of the module's integer parameters, as the ARCH side
+    /// sees them. The SV reader deliberately does not use these: it
+    /// evaluates the `parameter` defaults it reads from the emitted text.
+    params: HashMap<String, u64>,
 }
 
 impl SigTable {
@@ -182,7 +189,8 @@ pub struct CodegenCert {
 
 /// Build codegen certificates for every `module` in `items`, reading each
 /// module's emitted SV out of `sv_text` (the complete `arch build` output for
-/// those items). Fails only when no module could be certified.
+/// those items). When no module could be certified, `certified` is empty and
+/// `lean` is empty; the caller reports `skipped` and decides what to do.
 pub fn render_lean_items<'a, I>(items: I, sv_text: &str) -> Result<CodegenCert, String>
 where
     I: IntoIterator<Item = &'a Item>,
@@ -221,11 +229,12 @@ where
         }
     }
     if certified.is_empty() {
-        let mut msg = "no module in the codegen-certificate subset".to_string();
-        for (name, reason) in &skipped {
-            let _ = write!(msg, "\n  module `{name}`: {reason}");
-        }
-        return Err(msg);
+        return Ok(CodegenCert {
+            lean: String::new(),
+            certified,
+            skipped,
+            uncovered_constructs,
+        });
     }
     let mut lean = String::new();
     lean.push_str("import ArchCodegenProof\n\nopen Arch.CodegenProof\n\n");
@@ -262,30 +271,76 @@ fn certify_module(m: &ModuleDecl, sv_text: &str) -> Result<String, String> {
     let (core, sigs) = translate_module(m)?;
     let sv = sv_reader::read_module(sv_text, &m.name.name, &sigs)
         .map_err(|e| format!("emitted SV is outside the reader subset: {e}"))?;
-    Ok(render_module(&m.name.name, &core, &sv, &sigs))
+    let params: Vec<(String, u64)> = m
+        .params
+        .iter()
+        .map(|p| (p.name.name.clone(), sigs.params[&p.name.name]))
+        .collect();
+    Ok(render_module(&m.name.name, &params, &core, &sv, &sigs))
 }
 
 // ── ARCH AST → ARCH-Core ───────────────────────────────────────────────────
 
 type R<T> = Result<T, String>;
 
-fn const_u64(e: &Expr) -> R<u64> {
-    match &e.kind {
-        ExprKind::Literal(LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v)) => Ok(*v),
-        ExprKind::Literal(LitKind::Sized(_, v)) => Ok(*v),
-        _ => Err("non-literal width or index (parameters are not yet covered)".to_string()),
+/// Evaluate a compile-time integer expression over the module's parameter
+/// defaults. Intermediate results must stay non-negative and below 2^31 —
+/// the range of the SV `parameter int` the codegen emits.
+fn const_u64(e: &Expr, params: &HashMap<String, u64>) -> R<u64> {
+    const LIMIT: u64 = 1 << 31;
+    let v = match &e.kind {
+        ExprKind::Literal(LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v)) => *v,
+        ExprKind::Literal(LitKind::Sized(_, v)) => *v,
+        ExprKind::Ident(name) => *params
+            .get(name)
+            .ok_or_else(|| format!("`{name}` is not a compile-time integer"))?,
+        ExprKind::Binary(op, l, r) => {
+            let (l, r) = (const_u64(l, params)?, const_u64(r, params)?);
+            match op {
+                AstBinOp::Add => l + r,
+                AstBinOp::Sub => l
+                    .checked_sub(r)
+                    .ok_or_else(|| "negative constant expression".to_string())?,
+                AstBinOp::Mul => l
+                    .checked_mul(r)
+                    .ok_or_else(|| "constant expression overflows".to_string())?,
+                AstBinOp::Div | AstBinOp::Mod if r == 0 => {
+                    return Err("division by zero in constant expression".to_string())
+                }
+                AstBinOp::Div => l / r,
+                AstBinOp::Mod => l % r,
+                other => {
+                    return Err(format!(
+                        "operator `{other}` in a constant expression is not yet covered"
+                    ))
+                }
+            }
+        }
+        ExprKind::Clog2(a) => {
+            let a = const_u64(a, params)?;
+            if a <= 1 {
+                0
+            } else {
+                u64::from(64 - (a - 1).leading_zeros())
+            }
+        }
+        _ => return Err("constant expression form is not yet covered".to_string()),
+    };
+    if v >= LIMIT {
+        return Err("constant expression exceeds the 32-bit `parameter int` range".to_string());
     }
+    Ok(v)
 }
 
-fn const_u32(e: &Expr) -> R<u32> {
-    u32::try_from(const_u64(e)?).map_err(|_| "width too large".to_string())
+fn const_u32(e: &Expr, params: &HashMap<String, u64>) -> R<u32> {
+    u32::try_from(const_u64(e, params)?).map_err(|_| "width too large".to_string())
 }
 
-fn data_width(ty: &TypeExpr) -> R<u32> {
+fn data_width(ty: &TypeExpr, params: &HashMap<String, u64>) -> R<u32> {
     match ty {
         TypeExpr::Bool | TypeExpr::Bit => Ok(1),
         TypeExpr::UInt(w) => {
-            let w = const_u32(w)?;
+            let w = const_u32(w, params)?;
             if w == 0 {
                 return Err("zero-width UInt".to_string());
             }
@@ -311,24 +366,48 @@ fn bitlen(v: u64) -> u32 {
 /// * expressions: literals, signals, `+ - * +% -% *% & | ^ ~`, comparisons,
 ///   `and or not`, `?:`, `.trunc/.zext/.resize<N>()` and constant `[hi:lo]`.
 fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
-    if !m.params.is_empty() {
-        return Err("parameterized modules are not yet covered".to_string());
-    }
     if m.implements.is_some() || !m.hooks.is_empty() {
         return Err("`implements`/hooks are not yet covered".to_string());
     }
     let mut sigs = SigTable::default();
+    // Parameters are certified at their default values — the module exactly
+    // as `arch build` emits it. Instances that override them are separate
+    // elaborations and are not covered by this certificate.
+    for p in &m.params {
+        let name = &p.name.name;
+        if !matches!(p.kind, ParamKind::Const) || p.unpacked_size.is_some() {
+            return Err(format!(
+                "param `{name}`: only integer `const` parameters are covered"
+            ));
+        }
+        let default = p
+            .default
+            .as_ref()
+            .ok_or_else(|| format!("param `{name}` has no default value"))?;
+        let v = const_u64(default, &sigs.params).map_err(|e| format!("param `{name}`: {e}"))?;
+        sigs.params.insert(name.clone(), v);
+    }
     let mut ports = Vec::new();
     let mut clocks = Vec::new();
     // reset port name → active-high?
-    let mut resets: HashMap<String, bool> = HashMap::new();
+    // reset port name → (active-high?, asynchronous?)
+    let mut resets: HashMap<String, (bool, bool)> = HashMap::new();
     let mut outputs = Vec::new();
     for p in &m.ports {
         let name = &p.name.name;
-        if p.bus_info.is_some() || p.reg_info.is_some() || p.shared.is_some() || p.unpacked {
-            return Err(format!(
-                "port `{name}`: bus / `port reg` / shared / unpacked ports are not yet covered"
-            ));
+        let unsupported_port = if p.bus_info.is_some() {
+            Some("bus ports")
+        } else if p.reg_info.is_some() {
+            Some("`port reg` / `pipe_reg` ports")
+        } else if p.shared.is_some() {
+            Some("`shared` ports")
+        } else if p.unpacked {
+            Some("`unpacked` ports")
+        } else {
+            None
+        };
+        if let Some(kind) = unsupported_port {
+            return Err(format!("port `{name}`: {kind} are not yet covered"));
         }
         if p.default.is_some() {
             return Err(format!("port `{name}`: port defaults are not yet covered"));
@@ -339,15 +418,13 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
                 1
             }
             TypeExpr::Reset(kind, level) => {
-                if *kind != ResetKind::Sync {
-                    return Err(format!(
-                        "port `{name}`: asynchronous resets are not yet covered"
-                    ));
-                }
-                resets.insert(name.clone(), *level == ResetLevel::High);
+                resets.insert(
+                    name.clone(),
+                    (*level == ResetLevel::High, *kind == ResetKind::Async),
+                );
                 1
             }
-            ty => data_width(ty).map_err(|e| format!("port `{name}`: {e}"))?,
+            ty => data_width(ty, &sigs.params).map_err(|e| format!("port `{name}`: {e}"))?,
         };
         let sig = sigs.add(name)?;
         let dir = match p.direction {
@@ -367,7 +444,8 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
     for item in &m.body {
         match item {
             ModuleBodyItem::RegDecl(r) => {
-                let w = data_width(&r.ty).map_err(|e| format!("reg `{}`: {e}", r.name.name))?;
+                let w = data_width(&r.ty, &sigs.params)
+                    .map_err(|e| format!("reg `{}`: {e}", r.name.name))?;
                 let sig = sigs.add(&r.name.name)?;
                 locals.push((sig, w));
                 reg_sigs.push(sig);
@@ -379,7 +457,8 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
                         wd.name.name
                     ));
                 }
-                let w = data_width(&wd.ty).map_err(|e| format!("wire `{}`: {e}", wd.name.name))?;
+                let w = data_width(&wd.ty, &sigs.params)
+                    .map_err(|e| format!("wire `{}`: {e}", wd.name.name))?;
                 let sig = sigs.add(&wd.name.name)?;
                 locals.push((sig, w));
                 wire_sigs.push(sig);
@@ -391,7 +470,8 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
                 let ty = l.ty.as_ref().ok_or_else(|| {
                     format!("let `{}`: untyped `let` is not yet covered", l.name.name)
                 })?;
-                let w = data_width(ty).map_err(|e| format!("let `{}`: {e}", l.name.name))?;
+                let w = data_width(ty, &sigs.params)
+                    .map_err(|e| format!("let `{}`: {e}", l.name.name))?;
                 let sig = sigs.add(&l.name.name)?;
                 locals.push((sig, w));
             }
@@ -405,50 +485,60 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
     let mut clk = None;
     let mut regs = Vec::new();
     let mut rst: Option<(u32, bool)> = None;
+    let mut rst_async = false;
     for item in &m.body {
         match item {
             ModuleBodyItem::RegDecl(r) => {
                 let name = &r.name.name;
-                if r.init.is_some() || r.guard.is_some() || r.multicycle.is_some() {
-                    return Err(format!(
-                        "reg `{name}`: `init`/`guard`/`multicycle` are not yet covered"
-                    ));
+                for (present, what) in [
+                    (r.init.is_some(), "`init`"),
+                    (r.guard.is_some(), "`guard`"),
+                    (r.multicycle.is_some(), "`multicycle`"),
+                ] {
+                    if present {
+                        return Err(format!("reg `{name}`: {what} is not yet covered"));
+                    }
                 }
-                let (rst_name, high, value) = match &r.reset {
+                let (rst_name, high, is_async, value) = match &r.reset {
                     RegReset::None => {
                         return Err(format!(
                             "reg `{name}`: registers without reset are not yet covered"
                         ))
                     }
                     RegReset::Inherit(rs, v) => {
-                        let high = *resets.get(&rs.name).ok_or_else(|| {
-                            format!(
-                                "reg `{name}`: reset `{}` is not a synchronous reset port",
-                                rs.name
-                            )
+                        let (high, is_async) = *resets.get(&rs.name).ok_or_else(|| {
+                            format!("reg `{name}`: reset `{}` is not a reset port", rs.name)
                         })?;
-                        (rs.name.clone(), high, v)
+                        (rs.name.clone(), high, is_async, v)
                     }
                     RegReset::Explicit(rs, kind, level, v) => {
-                        if *kind != ResetKind::Sync || !resets.contains_key(&rs.name) {
+                        let Some(&(_, port_async)) = resets.get(&rs.name) else {
                             return Err(format!(
-                                "reg `{name}`: only synchronous resets on a reset port are covered"
+                                "reg `{name}`: reset `{}` is not a reset port",
+                                rs.name
+                            ));
+                        };
+                        let is_async = *kind == ResetKind::Async;
+                        if is_async != port_async {
+                            return Err(format!(
+                                "reg `{name}`: reset kind differs from its port's; not covered"
                             ));
                         }
-                        (rs.name.clone(), *level == ResetLevel::High, v)
+                        (rs.name.clone(), *level == ResetLevel::High, is_async, v)
                     }
                 };
                 let rs = sigs
                     .get(&rst_name)
                     .expect("reset port is in the signal table");
                 if let Some(prev) = rst {
-                    if prev != (rs, high) {
+                    if prev != (rs, high) || rst_async != is_async {
                         return Err(
                             "registers with different resets are not yet covered".to_string()
                         );
                     }
                 }
                 rst = Some((rs, high));
+                rst_async = is_async;
                 let sig = sigs.get(name).expect("reg is in the signal table");
                 regs.push((sig, expr(value, &sigs)?));
             }
@@ -490,6 +580,7 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
         locals,
         clk,
         rst,
+        rst_async,
         regs,
         combs,
         seq: seq.unwrap_or_default(),
@@ -559,6 +650,10 @@ fn expr(e: &Expr, sigs: &SigTable) -> R<CoreExpr> {
         }
         ExprKind::Literal(LitKind::Sized(w, v)) => CoreExpr::Lit(*w, *v),
         ExprKind::Bool(v) => CoreExpr::Bool(*v),
+        ExprKind::Ident(name) if sigs.params.contains_key(name) => {
+            let v = sigs.params[name];
+            CoreExpr::Lit(bitlen(v), v)
+        }
         ExprKind::Ident(name) => CoreExpr::Sig(
             sigs.get(name)
                 .ok_or_else(|| format!("reference to unknown signal `{name}`"))?,
@@ -592,10 +687,10 @@ fn expr(e: &Expr, sigs: &SigTable) -> R<CoreExpr> {
         ExprKind::MethodCall(recv, method, args)
             if matches!(method.name.as_str(), "trunc" | "zext" | "resize") && args.len() == 1 =>
         {
-            CoreExpr::Resize(const_u32(&args[0])?, b(recv)?)
+            CoreExpr::Resize(const_u32(&args[0], &sigs.params)?, b(recv)?)
         }
         ExprKind::BitSlice(base, hi, lo) => {
-            let (hi, lo) = (const_u64(hi)?, const_u64(lo)?);
+            let (hi, lo) = (const_u64(hi, &sigs.params)?, const_u64(lo, &sigs.params)?);
             if lo > hi {
                 return Err("descending bit slice".to_string());
             }
@@ -750,9 +845,25 @@ fn lean_opt(x: Option<u32>) -> String {
     x.map_or("none".to_string(), |v| format!("some {v}"))
 }
 
-fn render_module(name: &str, core: &CoreModule, sv: &SvModule, sigs: &SigTable) -> String {
+fn render_module(
+    name: &str,
+    params: &[(String, u64)],
+    core: &CoreModule,
+    sv: &SvModule,
+    sigs: &SigTable,
+) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "\n/-! ## module `{name}`\n\nSignal ids:");
+    let _ = writeln!(out, "\n/-! ## module `{name}`\n");
+    if !params.is_empty() {
+        let list: Vec<String> = params.iter().map(|(n, v)| format!("`{n}` = {v}")).collect();
+        let _ = writeln!(
+            out,
+            "Certified at the default parameter values {}. Instances that override \
+             them are NOT covered by this certificate.\n",
+            list.join(", ")
+        );
+    }
+    out.push_str("Signal ids:\n");
     for (i, n) in sigs.names.iter().enumerate() {
         let _ = writeln!(out, "* {i} = `{n}`");
     }
@@ -767,6 +878,7 @@ fn render_module(name: &str, core: &CoreModule, sv: &SvModule, sigs: &SigTable) 
         .rst
         .map_or("none".to_string(), |(s, h)| format!("some ({s}, {h})"));
     let _ = writeln!(out, "  rst := {rst}");
+    let _ = writeln!(out, "  rstAsync := {}", core.rst_async);
     let regs: Vec<String> = core
         .regs
         .iter()
@@ -790,9 +902,15 @@ fn render_module(name: &str, core: &CoreModule, sv: &SvModule, sigs: &SigTable) 
         .collect();
     let _ = writeln!(out, "  procs := [{}]", procs.join(",\n    "));
     let _ = writeln!(out, "  ffClk := {}", lean_opt(sv.ff_clk));
+    let ff_async = sv
+        .ff_async
+        .map_or("none".to_string(), |(s, pos)| format!("some ({s}, {pos})"));
+    let _ = writeln!(out, "  ffAsync := {ff_async}");
     let _ = writeln!(out, "  ffBody := {}\n", lean_sv_stmts(&sv.ff_body));
 
-    out.push_str("theorem check_ok : check core sv = true := by decide\n\n");
+    // `+kernel` evaluates the checker in the kernel directly; the elaborator's
+    // own evaluator hits `maxRecDepth` on large modules (e.g. e203_core).
+    out.push_str("theorem check_ok : check core sv = true := by decide +kernel\n\n");
     out.push_str(
         "theorem codegen_correct :\n    core.ports = sv.ports ∧ core.clk = sv.ffClk ∧ \
          ∀ tr, core.Run tr ↔ sv.Run tr :=\n  check_sound check_ok\n\n",

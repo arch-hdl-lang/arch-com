@@ -10,7 +10,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const LEAN_PROJECT_DIR: &str = "proofs/lean_thread_lowering";
-const FIXTURES: &[&str] = &["accumulator", "operators", "comb_datapath", "counter_fsm"];
+const FIXTURES: &[&str] = &[
+    "accumulator",
+    "operators",
+    "comb_datapath",
+    "counter_fsm",
+    "param_datapath",
+    "async_counter",
+];
 
 fn find_lake() -> Option<PathBuf> {
     if Command::new("lake")
@@ -222,6 +229,48 @@ fn miscompiled_sv_is_rejected() {
             "16'(a * b)",
             "8'(a * b)",
         ),
+        (
+            "param_datapath",
+            "wrong parameter default",
+            "parameter int W = 8,",
+            "parameter int W = 9,",
+        ),
+        (
+            "param_datapath",
+            "wrong reset parameter",
+            "parameter int INIT = 3,",
+            "parameter int INIT = 2,",
+        ),
+        (
+            "param_datapath",
+            "shifted part-select",
+            "a[W - 4 +: 4]",
+            "a[W - 5 +: 4]",
+        ),
+        (
+            "async_counter",
+            "async reset made synchronous",
+            "posedge clk or negedge rst_n",
+            "posedge clk",
+        ),
+        (
+            "async_counter",
+            "async reset edge inverted",
+            "or negedge rst_n",
+            "or posedge rst_n",
+        ),
+        (
+            "async_counter",
+            "async reset level inverted",
+            "if ((!rst_n))",
+            "if (rst_n)",
+        ),
+        (
+            "accumulator",
+            "sync reset made asynchronous",
+            "@(posedge clk)",
+            "@(posedge clk or posedge rst)",
+        ),
     ];
     let mut failures = Vec::new();
     for (i, (name, what, from, to)) in cases.iter().enumerate() {
@@ -269,6 +318,15 @@ fn semantics_preserving_rewrites_are_accepted() {
         ),
         // Sized vs unsized literal of the same value.
         ("operators", "sized literal", "cnt <= 3;", "cnt <= 8'd3;"),
+        // Parameter-width cast spelled as a literal of the same value.
+        (
+            "param_datapath",
+            "literal cast width",
+            "W'(r + a)",
+            "8'(r + a)",
+        ),
+        // Indexed part-select spelled as a constant range.
+        ("param_datapath", "range select", "a[W - 4 +: 4]", "a[7:4]"),
     ];
     let mut failures = Vec::new();
     for (i, (name, what, from, to)) in cases.iter().enumerate() {
@@ -293,14 +351,13 @@ module Covered
   end comb
 end module Covered
 
-module Parameterized
-  param W: const = 4;
-  port a: in UInt<W>;
-  port y: out UInt<W>;
+module Signed
+  port a: in SInt<4>;
+  port y: out SInt<4>;
   comb
     y = a;
   end comb
-end module Parameterized
+end module Signed
 "#;
     let tokens = arch::lexer::tokenize(source).expect("lex");
     let items = arch::parser::Parser::new(tokens, source)
@@ -311,18 +368,19 @@ end module Parameterized
     let cert = arch::codegen_proof_cert::render_lean_items(items.iter(), sv).expect("cert");
     assert_eq!(cert.certified, vec!["Covered".to_string()]);
     assert_eq!(cert.skipped.len(), 1);
-    assert_eq!(cert.skipped[0].0, "Parameterized");
-    assert!(
-        cert.skipped[0].1.contains("parameterized"),
-        "{:?}",
-        cert.skipped
-    );
+    assert_eq!(cert.skipped[0].0, "Signed");
+    assert!(cert.skipped[0].1.contains("signed"), "{:?}", cert.skipped);
     assert!(cert.lean.contains("NOT covered"), "{}", cert.lean);
 
     // SV outside the reader subset is a skip with the reader's reason, and
-    // nothing certified is an error.
+    // then nothing is certified (the CLI turns that into an error).
     let only_bad = &items[..1];
     let bad_sv = "module Covered (\n  input logic [3:0] a,\n  output logic [3:0] y\n);\n  assign y = a << 1;\nendmodule\n";
-    let err = arch::codegen_proof_cert::render_lean_items(only_bad.iter(), bad_sv).unwrap_err();
-    assert!(err.contains("reader subset"), "{err}");
+    let cert = arch::codegen_proof_cert::render_lean_items(only_bad.iter(), bad_sv).expect("cert");
+    assert!(cert.certified.is_empty() && cert.lean.is_empty());
+    assert!(
+        cert.skipped[0].1.contains("reader subset"),
+        "{:?}",
+        cert.skipped
+    );
 }

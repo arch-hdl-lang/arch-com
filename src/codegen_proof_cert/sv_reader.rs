@@ -8,6 +8,7 @@
 //! rejected with a diagnostic rather than approximated.
 
 use super::{BinOp, CmpOp, Dir, Port, SigTable, SvCw, SvExpr, SvModule, SvProc, SvStmt};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
@@ -25,8 +26,8 @@ enum Tok {
 }
 
 const PUNCTS: &[&str] = &[
-    "&&", "||", "==", "!=", "<=", ">=", "(", ")", "[", "]", ":", ";", ",", "=", "<", ">", "+", "-",
-    "*", "&", "|", "^", "~", "!", "?", "@", "#",
+    "&&", "||", "==", "!=", "<=", ">=", "+:", "-:", "(", ")", "[", "]", ":", ";", ",", "=", "<",
+    ">", "+", "-", "*", "/", "%", "&", "|", "^", "~", "!", "?", "@", "#",
 ];
 
 fn lex(src: &str) -> Result<Vec<(Tok, usize)>, String> {
@@ -184,15 +185,22 @@ enum P {
     Cond(Box<P>, Box<P>, Box<P>),
     Cast(Box<P>, Box<P>),
     Slice(String, u64, u64),
+    Clog2(Box<P>),
 }
 
 struct Parser<'a> {
     toks: Vec<(Tok, usize)>,
     pos: usize,
     sigs: &'a SigTable,
+    /// `parameter int` / `localparam int` values, evaluated from the SV text
+    /// itself (not taken from the ARCH side).
+    params: HashMap<String, u64>,
 }
 
 type R<T> = Result<T, String>;
+
+/// `always_ff` clock, optional async `(signal, posedge?)` entry, and body.
+type AlwaysFf = (u32, Option<(u32, bool)>, Vec<SvStmt>);
 
 impl<'a> Parser<'a> {
     fn line(&self) -> usize {
@@ -256,17 +264,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn num(&mut self) -> R<u64> {
-        match self.peek() {
-            Some(Tok::Num(n)) => {
-                let n = *n;
-                self.pos += 1;
-                Ok(n)
-            }
-            _ => self.err("expected number"),
-        }
-    }
-
     fn sig(&self, name: &str) -> R<u32> {
         self.sigs.get(name).ok_or_else(|| {
             format!(
@@ -282,9 +279,9 @@ impl<'a> Parser<'a> {
             return Ok(1);
         }
         self.pos += 1;
-        let hi = self.num()?;
+        let hi = self.const_expr()?;
         self.expect_punct(":")?;
-        let lo = self.num()?;
+        let lo = self.const_expr()?;
         self.expect_punct("]")?;
         if lo != 0 {
             return self.err("only `[N:0]` packed ranges are supported");
@@ -317,7 +314,7 @@ impl<'a> Parser<'a> {
             &["==", "!="],
             &["<", "<=", ">", ">="],
             &["+", "-"],
-            &["*"],
+            &["*", "/", "%"],
         ];
         if level == LEVELS.len() {
             return self.unary();
@@ -381,14 +378,44 @@ impl<'a> Parser<'a> {
                 let e = self.paren_expr()?;
                 Ok(P::Unsigned(Box::new(e)))
             }
+            Some(Tok::Ident(name)) if name == "$clog2" => {
+                let e = self.paren_expr()?;
+                Ok(P::Clog2(Box::new(e)))
+            }
             Some(Tok::Ident(name)) if !name.starts_with('$') => {
                 if self.is_punct("[") {
+                    // Constant selects only: `x[hi:lo]`, `x[base +: w]`, `x[base -: w]`.
                     self.pos += 1;
-                    let hi = self.num()?;
-                    self.expect_punct(":")?;
-                    let lo = self.num()?;
+                    let first = self.const_expr()?;
+                    let (hi, lo) = if self.is_punct(":") {
+                        self.pos += 1;
+                        (first, self.const_expr()?)
+                    } else if self.is_punct("+:") || self.is_punct("-:") {
+                        let up = self.is_punct("+:");
+                        self.pos += 1;
+                        let w = self.const_expr()?;
+                        if w == 0 {
+                            return self.err("zero-width part-select");
+                        }
+                        if up {
+                            (first + w - 1, first)
+                        } else {
+                            let lo = first.checked_sub(w - 1).ok_or_else(|| {
+                                format!("line {}: part-select below bit 0", self.line())
+                            })?;
+                            (first, lo)
+                        }
+                    } else {
+                        return self.err("expected `:`, `+:` or `-:` in a select");
+                    };
                     self.expect_punct("]")?;
                     return Ok(P::Slice(name, hi, lo));
+                }
+                if matches!(self.peek(), Some(Tok::CastTick)) {
+                    // `W'(e)`: a parameter as the cast width.
+                    self.pos += 1;
+                    let e = self.paren_expr()?;
+                    return Ok(P::Cast(Box::new(P::Ident(name)), Box::new(e)));
                 }
                 Ok(P::Ident(name))
             }
@@ -404,6 +431,55 @@ impl<'a> Parser<'a> {
         let e = self.expr()?;
         self.expect_punct(")")?;
         Ok(e)
+    }
+
+    /// Parse and evaluate a constant integer expression.
+    fn const_expr(&mut self) -> R<u64> {
+        let p = self.expr()?;
+        self.ceval(&p)
+            .map_err(|e| format!("line {}: {e}", self.line()))
+    }
+
+    /// Evaluate a constant integer expression over the parameters read so far.
+    /// Results stay within the non-negative `int` range.
+    fn ceval(&self, p: &P) -> R<u64> {
+        const LIMIT: u64 = 1 << 31;
+        let v = match p {
+            P::Num(n) => *n,
+            P::Ident(x) => *self
+                .params
+                .get(x)
+                .ok_or_else(|| format!("`{x}` is not a constant"))?,
+            P::Bin(op, a, b) => {
+                let (a, b) = (self.ceval(a)?, self.ceval(b)?);
+                match *op {
+                    "+" => a + b,
+                    "-" => a
+                        .checked_sub(b)
+                        .ok_or_else(|| "negative constant expression".to_string())?,
+                    "*" => a
+                        .checked_mul(b)
+                        .ok_or_else(|| "constant expression overflows".to_string())?,
+                    "/" | "%" if b == 0 => return Err("division by zero".to_string()),
+                    "/" => a / b,
+                    "%" => a % b,
+                    other => return Err(format!("operator `{other}` in a constant expression")),
+                }
+            }
+            P::Clog2(a) => {
+                let a = self.ceval(a)?;
+                if a <= 1 {
+                    0
+                } else {
+                    u64::from(64 - (a - 1).leading_zeros())
+                }
+            }
+            _ => return Err(format!("unsupported constant expression {p:?}")),
+        };
+        if v >= LIMIT {
+            return Err("constant exceeds the 32-bit `int` range".to_string());
+        }
+        Ok(v)
     }
 
     fn to_cw(&self, p: &P) -> R<SvCw> {
@@ -424,13 +500,17 @@ impl<'a> Parser<'a> {
                 }
                 _ => return Err(format!("unsupported cast-width condition {c:?}")),
             },
+            P::Ident(_) | P::Bin(..) | P::Clog2(_) => SvCw::Num(self.ceval(p)?),
             _ => return Err(format!("unsupported cast width {p:?}")),
         })
     }
 
     fn to_expr(&self, p: &P) -> R<SvExpr> {
         Ok(match p {
+            // A `parameter int` is a 32-bit signed constant (IEEE 1800 §6.20.2).
+            P::Ident(x) if self.params.contains_key(x) => SvExpr::Lit(None, true, self.params[x]),
             P::Ident(x) => SvExpr::Ident(self.sig(x)?),
+            P::Clog2(_) => SvExpr::Lit(None, true, self.ceval(p)?),
             P::Num(n) => SvExpr::Lit(None, true, *n),
             P::Lit(size, signed, value) => {
                 if *size == Some(0) {
@@ -537,6 +617,22 @@ impl<'a> Parser<'a> {
 
     // ── module ─────────────────────────────────────────────────────────
 
+    /// `int NAME = const-expr` after `parameter` / `localparam`.
+    fn param_decl(&mut self) -> R<()> {
+        if !self.is_kw("int") {
+            return self.err("only `int` parameters are supported");
+        }
+        self.pos += 1;
+        let n = self.ident()?;
+        if self.sigs.get(&n).is_some() || self.params.contains_key(&n) {
+            return self.err(&format!("parameter `{n}` shadows another name"));
+        }
+        self.expect_punct("=")?;
+        let v = self.const_expr()?;
+        self.params.insert(n, v);
+        Ok(())
+    }
+
     fn module(&mut self, name: &str) -> R<SvModule> {
         self.expect_kw("module")?;
         let got = self.ident()?;
@@ -544,7 +640,18 @@ impl<'a> Parser<'a> {
             return self.err(&format!("expected module `{name}`"));
         }
         if self.is_punct("#") {
-            return self.err("parameterized SV modules are outside the subset");
+            self.pos += 1;
+            self.expect_punct("(")?;
+            loop {
+                self.expect_kw("parameter")?;
+                self.param_decl()?;
+                if self.is_punct(",") {
+                    self.pos += 1;
+                    continue;
+                }
+                break;
+            }
+            self.expect_punct(")")?;
         }
         let mut ports = Vec::new();
         self.expect_punct("(")?;
@@ -578,13 +685,17 @@ impl<'a> Parser<'a> {
 
         let mut locals = Vec::new();
         let mut procs = Vec::new();
-        let mut ff: Option<(u32, Vec<SvStmt>)> = None;
+        let mut ff: Option<AlwaysFf> = None;
         loop {
             if self.is_kw("endmodule") {
                 self.pos += 1;
                 break;
             }
-            if self.is_kw("logic") {
+            if self.is_kw("localparam") {
+                self.pos += 1;
+                self.param_decl()?;
+                self.expect_punct(";")?;
+            } else if self.is_kw("logic") {
                 self.pos += 1;
                 let width = self.packed_width()?;
                 let n = self.ident()?;
@@ -614,24 +725,39 @@ impl<'a> Parser<'a> {
                 self.expect_kw("posedge")?;
                 let clk = self.ident()?;
                 let clk = self.sig(&clk)?;
+                let mut asynch = None;
+                if self.is_kw("or") {
+                    self.pos += 1;
+                    let pos = if self.is_kw("posedge") {
+                        true
+                    } else if self.is_kw("negedge") {
+                        false
+                    } else {
+                        return self.err("expected `posedge` or `negedge`");
+                    };
+                    self.pos += 1;
+                    let r = self.ident()?;
+                    asynch = Some((self.sig(&r)?, pos));
+                }
                 if !self.is_punct(")") {
-                    return self.err("only a single `posedge clk` sensitivity is supported");
+                    return self.err("unsupported `always_ff` sensitivity list");
                 }
                 self.pos += 1;
-                ff = Some((clk, self.block(true)?));
+                ff = Some((clk, asynch, self.block(true)?));
             } else {
                 return self.err("unsupported module item");
             }
         }
-        let (ff_clk, ff_body) = match ff {
-            Some((c, b)) => (Some(c), b),
-            None => (None, Vec::new()),
+        let (ff_clk, ff_async, ff_body) = match ff {
+            Some((c, a, b)) => (Some(c), a, b),
+            None => (None, None, Vec::new()),
         };
         Ok(SvModule {
             ports,
             locals,
             procs,
             ff_clk,
+            ff_async,
             ff_body,
         })
     }
@@ -670,6 +796,7 @@ pub(super) fn read_module(sv_text: &str, name: &str, sigs: &SigTable) -> R<SvMod
         toks: lex(&sv_text[start..end])?,
         pos: 0,
         sigs,
+        params: HashMap::new(),
     };
     p.module(name)
 }

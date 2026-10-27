@@ -5,7 +5,7 @@ import ArchCodegenProof.Netlist
 
 `Core.Module` is the elaborated, thread-free form of an ARCH `module` that
 the codegen validator currently covers: `UInt<N>`/`Bool` ports, `let`,
-`wire` + `comb`, and registers with a synchronous reset in one
+`wire` + `comb`, and registers with a synchronous or asynchronous reset in one
 `seq on clk rising` block.
 
 This file is the **specification**: it states what an ARCH module means,
@@ -126,8 +126,10 @@ structure Module where
   locals : List (Sig × Nat)
   /-- Clock of the `seq block`; `none` for a purely combinational module. -/
   clk : Option Sig
-  /-- Synchronous reset `(signal, active-high?)` shared by every register. -/
+  /-- Reset `(signal, active-high?)` shared by every register. -/
   rst : Option (Sig × Bool)
+  /-- `Reset<Async, _>`: the reset also acts without a clock edge. -/
+  rstAsync : Bool := false
   /-- Registers of the `seq` block with their reset values. -/
   regs : List (Sig × Expr)
   /-- One process per `let` and per `comb` block. -/
@@ -150,12 +152,25 @@ def edge (m : Module) (σ : Env) : Env :=
   | some (r, high) =>
     if rstActive m.W r high σ then applyResets m.W σ m.regs σ else execN m.W σ m.seq σ
 
+/-- Register state in the cycle whose settled state is `post`, following the
+cycle `pre`. A clock edge separates the two cycles. With an asynchronous
+reset, any cycle in which reset is asserted shows every register at its reset
+value without waiting for a clock edge (the reset values are evaluated in
+that cycle); the clock edge itself sees the pre-edge reset level, exactly as
+in the synchronous case. -/
+def next (m : Module) (pre post : Env) : Env :=
+  match m.rst with
+  | some (r, high) =>
+    if m.rstAsync ∧ rstActive m.W r high post then applyResets m.W post m.regs post
+    else m.edge pre
+  | none => m.edge pre
+
 /-- Trace semantics: every `let`/`comb` process is settled in every cycle,
-and every register takes its `edge` value in the next cycle. Inputs are
+and every register takes its `next` value in the next cycle. Inputs are
 unconstrained. -/
 def Run (m : Module) (tr : Nat → Env) : Prop :=
   ∀ t, (∀ p ∈ m.combs, ∀ y, execB m.W p (tr t) y = tr t y) ∧
-    ∀ r ∈ m.regs.map Prod.fst, tr (t + 1) r = m.edge (tr t) r
+    ∀ r ∈ m.regs.map Prod.fst, tr (t + 1) r = m.next (tr t) (tr (t + 1)) r
 
 end Module
 
@@ -241,6 +256,7 @@ def toNetlist (m : Module) : Netlist where
   combs := m.combs.map (lowerStmts m.W)
   seq := m.lowerSeq
   regs := m.regs.map Prod.fst
+  async := if m.rstAsync then m.rst.map (fun p => rstCond m.W p.1 p.2) else none
 
 theorem edge_toNetlist (m : Module) (σ : Env) : m.toNetlist.edge σ = m.edge σ := by
   simp only [Netlist.edge, toNetlist, lowerSeq, edge]
@@ -251,8 +267,29 @@ theorem edge_toNetlist (m : Module) (σ : Env) : m.toNetlist.edge σ = m.edge σ
       execN_lower]
     cases high <;> simp [Sir.eval, b2n]
 
+theorem next_toNetlist (m : Module) (pre post : Env) :
+    m.toNetlist.next pre post = m.next pre post := by
+  have he : ∀ σ, m.toNetlist.edge σ = m.edge σ := edge_toNetlist m
+  have hasync : m.toNetlist.async =
+      if m.rstAsync then m.rst.map (fun p => rstCond m.W p.1 p.2) else none := rfl
+  have hseq : m.toNetlist.seq.execN post post = m.edge post := he post
+  unfold Netlist.next next
+  rw [hasync]
+  cases hr : m.rst with
+  | none => cases m.rstAsync <;> simp [he]
+  | some p =>
+    obtain ⟨r, high⟩ := p
+    cases ha : m.rstAsync
+    · simp [he]
+    · have hc : ((rstCond m.W r high).eval post ≠ 0) = (rstActive m.W r high post = true) := by
+        cases high <;> simp [rstCond, rstActive, Sir.eval, b2n]
+      simp only [if_true, Option.map_some, hc, true_and]
+      split
+      · next hact => rw [hseq]; simp [edge, hr, hact]
+      · exact he pre
+
 theorem run_iff (m : Module) (tr : Nat → Env) : m.Run tr ↔ m.toNetlist.Run tr := by
-  simp only [Run, Netlist.Run, AllStable, Arch.CodegenProof.Stmts.Stable, edge_toNetlist]
+  simp only [Run, Netlist.Run, AllStable, Arch.CodegenProof.Stmts.Stable, next_toNetlist]
   simp [toNetlist, execB_lower]
 
 end Module

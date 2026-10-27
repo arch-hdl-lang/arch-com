@@ -313,14 +313,25 @@ structure Netlist where
   combs : List Stmts
   seq : Stmts
   regs : List Sig
+  /-- Asynchronous reset level condition, if the clocked process also reacts
+  to a reset edge. In a cycle where it holds, the clocked process runs on
+  that cycle's own state instead of waiting for the clock. -/
+  async : Option Sir := none
 
 namespace Netlist
 
 /-- Register values after one rising clock edge from the settled state `σ`. -/
 def edge (n : Netlist) (σ : Env) : Env := n.seq.execN σ σ
 
+/-- Register values in the cycle whose state is `post`, following the cycle
+whose state is `pre`. -/
+def next (n : Netlist) (pre post : Env) : Env :=
+  match n.async with
+  | some c => if c.eval post ≠ 0 then n.seq.execN post post else n.edge pre
+  | none => n.edge pre
+
 def Run (n : Netlist) (tr : Nat → Env) : Prop :=
-  ∀ t, AllStable n.combs (tr t) ∧ ∀ r ∈ n.regs, tr (t + 1) r = n.edge (tr t) r
+  ∀ t, AllStable n.combs (tr t) ∧ ∀ r ∈ n.regs, tr (t + 1) r = n.next (tr t) (tr (t + 1)) r
 
 /-- Canonical form compared by the validator: normalized expressions,
 straight-line processes split into single assignments. -/
@@ -352,7 +363,8 @@ theorem regSubB_sound {a b : List Sig} (h : regSubB a b = true) : ∀ x ∈ a, x
 /-- Decidable sufficient condition for two netlists to have the same runs. -/
 def sameB (a b : Netlist) : Bool :=
   listSubB a.canonCombs b.canonCombs && listSubB b.canonCombs a.canonCombs &&
-  Stmts.eqvN a.seq.norm b.seq.norm && regSubB a.regs b.regs && regSubB b.regs a.regs
+  Stmts.eqvN a.seq.norm b.seq.norm && regSubB a.regs b.regs && regSubB b.regs a.regs &&
+  decide (a.async.map Sir.norm = b.async.map Sir.norm)
 
 theorem allStable_canon (n : Netlist) (σ : Env) :
     AllStable n.canonCombs σ ↔ AllStable n.combs σ := by
@@ -363,10 +375,23 @@ theorem edge_eq_of_eqvN {a b : Netlist} (h : Stmts.eqvN a.seq.norm b.seq.norm = 
   unfold edge
   rw [← Stmts.execN_norm, Stmts.eqvN_sound h, Stmts.execN_norm]
 
+theorem next_eq {a b : Netlist} (h : Stmts.eqvN a.seq.norm b.seq.norm = true)
+    (ha : a.async.map Sir.norm = b.async.map Sir.norm) (pre post : Env) :
+    a.next pre post = b.next pre post := by
+  have hseq : ∀ σ, a.seq.execN σ σ = b.seq.execN σ σ := by
+    intro σ; rw [← Stmts.execN_norm, Stmts.eqvN_sound h, Stmts.execN_norm]
+  unfold next
+  cases hA : a.async <;> cases hB : b.async <;> rw [hA, hB] at ha <;>
+    simp only [Option.map_none, Option.map_some, reduceCtorEq, Option.some.injEq] at ha
+  · exact edge_eq_of_eqvN h pre
+  · next ca cb =>
+    have hc : ca.eval post = cb.eval post := by rw [← Sir.eval_norm, ha, Sir.eval_norm]
+    simp only [hc, hseq, edge_eq_of_eqvN h pre]
+
 theorem run_iff_of_sameB {a b : Netlist} (h : sameB a b = true) (tr : Nat → Env) :
     a.Run tr ↔ b.Run tr := by
-  simp only [sameB, Bool.and_eq_true] at h
-  obtain ⟨⟨⟨⟨hab, hba⟩, hseq⟩, hrab⟩, hrba⟩ := h
+  simp only [sameB, Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨⟨⟨⟨⟨hab, hba⟩, hseq⟩, hrab⟩, hrba⟩, hasync⟩ := h
   have hcomb : ∀ σ, AllStable a.combs σ ↔ AllStable b.combs σ := by
     intro σ
     rw [← allStable_canon, ← allStable_canon]
@@ -375,7 +400,7 @@ theorem run_iff_of_sameB {a b : Netlist} (h : sameB a b = true) (tr : Nat → En
     · intro hs p hp; exact hs p (listSubB_sound hab p hp)
   have hregs : ∀ r, r ∈ a.regs ↔ r ∈ b.regs :=
     fun r => ⟨regSubB_sound hrab r, regSubB_sound hrba r⟩
-  simp only [Run, hcomb, hregs, edge_eq_of_eqvN hseq]
+  simp only [Run, hcomb, hregs, next_eq hseq hasync]
 
 end Netlist
 

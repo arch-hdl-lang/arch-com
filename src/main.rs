@@ -841,12 +841,6 @@ fn emit_codegen_proof_lean_file(
 ) -> miette::Result<()> {
     let cert = arch::codegen_proof_cert::render_lean_items(items.iter(), sv)
         .map_err(|err| miette::miette!("codegen proof Lean emission failed: {err}"))?;
-    fs::write(proof_path, &cert.lean).into_diagnostic()?;
-    eprintln!(
-        "Wrote {} (certified: {})",
-        proof_path.display(),
-        cert.certified.join(", ")
-    );
     for (name, reason) in &cert.skipped {
         eprintln!("warning: module `{name}` is not covered by the codegen certificate: {reason}");
     }
@@ -856,6 +850,18 @@ fn emit_codegen_proof_lean_file(
             cert.uncovered_constructs
         );
     }
+    if cert.certified.is_empty() {
+        return Err(miette::miette!(
+            "codegen proof Lean emission failed: no module in the codegen-certificate subset \
+             (see the warnings above)"
+        ));
+    }
+    fs::write(proof_path, &cert.lean).into_diagnostic()?;
+    eprintln!(
+        "Wrote {} (certified: {})",
+        proof_path.display(),
+        cert.certified.join(", ")
+    );
     if check {
         let project_dir = codegen_proof_lean_project_dir(explicit_project)?;
         let proof_path = proof_path

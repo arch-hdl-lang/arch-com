@@ -19,13 +19,13 @@ reasoning:
 namespace Arch.CodegenProof
 
 def check (c : Core.Module) (s : Sv.Module) : Bool :=
-  decide (c.ports = s.ports) && decide (c.clk = s.ffClk) && s.supported &&
+  decide (c.ports = s.ports) && decide (c.clk = s.ffClk) && s.supported && s.asyncShaped &&
     Netlist.sameB c.toNetlist s.toNetlist
 
 theorem check_sound {c : Core.Module} {s : Sv.Module} (h : check c s = true) :
     c.ports = s.ports ∧ c.clk = s.ffClk ∧ ∀ tr, c.Run tr ↔ s.Run tr := by
   simp only [check, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨hp, hc⟩, hs⟩, hn⟩ := h
+  obtain ⟨⟨⟨⟨hp, hc⟩, hs⟩, _⟩, hn⟩ := h
   refine ⟨hp, hc, fun tr => ?_⟩
   rw [Core.Module.run_iff, Sv.Module.run_iff s hs, Netlist.run_iff_of_sameB hn]
 
