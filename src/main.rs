@@ -242,6 +242,22 @@ enum Command {
         /// Solver used by `--check-construct-proof-smt`.
         #[arg(long, default_value = "z3")]
         construct_proof_smt_solver: String,
+        /// Emit a Lean translation-validation certificate that the emitted
+        /// SystemVerilog of each `module` in the covered subset has the same
+        /// traces as the ARCH source (see `doc/plan_verified_codegen.md`).
+        /// Bare flag writes `<sv-output-stem>.codegen-proof.lean`; `=PATH`
+        /// writes the explicit path. Modules outside the subset are listed
+        /// as not covered.
+        #[arg(long, num_args = 0..=1, require_equals = true)]
+        emit_codegen_proof_lean: Option<Option<PathBuf>>,
+        /// Emit the Lean codegen certificate and immediately replay it with
+        /// `lake env lean`. Use `--codegen-proof-lean-project=DIR` or
+        /// `ARCH_CODEGEN_PROOF_LEAN_PROJECT` to locate the Lean project.
+        #[arg(long)]
+        check_codegen_proof_lean: bool,
+        /// Lean project directory used by `--check-codegen-proof-lean`.
+        #[arg(long)]
+        codegen_proof_lean_project: Option<PathBuf>,
         /// Auto-emit SVA properties from `thread` lowering (wait_until / wait
         /// N cycle progress, fork-join branch transitions). Wrapped in
         /// `synopsys translate_off/on` so they don't reach synthesis. Off by
@@ -814,6 +830,93 @@ fn check_construct_proof_lean_file(
     Ok(())
 }
 
+/// Emit (and optionally replay) the ARCH→SV codegen certificate for `items`,
+/// whose emitted SystemVerilog is `sv`.
+fn emit_codegen_proof_lean_file(
+    items: &[arch::ast::Item],
+    sv: &str,
+    proof_path: &Path,
+    check: bool,
+    explicit_project: Option<&Path>,
+) -> miette::Result<()> {
+    let cert = arch::codegen_proof_cert::render_lean_items(items.iter(), sv)
+        .map_err(|err| miette::miette!("codegen proof Lean emission failed: {err}"))?;
+    fs::write(proof_path, &cert.lean).into_diagnostic()?;
+    eprintln!(
+        "Wrote {} (certified: {})",
+        proof_path.display(),
+        cert.certified.join(", ")
+    );
+    for (name, reason) in &cert.skipped {
+        eprintln!("warning: module `{name}` is not covered by the codegen certificate: {reason}");
+    }
+    if cert.uncovered_constructs > 0 {
+        eprintln!(
+            "warning: {} non-module construct(s) are not covered by the codegen certificate",
+            cert.uncovered_constructs
+        );
+    }
+    if check {
+        let project_dir = codegen_proof_lean_project_dir(explicit_project)?;
+        let proof_path = proof_path
+            .canonicalize()
+            .unwrap_or_else(|_| proof_path.to_path_buf());
+        let lake = resolve_lake_bin();
+        let output = std::process::Command::new(&lake)
+            .arg("env")
+            .arg("lean")
+            .arg(&proof_path)
+            .current_dir(&project_dir)
+            .output()
+            .into_diagnostic()
+            .map_err(|err| {
+                miette::miette!(
+                    "failed to run Lean codegen proof replay via `{}`; install elan or set PATH/ELAN_HOME so `lake` is available: {err}",
+                    lake.display()
+                )
+            })?;
+        if !output.status.success() {
+            return Err(miette::miette!(
+                "Lean codegen proof replay failed for {} in {}\nstdout:\n{}\nstderr:\n{}",
+                proof_path.display(),
+                project_dir.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        eprintln!("Lean codegen proof replay OK {}", proof_path.display());
+    }
+    Ok(())
+}
+
+fn codegen_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::Result<PathBuf> {
+    let candidate = if let Some(path) = explicit_project {
+        path.to_path_buf()
+    } else if let Ok(path) = std::env::var("ARCH_CODEGEN_PROOF_LEAN_PROJECT") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from("proofs/lean_thread_lowering")
+    };
+    if !candidate.join("lakefile.toml").exists() {
+        return Err(miette::miette!(
+            "Lean codegen proof project not found at {}; pass --codegen-proof-lean-project=DIR or set ARCH_CODEGEN_PROOF_LEAN_PROJECT",
+            candidate.display()
+        ));
+    }
+    check_lean_project_built(&candidate)?;
+    if !candidate
+        .join(".lake/build/lib/lean/ArchCodegenProof.olean")
+        .exists()
+    {
+        return Err(miette::miette!(
+            "Lean proof project at {} has no ArchCodegenProof build output — run `lake build` \
+             in that directory first",
+            candidate.display()
+        ));
+    }
+    Ok(candidate)
+}
+
 fn resolve_lake_bin() -> PathBuf {
     find_executable_on_path("lake")
         .or_else(|| {
@@ -1345,6 +1448,9 @@ fn main() -> miette::Result<()> {
             emit_construct_proof_smt,
             check_construct_proof_smt,
             construct_proof_smt_solver,
+            emit_codegen_proof_lean,
+            check_codegen_proof_lean,
+            codegen_proof_lean_project,
             auto_thread_asserts,
             explain_auto,
             lint_naming,
@@ -1403,18 +1509,29 @@ fn main() -> miette::Result<()> {
                     emit_construct_proof_lean.is_some() || check_construct_proof_lean;
                 let need_construct_proof_smt =
                     emit_construct_proof_smt.is_some() || check_construct_proof_smt;
+                if matches!(emit_codegen_proof_lean, Some(Some(_)))
+                    && files.len() > 1
+                    && o.is_none()
+                {
+                    return Err(miette::miette!(
+                    "--emit-codegen-proof-lean=PATH requires a single combined build output; pass -o or use bare --emit-codegen-proof-lean for per-file Lean certificates"
+                ));
+                }
+                let need_codegen_proof_lean =
+                    emit_codegen_proof_lean.is_some() || check_codegen_proof_lean;
                 if out_is_auto
                     && (emit_thread_map.is_some()
                         || emit_thread_proof.is_some()
                         || need_thread_proof_lean
                         || need_construct_proof_lean
-                        || need_construct_proof_smt)
+                        || need_construct_proof_smt
+                        || need_codegen_proof_lean)
                 {
                     return Err(miette::miette!(
                         "-o auto is not yet supported together with --emit-thread-map / \
                          --emit-thread-proof / --emit-thread-proof-lean / \
-                         --emit-construct-proof-lean / --emit-construct-proof-smt; pass an \
-                         explicit -o PATH for those flows"
+                         --emit-construct-proof-lean / --emit-construct-proof-smt / \
+                         --emit-codegen-proof-lean; pass an explicit -o PATH for those flows"
                     ));
                 }
                 let all_files = resolve_use_imports(&files)?;
@@ -1815,6 +1932,43 @@ fn main() -> miette::Result<()> {
                             )?;
                         }
                     }
+                    if need_codegen_proof_lean {
+                        let proof_path = emit_codegen_proof_lean
+                            .as_ref()
+                            .and_then(|req| req.clone())
+                            .unwrap_or_else(|| out_path.with_extension("codegen-proof.lean"));
+                        let cert_items: Vec<_> = if no_inline_deps {
+                            let keep: Vec<(usize, usize)> = ms
+                                .segments
+                                .iter()
+                                .filter_map(|(start, end, filename, _)| {
+                                    if original_names.contains(filename) {
+                                        Some((*start, *end))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            ast.items
+                                .iter()
+                                .filter(|item| {
+                                    let s = item.span().start;
+                                    keep.iter()
+                                        .any(|(seg_start, seg_end)| s >= *seg_start && s < *seg_end)
+                                })
+                                .cloned()
+                                .collect()
+                        } else {
+                            ast.items.clone()
+                        };
+                        emit_codegen_proof_lean_file(
+                            &cert_items,
+                            &sv,
+                            &proof_path,
+                            check_codegen_proof_lean,
+                            codegen_proof_lean_project.as_deref(),
+                        )?;
+                    }
                     // Companion .sdc file: only written if any module contained
                     // a `multicycle <N>` reg. No-op for legacy `.arch` sources.
                     if let Some(sdc_text) = sdc {
@@ -1949,6 +2103,16 @@ fn main() -> miette::Result<()> {
                                     &construct_proof_smt_solver,
                                 )?;
                             }
+                        }
+                        if need_codegen_proof_lean {
+                            let proof_path = out_path.with_extension("codegen-proof.lean");
+                            emit_codegen_proof_lean_file(
+                                &file_items,
+                                &sv,
+                                &proof_path,
+                                check_codegen_proof_lean,
+                                codegen_proof_lean_project.as_deref(),
+                            )?;
                         }
                         // Companion .sdc per-file: only if this file's items
                         // declared `multicycle <N>` regs.

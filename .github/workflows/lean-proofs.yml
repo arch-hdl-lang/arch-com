@@ -1,0 +1,71 @@
+name: lean proofs
+
+# Opt-in tier for the Lean proof backends (see the dependency policy in
+# test.yml: the required PR gate deliberately installs no Lean toolchain).
+#
+# * Builds the in-repo Lean library (`proofs/lean_thread_lowering`), which
+#   machine-checks the codegen validator's soundness theorem, the thread
+#   lowering and construct models.
+# * Runs the codegen-certificate tests (positive fixtures, miscompile
+#   mutants that must be rejected, semantics-preserving rewrites that must be
+#   accepted, axiom audit).
+# * Nightly: sweeps every .arch file in the repo through certificate replay.
+#   A FAIL there is either an ARCH->SV miscompile or a validator gap.
+#
+# Path-filtered on PRs, so it must NOT be made a required check.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "proofs/**"
+      - "src/codegen/**"
+      - "src/codegen_proof_cert/**"
+      - "tests/codegen_proof/**"
+      - "tests/codegen_proof_cert_test.rs"
+      - "scripts/codegen_cert_sweep.sh"
+      - ".github/workflows/lean-proofs.yml"
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: lean-proofs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lean:
+    name: lean proofs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-lean-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-lean-${{ runner.os }}-
+
+      - name: Install elan (toolchain pinned by lean-toolchain)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: lake build
+        working-directory: proofs/lean_thread_lowering
+        run: lake build
+
+      - name: codegen certificate tests
+        run: cargo test --release --test codegen_proof_cert_test
+
+      - name: corpus sweep
+        if: github.event_name != 'pull_request'
+        run: scripts/codegen_cert_sweep.sh
