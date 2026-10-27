@@ -41812,6 +41812,56 @@ end module IndexedDrivers
 }
 
 #[test]
+fn test_seq_struct_driver_ownership_1074() {
+    for (second_target, same_block, valid) in [
+        ("r.y", false, true),
+        ("r.x", false, false),
+        ("r", false, false),
+        ("r", true, true),
+    ] {
+        let rhs = if second_target == "r" { "a" } else { "b" };
+        let boundary = if same_block {
+            ""
+        } else {
+            "end seq\nseq on clk rising"
+        };
+        let source = format!(
+            r#"
+struct Pair
+  x: UInt<8>;
+  y: UInt<8>;
+end struct Pair
+module StructDrivers
+  port clk: in Clock<SysDomain>;
+  port a: in Pair;
+  port b: in UInt<8>;
+  port o: out UInt<8>;
+  reg r: Pair reset none;
+  seq on clk rising
+    r.x <= b;
+  {boundary}
+    {second_target} <= {rhs};
+  end seq
+  comb
+    o = r.x;
+  end comb
+end module StructDrivers
+"#
+        );
+        let result = typecheck_errors(&source);
+        if valid {
+            result.expect("disjoint fields or writes in one block are legal");
+        } else {
+            let errs = result.expect_err("overlapping sequential writers must fail");
+            assert!(
+                errs.iter().any(|e| e.contains("multiple drivers")),
+                "{errs:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_inst_input_resolution_in_preserved_generate_1074() {
     for (input, valid) in [("din[i]", true), ("dinn[i]", false)] {
         let source = format!(

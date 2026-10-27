@@ -546,18 +546,18 @@ pub fn check_multi_driver(
 
     let mut errors: Vec<CompileError> = Vec::new();
     for (name, entries) in drivers {
-        if shared.contains(name.split('[').next().unwrap_or(name)) {
+        if shared.contains(name.split(['[', '.']).next().unwrap_or(name)) {
             continue;
         }
         let has_seq = |es: &[DriveEntry]| {
             es.iter()
                 .any(|e| matches!(e.kind, DriveKind::Seq | DriveKind::GeneratedSeq))
         };
-        // A constant-index write aliases an explicit write of its enclosing
-        // vector, but not a sibling element. Look up only ancestor keys: large
-        // lowered modules must not pay for an all-pairs driver scan.
+        // An indexed or field write aliases its enclosing aggregate, but not
+        // a sibling element or field. Look up only ancestor keys: large lowered
+        // modules must not pay for an all-pairs driver scan.
         let mut overlapping: Vec<&DriveEntry> = entries.iter().collect();
-        for (offset, _) in name.match_indices('[') {
+        for (offset, _) in name.match_indices(['[', '.']) {
             if let Some(parent) = drivers.get(&name[..offset]) {
                 if has_seq(entries) || has_seq(parent) {
                     overlapping.extend(parent);
