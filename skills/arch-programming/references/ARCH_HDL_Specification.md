@@ -571,6 +571,13 @@ For same-width modular arithmetic specifically, prefer the wrapping operators (`
 
 Every signal in Arch has exactly one driver --- the block (comb or reg) that assigns it. The compiler enforces this statically. Multiple drivers, floating signals, and unintentional latches are all compile-time errors.
 
+Two user-written `seq` blocks assigning the same register or overlapping vector elements are multiple drivers, even when they use the same clock or mutually exclusive conditions. Multiple assignments within one block remain legal. Compiler-generated sequential blocks from thread/TLM lowering carry origin metadata and retain their intentional register-sharing exemption.
+
+A declared scalar, vector, or struct `wire` must have a driver, from a `comb`/`let` assignment or an instance output connection. An instance output may still bind a new net (`y -> result;`); this does not drive a separately declared wire with a different name. Bus bundles require per-field ownership analysis and are excluded from this whole-wire check.
+
+Instance input connection expressions and bare `comb` assignment targets must resolve in the enclosing scope. Generated SystemVerilog files begin with `` `default_nettype none `` and restore `` `default_nettype wire `` at the end, so any residual undeclared net is also rejected by downstream tools.
+
+
 +--------------------------------------------------------------------+
 | *ownership.arch*                                                   |
 |                                                                    |

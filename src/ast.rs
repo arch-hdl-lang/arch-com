@@ -638,6 +638,8 @@ pub enum RegReset {
 
 #[derive(Debug, Clone)]
 pub struct RegBlock {
+    /// True only for compiler-synthesized sequential logic (thread/TLM lowering).
+    pub compiler_generated: bool,
     pub clock: Ident,
     pub clock_edge: ClockEdge,
     pub stmts: Vec<Stmt>,

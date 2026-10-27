@@ -742,6 +742,10 @@ impl<'a> Codegen<'a> {
             prefix.push_str(&self.out);
             self.out = prefix;
         }
+        // Apply after helper/module prepends so every emitted definition is
+        // covered, and restore the downstream compilation unit's default.
+        self.out.insert_str(0, "`default_nettype none\n");
+        self.out.push_str("`default_nettype wire\n");
         std::mem::take(&mut self.out)
     }
 

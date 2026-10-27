@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 typedef struct packed {
   logic [31:0] data;
   logic valid;
@@ -24,3 +25,5 @@ module SimpleAlu (
   assign result = 32'(33'(a + b));
 
 endmodule
+
+`default_nettype wire

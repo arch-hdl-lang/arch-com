@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -35,3 +36,5 @@ module BitExtract #(
   assign funct3 = funct3_r;
 
 endmodule
+
+`default_nettype wire

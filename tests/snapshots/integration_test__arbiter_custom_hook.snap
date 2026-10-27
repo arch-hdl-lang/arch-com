@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 module QosArbiter #(
   parameter int NUM_REQ = 4
 ) (
@@ -47,3 +48,5 @@ module QosArbiter #(
   end
 
 endmodule
+
+`default_nettype wire

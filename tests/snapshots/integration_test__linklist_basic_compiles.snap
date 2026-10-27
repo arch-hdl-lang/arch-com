@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 module TaskQueue #(
   parameter int  DEPTH = 8,
   parameter type DATA  = logic [31:0]
@@ -117,3 +118,5 @@ module TaskQueue #(
   end
   
 endmodule
+
+`default_nettype wire

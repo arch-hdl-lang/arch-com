@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -14,3 +15,5 @@ module Placeholder (
   assign out_val = '0 /* TODO: todo! placeholder */;
 
 endmodule
+
+`default_nettype wire

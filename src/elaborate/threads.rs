@@ -946,6 +946,7 @@ fn lower_module_threads(
                 }));
             }
             merged_body.push(ModuleBodyItem::RegBlock(RegBlock {
+                compiler_generated: true,
                 clock: Ident::new(clk_name.clone(), sp),
                 clock_edge: ClockEdge::Rising,
                 stmts: sem_seq,
@@ -2285,6 +2286,7 @@ fn lower_module_threads(
     // Single merged always_ff for all threads (avoids multi-driver on shared regs)
     if !all_thread_seq.is_empty() {
         merged_body.push(ModuleBodyItem::RegBlock(RegBlock {
+            compiler_generated: true,
             clock: Ident::new(clk_name.clone(), sp),
             clock_edge: ClockEdge::Rising,
             stmts: all_thread_seq,

@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 module BusArbiter #(
   parameter int NUM_REQ = 4
 ) (
@@ -48,3 +49,5 @@ module BusArbiter #(
   // synopsys translate_on
 
 endmodule
+
+`default_nettype wire

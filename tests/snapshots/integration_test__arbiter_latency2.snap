@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 module LatencyArbiter #(
   parameter int NUM_REQ = 4
 ) (
@@ -54,3 +55,5 @@ module LatencyArbiter #(
   end
 
 endmodule
+
+`default_nettype wire

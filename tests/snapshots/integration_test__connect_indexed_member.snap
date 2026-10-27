@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -55,3 +56,5 @@ module RfUser (
   );
 
 endmodule
+
+`default_nettype wire
