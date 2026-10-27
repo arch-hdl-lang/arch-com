@@ -27,6 +27,42 @@ sudo_cmd=""
 [[ "$(id -u)" -ne 0 ]] && sudo_cmd="sudo"
 log() { printf '[cloud_setup] %s\n' "$*"; }
 
+# ── Git author identity ───────────────────────────────────────────────────
+# Cloud sessions ship a global identity `Claude <noreply@anthropic.com>`.
+# Commits authored by it fail the CLA check (that address cannot sign) and
+# carry AI authorship, which CLAUDE.md asks us not to do. When the active
+# identity is that bot address, set a repo-local identity on this checkout and
+# its sibling checkouts from CLOUD_GIT_NAME / CLOUD_GIT_EMAIL. Each user sets
+# those in their own environment's setup-script line, e.g.
+#
+#     CLOUD_GIT_NAME="Your Name" CLOUD_GIT_EMAIL="you@example.com" \
+#       bash arch-com/scripts/cloud_setup.sh
+#
+# (use your GitHub noreply address if you keep your email private). Repo-local
+# config wins over the global file regardless of which is written first. A
+# non-bot identity is never touched.
+bot_repos=()
+for repo in "$repo_root"/../*/; do  # this checkout and its siblings
+  repo="$(cd "$repo" && pwd)"
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
+  [[ "$(git -C "$repo" rev-parse --show-toplevel)" == "$repo" ]] || continue
+  [[ "$(git -C "$repo" config user.email || true)" == "noreply@anthropic.com" ]] || continue
+  bot_repos+=("$repo")
+done
+if [[ ${#bot_repos[@]} -gt 0 ]]; then
+  if [[ -n "${CLOUD_GIT_NAME:-}" && -n "${CLOUD_GIT_EMAIL:-}" ]]; then
+    for repo in "${bot_repos[@]}"; do
+      git -C "$repo" config --local user.name "$CLOUD_GIT_NAME"
+      git -C "$repo" config --local user.email "$CLOUD_GIT_EMAIL"
+      log "git identity for $(basename "$repo"): $CLOUD_GIT_NAME <$CLOUD_GIT_EMAIL>"
+    done
+  else
+    log "WARNING: git author is noreply@anthropic.com; commits from this session will fail" \
+      "the CLA check. Prefix the setup-script line with" \
+      "CLOUD_GIT_NAME=\"Your Name\" CLOUD_GIT_EMAIL=\"you@example.com\" to fix."
+  fi
+fi
+
 # The pins above must match what the Lean projects request.
 for tc in "$repo_root"/proofs/*/lean-toolchain; do
   if [[ "$(cat "$tc")" != "leanprover/lean4:v${LEAN_VERSION}" ]]; then
