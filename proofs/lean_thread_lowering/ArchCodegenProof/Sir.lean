@@ -144,6 +144,11 @@ inductive Sir where
   | cmp (op : CmpOp) (a b : Sir)
   /-- Signed comparison of two `w`-bit operands. -/
   | scmp (op : CmpOp) (w : Nat) (a b : Sir)
+  /-- Concatenation `{a, b}` of a `wa`-bit and a `wb`-bit value. -/
+  | cat (wa : Nat) (a : Sir) (wb : Nat) (b : Sir)
+  /-- `a << b` / `a >> b` (logical) at width `w`. -/
+  | shl (w : Nat) (a b : Sir)
+  | shr (w : Nat) (a b : Sir)
   | mux (w : Nat) (c a b : Sir)
   | lnot (a : Sir)
   | land (a b : Sir)
@@ -162,6 +167,9 @@ def eval (σ : Env) : Sir → Nat
   | .bnot w a => notW w (a.eval σ)
   | .cmp op a b => b2n (op.apply (a.eval σ) (b.eval σ))
   | .scmp op w a b => b2n (cmpInt op (toInt w (a.eval σ)) (toInt w (b.eval σ)))
+  | .cat wa a wb b => mask wa (a.eval σ) * 2 ^ wb + mask wb (b.eval σ)
+  | .shl w a b => mask w (a.eval σ * 2 ^ b.eval σ)
+  | .shr w a b => mask w (a.eval σ / 2 ^ b.eval σ)
   | .mux w c a b => if c.eval σ ≠ 0 then mask w (a.eval σ) else mask w (b.eval σ)
   | .lnot a => b2n (a.eval σ == 0)
   | .land a b => b2n (a.eval σ != 0 && b.eval σ != 0)
@@ -176,6 +184,8 @@ def width : Sir → Nat
   | .bin _ w _ _ => w
   | .bnot w _ => w
   | .cmp .. | .scmp .. => 1
+  | .cat wa _ wb _ => wa + wb
+  | .shl w .. | .shr w .. => w
   | .mux w .. => w
   | .lnot _ => 1
   | .land .. => 1
@@ -191,8 +201,16 @@ theorem notW_lt (w x : Nat) : notW w x < 2 ^ w := by
 theorem sextVal_lt (w s v : Nat) : sextVal w s v < 2 ^ w := by
   simp only [sextVal]; split <;> exact mask_lt _ _
 
+theorem cat_lt {wa wb x y : Nat} (hx : x < 2 ^ wa) (hy : y < 2 ^ wb) :
+    x * 2 ^ wb + y < 2 ^ (wa + wb) := by
+  rw [Nat.pow_add]
+  have : (x + 1) * 2 ^ wb ≤ 2 ^ wa * 2 ^ wb := Nat.mul_le_mul_right _ hx
+  rw [Nat.add_mul, Nat.one_mul] at this
+  omega
+
 theorem eval_lt (σ : Env) : ∀ e : Sir, e.eval σ < 2 ^ e.width
-  | .var .. | .resize .. | .slice .. => mask_lt _ _
+  | .var .. | .resize .. | .slice .. | .shl .. | .shr .. => mask_lt _ _
+  | .cat wa a wb b => cat_lt (mask_lt wa _) (mask_lt wb _)
   | .lit n => lt_two_pow_bitlen n
   | .sext .. => sextVal_lt _ _ _
   | .bin .. => binOp_lt _ _ _ _
@@ -270,6 +288,13 @@ theorem notW_push {w w' : Nat} (h : w ≤ w') (x : Nat) :
   have := mask_neg_mul h 0 (x + 1)
   simpa using this
 
+theorem shl_low (w x y : Nat) : mask w (x * 2 ^ y) = mask w (mask w x * 2 ^ y) := by
+  unfold mask
+  have h1 : x * 2 ^ y % 2 ^ w = (x % 2 ^ w) * (2 ^ y % 2 ^ w) % 2 ^ w := Nat.mul_mod _ _ _
+  have h2 : (x % 2 ^ w) * 2 ^ y % 2 ^ w = (x % 2 ^ w % 2 ^ w) * (2 ^ y % 2 ^ w) % 2 ^ w :=
+    Nat.mul_mod _ _ _
+  rw [h1, h2, Nat.mod_mod]
+
 /-! ## Normalizer -/
 
 /-- Simplify an operand that is consumed modulo `2^w`. -/
@@ -280,6 +305,7 @@ def narrow (w : Nat) : Sir → Sir
   | .bin op w' a b => if w ≤ w' then .bin op w (narrow w a) (narrow w b) else .bin op w' a b
   | .bnot w' a => if w ≤ w' then .bnot w (narrow w a) else .bnot w' a
   | .mux w' c a b => if w ≤ w' then .mux w c (narrow w a) (narrow w b) else .mux w' c a b
+  | .shl w' a b => if w ≤ w' then .shl w (narrow w a) b else .shl w' a b
   | e => e
 
 /-- Natural result width of a low-bit operator on operands of the given
@@ -309,6 +335,7 @@ def simpResize (w : Nat) : Sir → Sir
   | .bin op w' a b => if w ≤ w' then .bin op w (narrow w a) (narrow w b) else .bin op w' a b
   | .bnot w' a => if w ≤ w' then .bnot w (narrow w a) else .bnot w' a
   | .mux w' c a b => if w ≤ w' then .mux w c (narrow w a) (narrow w b) else .mux w' c a b
+  | .shl w' a b => if w ≤ w' then .shl w (narrow w a) b else .shl w' a b
   | e => if e.width ≤ w then e else .resize w e
 
 /-- Comparisons of two literals fold to their 0/1 result. -/
@@ -323,14 +350,37 @@ def foldSCmp (op : CmpOp) (w : Nat) : Sir → Sir → Sir
 /-- Simplify `sext w s e`, assuming `e` is already normalized. -/
 def simpSext (w s : Nat) : Sir → Sir
   | .lit n => .lit (sextVal w s n)
-  | e => if e.width < s then simpResize w e else .sext w s e
+  | e => if w ≤ s ∨ e.width < s then simpResize w e else .sext w s e
+
+/-- The bitwise operators, which are associative at a fixed width. -/
+def bitwiseOp : BinOp → Bool
+  | .and | .or | .xor => true
+  | _ => false
+
+/-- `a op c` with every same-op, same-width bitwise chain on the left
+right-associated, so `(a | b) | c` and `a | (b | c)` share one form (codegen
+drops the parentheses of an associative chain). -/
+def assocR (op : BinOp) (w : Nat) : Sir → Sir → Sir
+  | .bin op' w' p q, c =>
+    if op' = op ∧ w' = w ∧ bitwiseOp op = true then assocR op w p (assocR op w q c)
+    else .bin op w (.bin op' w' p q) c
+  | a, c => .bin op w a c
+
+def reassoc : Sir → Sir
+  | .bin op w a b => assocR op w a b
+  | e => e
+
+/-- A right shift never grows its operand, so it can run at the operand's own
+width when that is no wider than the declared one. -/
+def shrinkShr (w : Nat) (a b : Sir) : Sir :=
+  if a.width ≤ w then .shr a.width a b else .shr w a b
 
 def norm : Sir → Sir
   | .var x w => .var x w
   | .lit n => .lit n
   | .resize w e => simpResize w (norm e)
   | .sext w s e => simpSext w s (norm e)
-  | .bin op w a b => shrinkBin op w (narrow w (norm a)) (narrow w (norm b))
+  | .bin op w a b => reassoc (shrinkBin op w (narrow w (norm a)) (narrow w (norm b)))
   | .bnot w a => .bnot w (narrow w (norm a))
   | .cmp op a b => foldCmp op (norm a) (norm b)
   | .scmp op w a b => foldSCmp op w (norm a) (norm b)
@@ -339,6 +389,9 @@ def norm : Sir → Sir
   | .land a b => .land (norm a) (norm b)
   | .lor a b => .lor (norm a) (norm b)
   | .slice hi lo a => .slice hi lo (norm a)
+  | .cat wa a wb b => .cat wa (narrow wa (norm a)) wb (narrow wb (norm b))
+  | .shl w a b => .shl w (narrow w (norm a)) (norm b)
+  | .shr w a b => shrinkShr w (norm a) (norm b)
 
 theorem mask_narrow (σ : Env) (w : Nat) : ∀ e : Sir,
     mask w ((narrow w e).eval σ) = mask w (e.eval σ)
@@ -371,7 +424,13 @@ theorem mask_narrow (σ : Env) (w : Nat) : ∀ e : Sir,
       · rw [mask_mask, mask_narrow σ w a, mask_mask_of_le (by omega)]
       · rw [mask_mask, mask_narrow σ w b, mask_mask_of_le (by omega)]
     · rfl
-  | .sext .. | .cmp .. | .scmp .. | .lnot _ | .land .. | .lor .. | .slice .. => by simp [narrow]
+  | .shl w' a b => by
+    simp only [narrow]; split
+    · simp only [eval]
+      rw [mask_mask, mask_mask_of_le (by omega), shl_low w, mask_narrow σ w a, ← shl_low]
+    · rfl
+  | .sext .. | .cmp .. | .scmp .. | .lnot _ | .land .. | .lor .. | .slice .. | .cat ..
+  | .shr .. => by simp [narrow]
 
 theorem eval_mask_of_width_le (σ : Env) {e : Sir} {w : Nat} (h : e.width ≤ w) :
     mask w (e.eval σ) = e.eval σ :=
@@ -407,7 +466,13 @@ theorem eval_simpResize (σ : Env) (w : Nat) : ∀ e : Sir,
       · rw [mask_narrow σ w b, mask_mask_of_le (by omega)]
     · have := eval_mask_of_width_le σ (e := .mux w' c a b) (w := w) (by simp [width]; omega)
       rw [this]
-  | .sext .. | .cmp .. | .scmp .. | .lnot _ | .land .. | .lor .. | .slice .. => by
+  | .shl w' a b => by
+    simp only [simpResize]; split
+    · simp only [eval]
+      rw [mask_mask_of_le (by omega), shl_low w, mask_narrow σ w a, ← shl_low]
+    · simp only [eval]; rw [mask_mask_of_ge (by omega)]
+  | .sext .. | .cmp .. | .scmp .. | .lnot _ | .land .. | .lor .. | .slice .. | .cat ..
+  | .shr .. => by
     simp only [simpResize]; split
     · next h => rw [eval_mask_of_width_le σ h]
     · rfl
@@ -422,13 +487,22 @@ theorem sextVal_of_narrow (σ : Env) (w s : Nat) (e : Sir) (h : e.width < s) :
   have hm : mask s (e.eval σ) = e.eval σ := mask_of_lt (by omega)
   rw [hm, if_neg (by omega)]
 
+/-- Sign extension to a width no wider than the source is plain truncation. -/
+theorem sextVal_of_le {w s : Nat} (h : w ≤ s) (v : Nat) : sextVal w s v = mask w v := by
+  have hm : max w s = s := Nat.max_eq_right h
+  simp only [sextVal, hm, Nat.sub_self, Nat.add_zero]
+  split <;> exact mask_mask_of_le h v
+
 theorem eval_simpSext (σ : Env) (w s : Nat) (e : Sir) :
     (simpSext w s e).eval σ = sextVal w s (e.eval σ) := by
   cases e with
   | lit n => simp [simpSext, eval]
   | _ =>
     simp only [simpSext]; split
-    · next h => exact sextVal_of_narrow σ w s _ h
+    · next h =>
+      rcases h with h | h
+      · rw [eval_simpResize, sextVal_of_le h]
+      · exact sextVal_of_narrow σ w s _ h
     · rfl
 
 theorem pow_le_pow_of_le {a b : Nat} (h : a ≤ b) : 2 ^ a ≤ 2 ^ b :=
@@ -485,12 +559,46 @@ theorem eval_foldSCmp (σ : Env) (op : CmpOp) (w : Nat) (a b : Sir) :
     (foldSCmp op w a b).eval σ = (Sir.scmp op w a b).eval σ := by
   unfold foldSCmp; split <;> rfl
 
+theorem binOp_assoc {op : BinOp} (h : bitwiseOp op = true) (w x y z : Nat) :
+    op.apply w (op.apply w x y) z = op.apply w x (op.apply w y z) := by
+  cases op <;> simp only [bitwiseOp, reduceCtorEq] at h <;>
+    simp only [BinOp.apply, mask, Nat.and_mod_two_pow, Nat.or_mod_two_pow, Nat.xor_mod_two_pow,
+      Nat.mod_mod, Nat.and_assoc, Nat.or_assoc, Nat.xor_assoc]
+
+theorem eval_assocR (σ : Env) (op : BinOp) (w : Nat) :
+    ∀ a c : Sir, (assocR op w a c).eval σ = op.apply w (a.eval σ) (c.eval σ) := by
+  intro a
+  induction a with
+  | bin op' w' p q ihp ihq =>
+    intro c; simp only [assocR]; split
+    · next h =>
+      obtain ⟨rfl, rfl, hb⟩ := h
+      rw [ihp, ihq]; simp only [eval]; rw [binOp_assoc hb]
+    · rfl
+  | _ => intro c; rfl
+
+theorem eval_reassoc (σ : Env) (e : Sir) : (reassoc e).eval σ = e.eval σ := by
+  cases e with
+  | bin op w a b => exact eval_assocR σ op w a b
+  | _ => rfl
+
+theorem eval_shrinkShr (σ : Env) (w : Nat) (a b : Sir) :
+    (shrinkShr w a b).eval σ = (Sir.shr w a b).eval σ := by
+  unfold shrinkShr
+  split
+  · next hw =>
+    simp only [eval]
+    have h : a.eval σ / 2 ^ b.eval σ < 2 ^ a.width :=
+      Nat.lt_of_le_of_lt (Nat.div_le_self _ _) (eval_lt σ a)
+    rw [mask_of_lt h, mask_of_lt (Nat.lt_of_lt_of_le h (pow_le_pow_of_le hw))]
+  · rfl
+
 theorem eval_norm (σ : Env) : ∀ e : Sir, (norm e).eval σ = e.eval σ
   | .var .. | .lit _ => rfl
   | .resize w e => by simp only [norm, eval]; rw [eval_simpResize, eval_norm σ e]
   | .sext w s e => by simp only [norm, eval]; rw [eval_simpSext, eval_norm σ e]
   | .bin op w a b => by
-    simp only [norm]; rw [eval_shrinkBin]; simp only [eval]
+    simp only [norm]; rw [eval_reassoc, eval_shrinkBin]; simp only [eval]
     rw [binOp_low, mask_narrow, mask_narrow, eval_norm σ a, eval_norm σ b, ← binOp_low]
   | .bnot w a => by
     simp only [norm, eval]; rw [notW_low, mask_narrow, eval_norm σ a, ← notW_low]
@@ -505,6 +613,12 @@ theorem eval_norm (σ : Env) : ∀ e : Sir, (norm e).eval σ = e.eval σ
   | .land a b => by simp only [norm, eval]; rw [eval_norm σ a, eval_norm σ b]
   | .lor a b => by simp only [norm, eval]; rw [eval_norm σ a, eval_norm σ b]
   | .slice hi lo a => by simp only [norm, eval]; rw [eval_norm σ a]
+  | .cat wa a wb b => by
+    simp only [norm, eval]; rw [mask_narrow, mask_narrow, eval_norm σ a, eval_norm σ b]
+  | .shl w a b => by
+    simp only [norm, eval]; rw [shl_low, mask_narrow, eval_norm σ a, eval_norm σ b, ← shl_low]
+  | .shr w a b => by
+    simp only [norm]; rw [eval_shrinkShr]; simp only [eval]; rw [eval_norm σ a, eval_norm σ b]
 
 end Sir
 

@@ -59,6 +59,13 @@ inductive Expr where
   | cast (w : CW) (e : Expr)
   | unsigned (e : Expr)
   | slice (x : Sig) (hi lo : Nat)
+  /-- `{a, b}`: self-determined operands, unsigned result. -/
+  | cat (a b : Expr)
+  /-- `a << n`, `a >> n` (logical): `a` context-determined, `n` self-determined. -/
+  | shl (a n : Expr)
+  | shr (a n : Expr)
+  /-- Bit select `x[i]` with a self-determined index. -/
+  | bitsel (x : Sig) (i : Expr)
 deriving DecidableEq, Repr
 
 def litWidth : Option Nat → Nat
@@ -79,6 +86,9 @@ def selfW : Expr → Nat
   | .cast w _ => w.eval W
   | .unsigned e => selfW e
   | .slice _ hi lo => hi + 1 - lo
+  | .cat a b => selfW a + selfW b
+  | .shl a _ | .shr a _ => selfW a
+  | .bitsel .. => 1
 
 end
 
@@ -93,6 +103,8 @@ def selfS : Expr → Bool
   | .cast _ e => selfS e
   | .unsigned _ => false
   | .slice .. => false
+  | .cat .. | .bitsel .. => false
+  | .shl a _ | .shr a _ => selfS a
 
 /-- Extend a `src`-bit operand to the context width `w` (§11.8.2). -/
 def ext (s : Bool) (src w v : Nat) : Nat := if s then sextVal w src v else mask w v
@@ -124,6 +136,15 @@ def evalCtx : Expr → Nat → Bool → Nat
     ext s n w (mask n (evalCtx e (max n (selfW W e)) (selfS e)))
   | .unsigned e, w, s => ext s (selfW W e) w (evalCtx e (selfW W e) (selfS e))
   | .slice x hi lo, w, s => ext s (hi + 1 - lo) w (mask (hi + 1 - lo) (mask (W x) (σ x) / 2 ^ lo))
+  | .cat a b, w, s =>
+    let wa := selfW W a
+    let wb := selfW W b
+    ext s (wa + wb) w
+      (mask wa (evalCtx a wa (selfS a)) * 2 ^ wb + mask wb (evalCtx b wb (selfS b)))
+  | .shl a n, w, s => mask w (evalCtx a w s * 2 ^ evalCtx n (selfW W n) (selfS n))
+  | .shr a n, w, s => mask w (evalCtx a w s / 2 ^ evalCtx n (selfW W n) (selfS n))
+  | .bitsel x i, w, s =>
+    ext s 1 w (mask 1 (mask (W x) (σ x) / 2 ^ evalCtx i (selfW W i) (selfS i)))
 
 /-- Value stored by `x = e` / `x <= e`. -/
 def assignVal (x : Sig) (e : Expr) : Nat :=
@@ -227,6 +248,8 @@ def Expr.supported : Expr → Bool
   | .bnot a | .lnot a | .cast _ a | .unsigned a => a.supported
   | .cmp _ a b => a.supported && b.supported
   | .cond c a b => c.supported && a.supported && b.supported
+  | .cat a b | .shl a b | .shr a b => a.supported && b.supported
+  | .bitsel _ i => i.supported
 
 def Stmts.supported : Stmts → Bool
   | .nil => true
@@ -271,6 +294,13 @@ def lowerCtx : Expr → Nat → Bool → Sir
     extS s n w (.resize n (lowerCtx e (max n (selfW W e)) (selfS e)))
   | .unsigned e, w, s => extS s (selfW W e) w (lowerCtx e (selfW W e) (selfS e))
   | .slice x hi lo, w, s => extS s (hi + 1 - lo) w (.slice hi lo (.var x (W x)))
+  | .cat a b, w, s =>
+    let wa := selfW W a
+    let wb := selfW W b
+    extS s (wa + wb) w (.cat wa (lowerCtx a wa (selfS a)) wb (lowerCtx b wb (selfS b)))
+  | .shl a n, w, s => .shl w (lowerCtx a w s) (lowerCtx n (selfW W n) (selfS n))
+  | .shr a n, w, s => .shr w (lowerCtx a w s) (lowerCtx n (selfW W n) (selfS n))
+  | .bitsel x i, w, s => extS s 1 w (.shr 1 (.var x (W x)) (lowerCtx i (selfW W i) (selfS i)))
 
 theorem ext_lt (s : Bool) (src w v : Nat) : ext s src w v < 2 ^ w := by
   cases s
@@ -279,7 +309,9 @@ theorem ext_lt (s : Bool) (src w v : Nat) : ext s src w v < 2 ^ w := by
 
 theorem evalCtx_lt (σ : Env) : ∀ (e : Expr) (w : Nat) (s : Bool), evalCtx W σ e w s < 2 ^ w
   | .ident .., _, _ | .lit .., _, _ | .cmp .., _, _ | .lnot _, _, _ | .land .., _, _
-  | .lor .., _, _ | .cast .., _, _ | .unsigned _, _, _ | .slice .., _, _ => ext_lt _ _ _ _
+  | .lor .., _, _ | .cast .., _, _ | .unsigned _, _, _ | .slice .., _, _ | .cat .., _, _
+  | .bitsel .., _, _ => ext_lt _ _ _ _
+  | .shl .., _, _ | .shr .., _, _ => mask_lt _ _
   | .bin .., _, _ => Sir.binOp_lt _ _ _ _
   | .bnot _, _, _ => Sir.notW_lt _ _
   | .cond c a b, w, s => by
@@ -293,6 +325,16 @@ theorem eval_lowerCtx (σ : Env) : ∀ (e : Expr), e.supported = true →
     simp only [lowerCtx, evalCtx, eval_extS, Sir.eval]
   | .slice .., _, _, _ => by
     simp only [lowerCtx, evalCtx, eval_extS, Sir.eval]
+  | .cat a b, h, w, s => by
+    simp only [Expr.supported, Bool.and_eq_true] at h
+    simp only [lowerCtx, evalCtx, eval_extS, Sir.eval, eval_lowerCtx σ a h.1,
+      eval_lowerCtx σ b h.2]
+  | .shl a b, h, w, s | .shr a b, h, w, s => by
+    simp only [Expr.supported, Bool.and_eq_true] at h
+    simp only [lowerCtx, evalCtx, Sir.eval, eval_lowerCtx σ a h.1, eval_lowerCtx σ b h.2]
+  | .bitsel x i, h, w, s => by
+    simp only [Expr.supported] at h
+    simp only [lowerCtx, evalCtx, eval_extS, Sir.eval, eval_lowerCtx σ i h]
   | .bin op a b, h, w, s => by
     simp only [Expr.supported, Bool.and_eq_true] at h
     simp only [lowerCtx, evalCtx, Sir.eval, eval_lowerCtx σ a h.1, eval_lowerCtx σ b h.2]
@@ -409,6 +451,8 @@ def exprClosed : Expr → Bool
   | .bin _ a b | .cmp _ a b | .land a b | .lor a b => exprClosed a && exprClosed b
   | .bnot a | .lnot a | .cast _ a | .unsigned a => exprClosed a
   | .cond c a b => exprClosed c && exprClosed a && exprClosed b
+  | .cat a b | .shl a b | .shr a b => exprClosed a && exprClosed b
+  | .bitsel .. => false
 
 def constAssigns : Stmts → Bool
   | .nil => true

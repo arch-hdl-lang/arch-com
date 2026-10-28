@@ -1,0 +1,11 @@
+# Corpus files whose certificate Lean REJECTS because of a known, open
+# spec/implementation divergence (not a validator gap). The sweep reports them
+# as KNOWN instead of FAIL, and fails if a listed file no longer FAILs, so the
+# entry is removed once the divergence is resolved.
+#
+# Format: <path relative to the repo root> <issue> <one-line reason>
+
+# Spec: `a << n` has width W(a). Both backends instead widen the shifted
+# operand to the surrounding context width before shifting.
+tests/cvdp/palindrome_detect.arch #937 (sr[1:0] << 1) | x.zext<3>() keeps sr[1]
+tests/cvdp/ir_receiver.arch #937 (x.trunc<3>() << 4) | 7'h0F keeps the shifted bits

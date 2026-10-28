@@ -25,6 +25,9 @@ style):
 | `c ? a : b`             | `max(W a, W b)`           |                           |
 | `.trunc/.zext/.resize<N>` | `N`                     | low `N` bits (unsigned)   |
 | `a[hi:lo]`              | `hi - lo + 1`             | bit field                 |
+| `a[i]`                  | 1                         | bit `i` (0 when out of range) |
+| `{a, b}`                | `W a + W b`               | `a` above `b`             |
+| `a << n`, `a >> n`      | `W a`                     | shifted, non-widening     |
 
 Assignments store the right-hand side truncated or zero-extended to the
 target's declared width; the ARCH type checker guarantees the "truncated"
@@ -53,6 +56,12 @@ inductive Expr where
   | mux (c a b : Expr)
   | resize (n : Nat) (a : Expr)
   | slice (hi lo : Nat) (a : Expr)
+  | cat (a b : Expr)
+  | shl (a n : Expr)
+  | shr (a n : Expr)
+  /-- Dynamic bit select `a[i]`; an out-of-range index reads 0 (ARCH treats
+  it as a runtime error, and `arch sim` aborts). -/
+  | bit (a i : Expr)
 deriving DecidableEq, Repr
 
 section
@@ -70,6 +79,9 @@ def width : Expr → Nat
   | .mux _ a b => max (width a) (width b)
   | .resize n _ => n
   | .slice hi lo _ => hi + 1 - lo
+  | .cat a b => width a + width b
+  | .shl a _ | .shr a _ => width a
+  | .bit .. => 1
 
 def eval (σ : Env) : Expr → Nat
   | .sig x => mask (W x) (σ x)
@@ -89,6 +101,10 @@ def eval (σ : Env) : Expr → Nat
     if eval σ c ≠ 0 then mask w (eval σ a) else mask w (eval σ b)
   | .resize n a => mask n (eval σ a)
   | .slice hi lo a => mask (hi + 1 - lo) (eval σ a / 2 ^ lo)
+  | .cat a b => mask (width W a) (eval σ a) * 2 ^ width W b + mask (width W b) (eval σ b)
+  | .shl a n => mask (width W a) (eval σ a * 2 ^ eval σ n)
+  | .shr a n => mask (width W a) (eval σ a / 2 ^ eval σ n)
+  | .bit a i => mask 1 (eval σ a / 2 ^ eval σ i)
 
 end
 
@@ -198,11 +214,17 @@ def lower : Expr → Sir
   | .mux c a b => .mux (max (width W a) (width W b)) (lower c) (lower a) (lower b)
   | .resize n a => .resize n (lower a)
   | .slice hi lo a => .slice hi lo (lower a)
+  | .cat a b => .cat (width W a) (lower a) (width W b) (lower b)
+  | .shl a n => .shl (width W a) (lower a) (lower n)
+  | .shr a n => .shr (width W a) (lower a) (lower n)
+  | .bit a i => .shr 1 (lower a) (lower i)
 
 theorem eval_lower (σ : Env) : ∀ e : Expr, (lower W e).eval σ = eval W σ e
   | .sig _ | .lit .. | .bool _ => rfl
   | .add a b | .sub a b | .mul a b | .binW _ a b | .cmp _ a b | .land a b | .lor a b => by
     simp only [lower, Sir.eval, eval, BinOp.apply, eval_lower σ a, eval_lower σ b]
+  | .cat a b | .shl a b | .shr a b | .bit a b => by
+    simp only [lower, Sir.eval, eval, eval_lower σ a, eval_lower σ b]
   | .bnot a | .lnot a | .resize _ a | .slice _ _ a => by
     simp only [lower, Sir.eval, eval, eval_lower σ a]
   | .mux c a b => by

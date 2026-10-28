@@ -78,6 +78,10 @@ enum CoreExpr {
     Mux(Box<CoreExpr>, Box<CoreExpr>, Box<CoreExpr>),
     Resize(u32, Box<CoreExpr>),
     Slice(u64, u64, Box<CoreExpr>),
+    Cat(Box<CoreExpr>, Box<CoreExpr>),
+    Shl(Box<CoreExpr>, Box<CoreExpr>),
+    Shr(Box<CoreExpr>, Box<CoreExpr>),
+    Bit(Box<CoreExpr>, Box<CoreExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +124,10 @@ enum SvExpr {
     Cast(SvCw, Box<SvExpr>),
     Unsigned(Box<SvExpr>),
     Slice(u32, u64, u64),
+    Cat(Box<SvExpr>, Box<SvExpr>),
+    Shl(Box<SvExpr>, Box<SvExpr>),
+    Shr(Box<SvExpr>, Box<SvExpr>),
+    BitSel(u32, Box<SvExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -709,6 +717,8 @@ fn expr(e: &Expr, sigs: &SigTable) -> R<CoreExpr> {
                 AstBinOp::Gte => CoreExpr::Cmp(CmpOp::Ge, l, r),
                 AstBinOp::And => CoreExpr::Land(l, r),
                 AstBinOp::Or => CoreExpr::Lor(l, r),
+                AstBinOp::Shl => CoreExpr::Shl(l, r),
+                AstBinOp::Shr => CoreExpr::Shr(l, r),
                 other => return Err(format!("operator `{other}` is not yet covered")),
             }
         }
@@ -720,6 +730,20 @@ fn expr(e: &Expr, sigs: &SigTable) -> R<CoreExpr> {
         {
             CoreExpr::Resize(const_u32(&args[0], &sigs.params)?, b(recv)?)
         }
+        ExprKind::Concat(parts) => {
+            // `{a, b, c}` = `{a, {b, c}}`: concatenation is associative.
+            let mut it = parts.iter().rev();
+            let last = it.next().ok_or_else(|| "empty concatenation".to_string())?;
+            let mut acc = expr(last, sigs)?;
+            for p in it {
+                acc = CoreExpr::Cat(b(p)?, Box::new(acc));
+            }
+            acc
+        }
+        ExprKind::Index(base, idx) => match const_u64(idx, &sigs.params) {
+            Ok(k) => CoreExpr::Slice(k, k, b(base)?),
+            Err(_) => CoreExpr::Bit(b(base)?, b(idx)?),
+        },
         ExprKind::BitSlice(base, hi, lo) => {
             let (hi, lo) = (const_u64(hi, &sigs.params)?, const_u64(lo, &sigs.params)?);
             if lo > hi {
@@ -727,7 +751,11 @@ fn expr(e: &Expr, sigs: &SigTable) -> R<CoreExpr> {
             }
             CoreExpr::Slice(hi, lo, b(base)?)
         }
-        _ => return Err("expression form is not yet covered".to_string()),
+        other => {
+            let form = format!("{other:?}");
+            let form = form.split(['(', ' ', '{']).next().unwrap_or("?");
+            return Err(format!("expression form `{form}` is not yet covered"));
+        }
     })
 }
 
@@ -792,6 +820,10 @@ fn lean_core_expr(e: &CoreExpr) -> String {
         CoreExpr::Mux(c, a, b) => format!(".mux {} {} {}", p(c), p(a), p(b)),
         CoreExpr::Resize(n, a) => format!(".resize {n} {}", p(a)),
         CoreExpr::Slice(hi, lo, a) => format!(".slice {hi} {lo} {}", p(a)),
+        CoreExpr::Cat(a, b) => format!(".cat {} {}", p(a), p(b)),
+        CoreExpr::Shl(a, b) => format!(".shl {} {}", p(a), p(b)),
+        CoreExpr::Shr(a, b) => format!(".shr {} {}", p(a), p(b)),
+        CoreExpr::Bit(a, b) => format!(".bit {} {}", p(a), p(b)),
     }
 }
 
@@ -849,6 +881,10 @@ fn lean_sv_expr(e: &SvExpr) -> String {
         SvExpr::Cast(cw, a) => format!(".cast ({}) {}", lean_cw(cw), p(a)),
         SvExpr::Unsigned(a) => format!(".unsigned {}", p(a)),
         SvExpr::Slice(x, hi, lo) => format!(".slice {x} {hi} {lo}"),
+        SvExpr::Cat(a, b) => format!(".cat {} {}", p(a), p(b)),
+        SvExpr::Shl(a, b) => format!(".shl {} {}", p(a), p(b)),
+        SvExpr::Shr(a, b) => format!(".shr {} {}", p(a), p(b)),
+        SvExpr::BitSel(x, i) => format!(".bitsel {x} {}", p(i)),
     }
 }
 

@@ -26,8 +26,8 @@ enum Tok {
 }
 
 const PUNCTS: &[&str] = &[
-    "&&", "||", "==", "!=", "<=", ">=", "+:", "-:", "(", ")", "[", "]", ":", ";", ",", "=", "<",
-    ">", "+", "-", "*", "/", "%", "&", "|", "^", "~", "!", "?", "@", "#",
+    "&&", "||", "==", "!=", "<<", ">>", "<=", ">=", "+:", "-:", "(", ")", "[", "]", "{", "}", ":",
+    ";", ",", "=", "<", ">", "+", "-", "*", "/", "%", "&", "|", "^", "~", "!", "?", "@", "#",
 ];
 
 fn lex(src: &str) -> Result<Vec<(Tok, usize)>, String> {
@@ -186,6 +186,8 @@ enum P {
     Cast(Box<P>, Box<P>),
     Slice(String, u64, u64),
     Clog2(Box<P>),
+    Concat(Vec<P>),
+    BitSel(String, Box<P>),
 }
 
 struct Parser<'a> {
@@ -313,6 +315,7 @@ impl<'a> Parser<'a> {
             &["&"],
             &["==", "!="],
             &["<", "<=", ">", ">="],
+            &["<<", ">>"],
             &["+", "-"],
             &["*", "/", "%"],
         ];
@@ -358,6 +361,18 @@ impl<'a> Parser<'a> {
                 signed,
                 value,
             }) => Ok(P::Lit(size, signed, value)),
+            Some(Tok::Punct("{")) => {
+                let mut parts = vec![self.expr()?];
+                if self.is_punct("{") {
+                    return self.err("replication `{N{...}}` is outside the subset");
+                }
+                while self.is_punct(",") {
+                    self.pos += 1;
+                    parts.push(self.expr()?);
+                }
+                self.expect_punct("}")?;
+                Ok(P::Concat(parts))
+            }
             Some(Tok::Punct("(")) => {
                 let e = self.expr()?;
                 self.expect_punct(")")?;
@@ -386,7 +401,18 @@ impl<'a> Parser<'a> {
                 if self.is_punct("[") {
                     // Constant selects only: `x[hi:lo]`, `x[base +: w]`, `x[base -: w]`.
                     self.pos += 1;
-                    let first = self.const_expr()?;
+                    let first_p = self.expr()?;
+                    if self.is_punct("]") {
+                        // `x[i]`: a constant index is a 1-bit slice.
+                        self.pos += 1;
+                        return Ok(match self.ceval(&first_p) {
+                            Ok(k) => P::Slice(name, k, k),
+                            Err(_) => P::BitSel(name, Box::new(first_p)),
+                        });
+                    }
+                    let first = self
+                        .ceval(&first_p)
+                        .map_err(|e| format!("line {}: {e}", self.line()))?;
                     let (hi, lo) = if self.is_punct(":") {
                         self.pos += 1;
                         (first, self.const_expr()?)
@@ -536,6 +562,8 @@ impl<'a> Parser<'a> {
                                 "&" => BinOp::And,
                                 "|" => BinOp::Or,
                                 "^" => BinOp::Xor,
+                                "<<" => return Ok(SvExpr::Shl(a, b)),
+                                ">>" => return Ok(SvExpr::Shr(a, b)),
                                 _ => return Err(format!("unsupported operator `{other}`")),
                             };
                             SvExpr::Bin(bop, a, b)
@@ -551,6 +579,16 @@ impl<'a> Parser<'a> {
                 Box::new(self.to_expr(f)?),
             ),
             P::Cast(w, e) => SvExpr::Cast(self.to_cw(w)?, Box::new(self.to_expr(e)?)),
+            P::Concat(parts) => {
+                // `{a, b, c}` = `{a, {b, c}}`.
+                let mut it = parts.iter().rev();
+                let mut acc = self.to_expr(it.next().ok_or("empty concatenation")?)?;
+                for p in it {
+                    acc = SvExpr::Cat(Box::new(self.to_expr(p)?), Box::new(acc));
+                }
+                acc
+            }
+            P::BitSel(x, i) => SvExpr::BitSel(self.sig(x)?, Box::new(self.to_expr(i)?)),
             P::Slice(x, hi, lo) => {
                 if lo > hi {
                     return Err(format!("descending slice `{x}[{hi}:{lo}]`"));

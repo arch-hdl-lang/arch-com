@@ -20,6 +20,7 @@ const FIXTURES: &[&str] = &[
     "let_port_reg",
     "init_reg",
     "param_select_async",
+    "concat_shift",
 ];
 
 fn find_lake() -> Option<PathBuf> {
@@ -328,6 +329,21 @@ fn miscompiled_sv_is_rejected() {
             "      q <= 0;",
             "      q <= a;",
         ),
+        (
+            "concat_shift",
+            "swapped concatenation",
+            "assign cat = {a, b};",
+            "assign cat = {b, a};",
+        ),
+        ("concat_shift", "wrong constant bit", "a[2];", "a[3];"),
+        ("concat_shift", "wrong dynamic index", "a[i];", "a[sh];"),
+        ("concat_shift", "flipped shift", "a >> 2;", "a << 2;"),
+        (
+            "concat_shift",
+            "lost non-widening shift",
+            "9'($unsigned(a << 1))",
+            "9'(a << 1)",
+        ),
     ];
     let mut failures = Vec::new();
     for (i, (name, what, from, to)) in cases.iter().enumerate() {
@@ -391,6 +407,15 @@ fn semantics_preserving_rewrites_are_accepted() {
             "logic [7:0] r = 7;",
             "logic [7:0] r = 8'd7;",
         ),
+        // A constant bit select is a 1-bit range.
+        ("concat_shift", "bit as range", "a[2];", "a[2:2];"),
+        // Redundant parentheses inside a concatenation.
+        (
+            "concat_shift",
+            "parenthesized concatenation operand",
+            "{r[6:0], b[0]}",
+            "{(r[6:0]), (b[0])}",
+        ),
         // Operand order of a constant signed comparison.
         (
             "param_select_async",
@@ -453,7 +478,7 @@ end module Signed
     // SV outside the reader subset is a skip with the reader's reason, and
     // then nothing is certified (the CLI turns that into an error).
     let only_bad = &items[..1];
-    let bad_sv = "module Covered (\n  input logic [3:0] a,\n  output logic [3:0] y\n);\n  assign y = a << 1;\nendmodule\n";
+    let bad_sv = "module Covered (\n  input logic [3:0] a,\n  output logic [3:0] y\n);\n  assign y = {2{a[1:0]}};\nendmodule\n";
     let cert = arch::codegen_proof_cert::render_lean_items(only_bad.iter(), bad_sv).expect("cert");
     assert!(cert.certified.is_empty() && cert.lean.is_empty());
     assert!(

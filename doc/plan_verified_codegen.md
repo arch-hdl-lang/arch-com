@@ -87,8 +87,12 @@ Each rule is proved value-preserving:
 
 * fold literal resizes and sign extensions;
 * drop resizes that cannot change a value;
-* push truncation through low-bit operators (`+ - * & | ^ ~ ?:`);
-* shrink an operator's width to its operands' natural range.
+* push truncation through low-bit operators (`+ - * & | ^ ~ ?: <<`);
+* shrink an operator's width to its operands' natural range (including a
+  `>>`, which never grows its left operand);
+* treat a sign extension to a width no wider than its source as truncation;
+* right-associate same-width `&`/`|`/`^` chains (codegen drops the
+  parentheses of an associative chain).
 
 Nonblocking blocks to distinct registers are compared as sets (`Stmts.eqvN`).
 Straight-line combinational blocks are split into single assignments
@@ -132,7 +136,9 @@ Assumptions:
   * Statements: assignment and `if`/`elsif`/`else`.
   * Operators: `+ - * +% -% *% & | ^ ~`, comparisons, `and or not`, `?:`,
     `.trunc/.zext/.resize`, constant slices (emitted as `[hi:lo]` or
-    `[base +: w]`). Comparisons of two signed SV operands (e.g. an `int`
+    `[base +: w]`), concatenation `{a, b}`, non-widening `<<`/`>>`
+    (result width `W(a)`, per the spec's shift table), and constant or
+    dynamic bit select `a[i]`. Comparisons of two signed SV operands (e.g. an `int`
     parameter against an unsized literal) use two's complement; comparisons
     of two constants fold to 0/1.
   * `init` values: an SV declaration initializer fixes the register's value
@@ -148,8 +154,8 @@ Assumptions:
   <constant assignments> else …`, which `Sv.Module.asyncShaped` enforces
   inside `check`. "Constant" means an expression that reads no signal, such
   as `40'($unsigned(DELAY))`.
-* **Fixtures** (`tests/codegen_proof/*.arch`): all nine certify.
-* **Negative controls** (`tests/codegen_proof_cert_test.rs`): 27 hand-made
+* **Fixtures** (`tests/codegen_proof/*.arch`): all ten certify.
+* **Negative controls** (`tests/codegen_proof_cert_test.rs`): 32 hand-made
   miscompiles are all rejected by the kernel.
   * 11 core cases: a dropped carry, an inverted reset, a wrong reset value,
     a wrong operator, a narrowed port, a wrong flop clock, a wrong literal,
@@ -163,15 +169,20 @@ Assumptions:
     wrong or dropped initializer, an initializer on a combinational net, an
     inverted or wrong-constant parameter comparison, a wrong async reset
     constant, and an async reset branch that reads a signal.
-  * 9 semantics-preserving rewrites are accepted: a redundant cast, a
+  * 5 for concatenation, shifts and bit select: swapped concatenation
+    operands, a wrong constant bit, a wrong dynamic index, a flipped shift
+    direction, and a shift that loses its non-widening size cast.
+  * 11 semantics-preserving rewrites are accepted: a redundant cast, a
     different-but-equivalent cast width, reordered resets, a sized vs
     unsized literal, a parameter vs literal cast width, `+:` vs `[hi:lo]`,
-    a sized initializer, a swapped constant comparison, and a literal async
-    reset constant.
+    a sized initializer, a swapped constant comparison, a literal async
+    reset constant, `a[2]` vs `a[2:2]`, and redundant parentheses inside a
+    concatenation.
 * **Corpus sweep** (`scripts/codegen_cert_sweep.sh`, 969 `.arch` files):
-  * **173 files certify, with 0 failures**, including `tests/e203/e203_core`
-    and `e203_cpu`. The count was 78 before parameters and async reset, 107
-    before `let` / `port reg` / `init`. In between, #1102 made the compiler
+  * **225 files certify, with 0 unexplained failures**, including
+    `tests/e203/e203_core` and `e203_cpu`. The count was 78 before
+    parameters and async reset, 107 before `let` / `port reg` / `init`, and
+    173 before concatenation, shifts and bit select. Between the first two, #1102 made the compiler
     reject undriven wires, so 4 e203 files that had certified
     (`e203_core_top`, `e203_exu`, `e203_exu_top`, `e203_soc_top`) no longer
     build at all. Their
@@ -192,16 +203,37 @@ Assumptions:
   * The two e203 certificates first exceeded the elaborator's `maxRecDepth`
     under `decide`. Certificates now use `decide +kernel`, which evaluates
     in the kernel directly (same trusted base).
-  * **No miscompile was found in the covered subset.**
+  * Adding concatenation, shifts and bit select produced 4 rejections.
+    Two were validator gaps, closed in Lean: `Prob044_vectorgates`, where
+    codegen flattens `(a|b|c) | (d|e|f)` (reassociation), and
+    `Nic400SparseDemo`, where `CONNECT_MASK >> sel` is 2 bits wide in Core
+    and 32 bits in SV (a `>>` width shrink and the sign-extension-as-
+    truncation rule).
+  * The other two, `cvdp/palindrome_detect` and `cvdp/ir_receiver`, are the
+    open spec/implementation divergence **#937**. The spec gives `a << n`
+    the width `W(a)`, but both backends widen the shifted operand to the
+    surrounding context first. `(sr[1:0] << 1) | x.zext<3>()` keeps `sr[1]`
+    in `arch sim`, in Verilator on the emitted SV, and in the source
+    author's evident intent, but drops it under the spec. Core follows the
+    spec, so the certificate correctly fails. The sweep lists both files in
+    `scripts/codegen_cert_known_divergences.txt` and reports them as
+    `KNOWN`. It fails if a listed file stops failing, so the entries go
+    away when #937 is decided (and Core's shift rule then follows the
+    decision).
+  * **No disagreement between `arch sim` and the emitted SV was found in
+    the covered subset.** The only rejected code is #937, where both
+    backends agree with each other and differ from the written spec.
 * **Cost:** most certificates replay in 1–2 s; `e203_core` takes about 18 s.
   The whole sweep takes about 20 s with 8 jobs.
 
-Why modules are skipped (first reason per module, 728 module-level reasons
-over the sweep): bus ports 117, unsupported expression forms 98, `inst` 92,
-non-integer parameters 56, `Vec`/struct/enum data types ≈ 128 (ports, regs
-and wires together), registers without reset 40, statements other than
-assignment/`if` 35, more than one `seq` block 23, assignment to a
-non-signal target 17, signed types 16, `<<` 16, `assert`/`cover` 15.
+Why modules are skipped (first reason per module, 672 module-level reasons
+over the sweep): `Vec`/struct/enum data types 129 (ports, regs and wires
+together), bus ports 117, `inst` 93, non-integer parameters 56, unsupported
+expression forms 41 (replication 12, `match` expressions 6, then single
+digits), registers without reset 40, statements other than assignment/`if`
+36, more than one `seq` block 24, SV outside the reader subset 24 (mostly
+`?:` in a width expression), assignment to a non-signal target 22, signed
+types 17, `assert`/`cover` 15.
 
 ## 6. Roadmap
 
@@ -219,8 +251,10 @@ Ordered by the skip-reason evidence in §5.
    `$signed`. Packed `Vec`/struct/enum: flatten to bit ranges in Core, with
    SV part-selects.
 4. **Untyped `let`, `port reg` (`pipe_reg<T, 1>`), `reg … init` — done.**
-   Remaining small items: shifts, concatenation/replication, `Index`,
-   registers without reset, more than one `seq` block (S each).
+   **Concatenation, shifts and bit select — done.** Remaining small items:
+   replication, registers without reset, more than one `seq` block, `?:` in
+   SV width expressions (S each). Core's shift width follows the outcome of
+   #937.
 5. **Hierarchy (L).** `inst` with a compositional theorem: if every module
    certifies, the flattened design certifies. Also bus-port flattening.
 6. **SV semantics cross-check (S).** Differential-test `Sv.evalCtx` (it is
