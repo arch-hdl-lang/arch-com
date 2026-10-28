@@ -1,8 +1,8 @@
 ---
 source: tests/integration_test.rs
-assertion_line: 133
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -79,3 +79,5 @@ module TrafficLight #(
   // synopsys translate_on
 
 endmodule
+
+`default_nettype wire

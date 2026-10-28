@@ -1,8 +1,8 @@
 ---
 source: tests/integration_test.rs
-assertion_line: 1810
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -20,3 +20,5 @@ module ExtUnpackedParams #(
   assign q = d;
 
 endmodule
+
+`default_nettype wire

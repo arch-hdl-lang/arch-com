@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 module SchedList #(
   parameter int  DEPTH = 4,
   parameter type DATA  = logic [7:0]
@@ -109,3 +110,5 @@ module SchedList #(
   end
   
 endmodule
+
+`default_nettype wire

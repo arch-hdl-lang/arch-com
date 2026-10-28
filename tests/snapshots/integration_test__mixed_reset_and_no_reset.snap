@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -29,3 +30,5 @@ module MixedReset (
   assign pipe_out = pipe_r;
 
 endmodule
+
+`default_nettype wire

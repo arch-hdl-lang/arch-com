@@ -1149,6 +1149,47 @@ impl<'a> TypeChecker<'a> {
                         self.global_symbol(&bi.bus_name.name)
                     {
                         local_types.insert(p.name.name.clone(), Ty::Bus(bi.bus_name.name.clone()));
+                        // Thread lowering forwards bus fields using their emitted
+                        // flat names. Register exactly those declared fields so
+                        // input connection resolution works without changing the
+                        // AST shapes consumed by the native and SV backends.
+                        let fields: Vec<String> = if let Some((Symbol::Bus(info), _)) =
+                            self.global_symbol(&bi.bus_name.name)
+                        {
+                            let mut params = info.default_param_map();
+                            for pa in &bi.params {
+                                params.insert(pa.name.name.clone(), &pa.value);
+                            }
+                            info.effective_signals(&params)
+                                .into_iter()
+                                .map(|(name, _, _)| name)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        for field in fields {
+                            let ty = self.resolve_field_access_type(
+                                &Expr::new(ExprKind::Ident(p.name.name.clone()), p.name.span),
+                                &Ident::new(field.clone(), p.name.span),
+                                p.name.span,
+                                &m.name.name,
+                                &local_types,
+                            );
+                            if let Some(&n) = self.vec_of_bus_ports.get(&p.name.name) {
+                                local_types
+                                    .entry(format!("{}_{}", p.name.name, field))
+                                    .or_insert_with(|| Ty::Vec(Box::new(ty.clone()), n));
+                                for i in 0..n {
+                                    local_types
+                                        .entry(format!("{}_{}_{}", p.name.name, i, field))
+                                        .or_insert_with(|| ty.clone());
+                                }
+                            } else {
+                                local_types
+                                    .entry(format!("{}_{}", p.name.name, field))
+                                    .or_insert(ty);
+                            }
+                        }
                         // Bus params are overridden at the port declaration
                         // (`port axi: initiator BusAxi4<DATA_W=64>;`), not at
                         // an inst site — enforce `where` constraints here.
@@ -1575,6 +1616,10 @@ impl<'a> TypeChecker<'a> {
                 // Generate blocks that were preserved (param-dependent range) —
                 // mark their inst output connections as driven.
                 ModuleBodyItem::Generate(gen) => {
+                    let mut gen_types = local_types.clone();
+                    if let crate::ast::GenerateDecl::For(gf) = gen {
+                        gen_types.insert(gf.var.name.clone(), Ty::UInt(32));
+                    }
                     let items = match gen {
                         crate::ast::GenerateDecl::For(gf) => &gf.items,
                         crate::ast::GenerateDecl::If(gi) => &gi.then_items,
@@ -1583,6 +1628,7 @@ impl<'a> TypeChecker<'a> {
                         if let crate::ast::GenItem::Inst(inst) = gi {
                             self.check_inst_param_constraints(inst);
                             self.validate_inst_ports(inst);
+                            self.check_inst_connection_types(inst, &m.name.name, &gen_types);
                             // Look up the instantiated module's bus ports so we can
                             // mark per-bus-signal flat names for bus-typed inst-outputs
                             // (`inst_port -> outer_vec[loop_var]`), mirroring
@@ -1688,6 +1734,7 @@ impl<'a> TypeChecker<'a> {
                             if let crate::ast::GenItem::Inst(inst) = else_item {
                                 self.check_inst_param_constraints(inst);
                                 self.validate_inst_ports(inst);
+                                self.check_inst_connection_types(inst, &m.name.name, &gen_types);
                             }
                         }
                     }
@@ -1845,6 +1892,32 @@ impl<'a> TypeChecker<'a> {
         let sfg_drivers = crate::signal_flow::collect_module_drivers(m, self.source);
         self.errors
             .extend(crate::signal_flow::check_multi_driver(m, &sfg_drivers));
+
+        // A wire declaration does not drive the wire. Instance-bound nets
+        // retain their declaration syntax; a misspelled output connection must
+        // still expose the intended, declared wire as undriven (#1074).
+        for item in &m.body {
+            if let ModuleBodyItem::WireDecl(w) = item {
+                // Bus bundles have per-field drivers, often split between
+                // initiator and target instances. They need field-level checks.
+                if matches!(local_types.get(&w.name.name), Some(Ty::Bus(_))) {
+                    continue;
+                }
+                let name = &w.name.name;
+                let has_driver = driven.contains(name)
+                    || sfg_drivers.keys().any(|key| {
+                        key == name
+                            || key.starts_with(&format!("{name}["))
+                            || key.starts_with(&format!("{name}."))
+                    });
+                if !has_driver {
+                    self.errors.push(CompileError::general(
+                        &format!("wire `{name}` has no driver"),
+                        w.name.span,
+                    ));
+                }
+            }
+        }
 
         // Check all output ports are driven
         for p in &m.ports {
@@ -8886,9 +8959,10 @@ impl<'a> TypeChecker<'a> {
     /// a reset at a boundary is written `rst <- r as Reset<K, P>`, the form
     /// `auto;` already demands. Only definite mismatches are reported: a
     /// param-dependent or otherwise unresolvable type on either side is
-    /// skipped. Typing the parent-side expression must not add diagnostics
-    /// of its own (inst connection RHS checking is #1026's scope), so any
-    /// it produces are discarded and the connection is then skipped.
+    /// skipped. Input expressions are resolved even when the child port type
+    /// is unknown, so undefined names cannot become implicit SV nets (#1074).
+    /// Output connections may bind new nets, so their speculative type
+    /// resolution still discards diagnostics.
     /// Compiler-generated insts (`_<Mod>_threads`, `_arb_*` from thread/TLM
     /// lowering) are checked like any other: since #1094 (arbiter reset
     /// kind) and the thread reset-level rule, lowering wires them
@@ -8899,11 +8973,22 @@ impl<'a> TypeChecker<'a> {
         module_name: &str,
         local_types: &HashMap<String, Ty>,
     ) {
-        let Some(ports) = self.child_ports(&inst.module_name.name) else {
-            return;
-        };
+        let ports = self.child_ports(&inst.module_name.name);
         let vals = self.inst_target_param_vals(inst);
         for conn in &inst.connections {
+            // Whole-bus connections bind a bundle even with `<-` (both
+            // initiator and target drive fields). Backends infer that bundle
+            // from the child's bus signature, including credit-channel links.
+            let binds_bus = matches!(&conn.signal.kind, ExprKind::Ident(_))
+                && ports
+                    .into_iter()
+                    .flatten()
+                    .any(|p| p.name.name == conn.port_name.name && p.bus_info.is_some());
+            if binds_bus {
+                continue;
+            }
+            let input_ty = (conn.direction == ConnectDir::Input)
+                .then(|| self.resolve_expr_type(&conn.signal, module_name, local_types));
             // A compile-time constant (literals and params only, e.g. `1`,
             // `HEAD_DIM`, `DEPTH - 1`) is context-typed, as everywhere else
             // (`q <= 0;`): it takes the port's width. Whether its value fits
@@ -8917,7 +9002,8 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             let Some(port) = ports
-                .iter()
+                .into_iter()
+                .flatten()
                 .find(|p| p.name.name == conn.port_name.name && p.bus_info.is_none())
             else {
                 continue;
@@ -8926,7 +9012,8 @@ impl<'a> TypeChecker<'a> {
                 continue;
             };
             let (n_err, n_warn) = (self.errors.len(), self.warnings.len());
-            let sig_ty = self.resolve_expr_type(&conn.signal, module_name, local_types);
+            let sig_ty = input_ty
+                .unwrap_or_else(|| self.resolve_expr_type(&conn.signal, module_name, local_types));
             let clean = self.errors.len() == n_err;
             self.errors.truncate(n_err);
             self.warnings.truncate(n_warn);

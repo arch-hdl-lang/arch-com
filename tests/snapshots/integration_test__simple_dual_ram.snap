@@ -2,6 +2,7 @@
 source: tests/integration_test.rs
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -30,3 +31,5 @@ module DualMem #(
   assign rd_port_data = rd_port_data_r;
 
 endmodule
+
+`default_nettype wire

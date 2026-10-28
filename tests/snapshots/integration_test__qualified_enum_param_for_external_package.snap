@@ -1,8 +1,8 @@
 ---
 source: tests/integration_test.rs
-assertion_line: 1766
 expression: sv
 ---
+`default_nettype none
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -19,3 +19,5 @@ module ExternalEnumParam #(
   assign q = d;
 
 endmodule
+
+`default_nettype wire
