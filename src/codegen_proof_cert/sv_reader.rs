@@ -685,6 +685,7 @@ impl<'a> Parser<'a> {
 
         let mut locals = Vec::new();
         let mut procs = Vec::new();
+        let mut inits = Vec::new();
         let mut ff: Option<AlwaysFf> = None;
         loop {
             if self.is_kw("endmodule") {
@@ -699,11 +700,14 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 let width = self.packed_width()?;
                 let n = self.ident()?;
-                if !self.is_punct(";") {
-                    return self.err("declaration initializers are outside the subset");
+                let x = self.sig(&n)?;
+                if self.is_punct("=") {
+                    self.pos += 1;
+                    let e = self.value_expr()?;
+                    inits.push((x, e));
                 }
-                self.pos += 1;
-                locals.push((self.sig(&n)?, width));
+                self.expect_punct(";")?;
+                locals.push((x, width));
             } else if self.is_kw("assign") {
                 self.pos += 1;
                 let x = self.ident()?;
@@ -759,6 +763,7 @@ impl<'a> Parser<'a> {
             ff_clk,
             ff_async,
             ff_body,
+            inits,
         })
     }
 }

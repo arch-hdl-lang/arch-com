@@ -25,8 +25,8 @@ It models the IEEE 1800-2017 rules that matter for the emitted subset:
 * **Processes.** `assign` and `always_comb` are combinational processes;
   `always_ff @(posedge clk)` uses nonblocking assignments.
 
-Signed comparisons are modelled (two's complement) but not yet supported by
-the lowering; `Expr.supported` rules them out.
+Comparisons whose operands are both signed use two's complement at the
+operand width (§11.8.2).
 -/
 
 namespace Arch.CodegenProof
@@ -96,16 +96,6 @@ def selfS : Expr → Bool
 
 /-- Extend a `src`-bit operand to the context width `w` (§11.8.2). -/
 def ext (s : Bool) (src w v : Nat) : Nat := if s then sextVal w src v else mask w v
-
-def toInt (w v : Nat) : Int := if 0 < w ∧ 2 ^ (w - 1) ≤ v then (v : Int) - 2 ^ w else v
-
-def cmpInt : CmpOp → Int → Int → Bool
-  | .eq, x, y => x == y
-  | .ne, x, y => x != y
-  | .lt, x, y => decide (x < y)
-  | .le, x, y => decide (x ≤ y)
-  | .gt, x, y => decide (x > y)
-  | .ge, x, y => decide (x ≥ y)
 
 section
 variable (W : Sig → Nat) (σ : Env)
@@ -193,6 +183,9 @@ structure Module where
   (`(s, false)`): an asynchronous reset. -/
   ffAsync : Option (Sig × Bool) := none
   ffBody : Stmts
+  /-- Declaration initializers `logic [W-1:0] x = e;`: the variable's value
+  at time 0, before any process runs. -/
+  inits : List (Sig × Expr) := []
 
 namespace Module
 
@@ -220,6 +213,7 @@ def next (m : Module) (pre post : Env) : Env :=
 every variable written by `always_ff` takes its `next` value at the next
 cycle. Inputs are unconstrained. -/
 def Run (m : Module) (tr : Nat → Env) : Prop :=
+  (∀ p ∈ m.inits, tr 0 p.1 = assignVal m.W (tr 0) p.1 p.2) ∧
   ∀ t, (∀ p ∈ m.procs, ∀ y, p.exec m.W (tr t) y = tr t y) ∧
     ∀ r ∈ targets m.ffBody, tr (t + 1) r = m.next (tr t) (tr (t + 1)) r
 
@@ -231,7 +225,7 @@ def Expr.supported : Expr → Bool
   | .ident _ | .lit .. | .slice .. => true
   | .bin _ a b | .land a b | .lor a b => a.supported && b.supported
   | .bnot a | .lnot a | .cast _ a | .unsigned a => a.supported
-  | .cmp _ a b => !(selfS a && selfS b) && a.supported && b.supported
+  | .cmp _ a b => a.supported && b.supported
   | .cond c a b => c.supported && a.supported && b.supported
 
 def Stmts.supported : Stmts → Bool
@@ -243,7 +237,8 @@ def Proc.supported : Proc → Bool
   | .assign _ e => e.supported
   | .comb b => b.supported
 
-def Module.supported (m : Module) : Bool := m.procs.all Proc.supported && m.ffBody.supported
+def Module.supported (m : Module) : Bool :=
+  m.procs.all Proc.supported && m.ffBody.supported && m.inits.all (·.2.supported)
 
 def extS (s : Bool) (src w : Nat) (t : Sir) : Sir := if s then .sext w src t else .resize w t
 
@@ -261,7 +256,10 @@ def lowerCtx : Expr → Nat → Bool → Sir
   | .bnot a, w, s => .bnot w (lowerCtx a w s)
   | .cmp op a b, w, s =>
     let cw := max (selfW W a) (selfW W b)
-    extS s 1 w (.cmp op (lowerCtx a cw false) (lowerCtx b cw false))
+    if selfS a && selfS b then
+      extS s 1 w (.scmp op cw (lowerCtx a cw true) (lowerCtx b cw true))
+    else
+      extS s 1 w (.cmp op (lowerCtx a cw false) (lowerCtx b cw false))
   | .lnot a, w, s => extS s 1 w (.lnot (lowerCtx a (selfW W a) (selfS a)))
   | .land a b, w, s =>
     extS s 1 w (.land (lowerCtx a (selfW W a) (selfS a)) (lowerCtx b (selfW W b) (selfS b)))
@@ -302,11 +300,16 @@ theorem eval_lowerCtx (σ : Env) : ∀ (e : Expr), e.supported = true →
     simp only [Expr.supported] at h
     simp only [lowerCtx, evalCtx, Sir.eval, eval_lowerCtx σ a h]
   | .cmp op a b, h, w, s => by
-    simp only [Expr.supported, Bool.and_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true] at h
-    obtain ⟨⟨hs, ha⟩, hb⟩ := h
-    simp only [lowerCtx, evalCtx, eval_extS, Sir.eval, eval_lowerCtx σ a ha,
-      eval_lowerCtx σ b hb, hs]
-    rfl
+    simp only [Expr.supported, Bool.and_eq_true] at h
+    obtain ⟨ha, hb⟩ := h
+    simp only [lowerCtx, evalCtx]
+    split
+    · next hs =>
+      simp only [eval_extS, Sir.eval, eval_lowerCtx σ a ha, eval_lowerCtx σ b hb, hs]
+    · next hs =>
+      simp only [eval_extS, Sir.eval, eval_lowerCtx σ a ha, eval_lowerCtx σ b hb]
+      simp only [Bool.not_eq_true] at hs
+      simp only [hs]
   | .lnot a, h, w, s => by
     simp only [Expr.supported] at h
     simp only [lowerCtx, evalCtx, eval_extS, Sir.eval, eval_lowerCtx σ a h]
@@ -397,10 +400,19 @@ def toNetlist (m : Module) : Netlist where
   seq := lowerStmts m.W m.ffBody
   regs := targets m.ffBody
   async := m.ffAsync.map (levelCond m.W)
+  inits := m.inits.map (fun p => (p.1, lowerAssign m.W p.1 p.2))
+
+/-- The expression reads no signal (its value is a constant). -/
+def exprClosed : Expr → Bool
+  | .ident _ | .slice .. => false
+  | .lit .. => true
+  | .bin _ a b | .cmp _ a b | .land a b | .lor a b => exprClosed a && exprClosed b
+  | .bnot a | .lnot a | .cast _ a | .unsigned a => exprClosed a
+  | .cond c a b => exprClosed c && exprClosed a && exprClosed b
 
 def constAssigns : Stmts → Bool
   | .nil => true
-  | .assign _ (.lit ..) r => constAssigns r
+  | .assign _ e r => exprClosed e && constAssigns r
   | _ => false
 
 /-- Shape under which `Module.next` is a faithful reading of an asynchronous
@@ -433,10 +445,22 @@ theorem next_toNetlist (m : Module) (h : m.ffBody.supported = true) (pre post : 
 theorem run_iff (m : Module) (h : m.supported = true) (tr : Nat → Env) :
     m.Run tr ↔ m.toNetlist.Run tr := by
   simp only [Module.supported, Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨hp, hff⟩ := h
-  simp only [Run, Netlist.Run, AllStable, Arch.CodegenProof.Stmts.Stable,
+  obtain ⟨⟨hp, hff⟩, hi⟩ := h
+  have hinit : (∀ p ∈ m.inits, tr 0 p.1 = assignVal m.W (tr 0) p.1 p.2) ↔
+      m.toNetlist.InitOk (tr 0) := by
+    simp only [Netlist.InitOk, toNetlist, List.mem_map, forall_exists_index, and_imp]
+    constructor
+    · rintro hs _ p hpm rfl
+      simp only [lowerAssign, Sir.eval, eval_lowerCtx m.W (tr 0) p.2 (hi p hpm)]
+      exact hs p hpm
+    · intro hs p hpm
+      have := hs _ p hpm rfl
+      simpa only [lowerAssign, Sir.eval, eval_lowerCtx m.W (tr 0) p.2 (hi p hpm)] using this
+  simp only [Run, Netlist.Run, hinit, AllStable, Arch.CodegenProof.Stmts.Stable,
     next_toNetlist m hff]
   simp only [toNetlist, List.mem_map, forall_exists_index, and_imp, forall_apply_eq_imp_iff₂]
+  apply and_congr_right
+  intro _
   constructor
   · intro hr t
     refine ⟨fun p hpm y => ?_, (hr t).2⟩

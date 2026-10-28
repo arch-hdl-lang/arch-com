@@ -20,12 +20,15 @@ namespace Arch.CodegenProof
 
 def check (c : Core.Module) (s : Sv.Module) : Bool :=
   decide (c.ports = s.ports) && decide (c.clk = s.ffClk) && s.supported && s.asyncShaped &&
+    -- Initializers only on clocked variables: one on a combinational net
+    -- could make the run set empty, and empty run sets are vacuously equal.
+    Netlist.regSubB (s.toNetlist.inits.map Prod.fst) s.toNetlist.regs &&
     Netlist.sameB c.toNetlist s.toNetlist
 
 theorem check_sound {c : Core.Module} {s : Sv.Module} (h : check c s = true) :
     c.ports = s.ports ∧ c.clk = s.ffClk ∧ ∀ tr, c.Run tr ↔ s.Run tr := by
   simp only [check, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨⟨hp, hc⟩, hs⟩, _⟩, hn⟩ := h
+  obtain ⟨⟨⟨⟨⟨hp, hc⟩, hs⟩, _⟩, _⟩, hn⟩ := h
   refine ⟨hp, hc, fun tr => ?_⟩
   rw [Core.Module.run_iff, Sv.Module.run_iff s hs, Netlist.run_iff_of_sameB hn]
 

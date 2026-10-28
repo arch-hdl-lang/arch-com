@@ -125,12 +125,20 @@ Assumptions:
     emits it. Instances that override parameters are separate elaborations
     and are not covered (roadmap A5). The SV reader evaluates the emitted
     `parameter int` defaults itself; it does not take the compiler's values.
-  * Body: `reg` with a reset, `wire`, typed `let`, `comb`, and one
-    `seq on clk rising`.
+  * Body: `reg` with a reset (and optionally `init`), `port reg` /
+    `pipe_reg<T, 1>` outputs, `wire`, typed `let` (a declaration) and
+    untyped `let` (a continuous assignment to an existing wire or output),
+    `comb`, and one `seq on clk rising`.
   * Statements: assignment and `if`/`elsif`/`else`.
   * Operators: `+ - * +% -% *% & | ^ ~`, comparisons, `and or not`, `?:`,
     `.trunc/.zext/.resize`, constant slices (emitted as `[hi:lo]` or
-    `[base +: w]`).
+    `[base +: w]`). Comparisons of two signed SV operands (e.g. an `int`
+    parameter against an unsized literal) use two's complement; comparisons
+    of two constants fold to 0/1.
+  * `init` values: an SV declaration initializer fixes the register's value
+    at time 0 on both sides. `check` also requires that initializers sit only
+    on clocked variables: one on a combinational net could make the set of
+    runs empty, and empty run sets are vacuously equal.
 * **Asynchronous reset semantics.** ARCH-Core: in a cycle where an async
   reset is asserted, every register shows its reset value without a clock
   edge; the clock edge itself sees the pre-edge reset level. SV: an
@@ -138,9 +146,10 @@ Assumptions:
   own state when the entry is at its active level. That reading of IEEE
   event semantics is exact only for the shape `if (<active level>)
   <constant assignments> else …`, which `Sv.Module.asyncShaped` enforces
-  inside `check`.
-* **Fixtures** (`tests/codegen_proof/*.arch`): all six certify.
-* **Negative controls** (`tests/codegen_proof_cert_test.rs`): 18 hand-made
+  inside `check`. "Constant" means an expression that reads no signal, such
+  as `40'($unsigned(DELAY))`.
+* **Fixtures** (`tests/codegen_proof/*.arch`): all nine certify.
+* **Negative controls** (`tests/codegen_proof_cert_test.rs`): 27 hand-made
   miscompiles are all rejected by the kernel.
   * 11 core cases: a dropped carry, an inverted reset, a wrong reset value,
     a wrong operator, a narrowed port, a wrong flop clock, a wrong literal,
@@ -149,15 +158,23 @@ Assumptions:
   * 7 for parameters and async reset: a wrong parameter default, a wrong
     reset parameter, a shifted part-select, an async reset made synchronous
     and the reverse, and an inverted async edge or level.
-  * 6 semantics-preserving rewrites are accepted: a redundant cast, a
+  * 9 for `let`, `port reg`, `init`, constant comparisons and async reset
+    constants: a wrong constant in a `let`, a dropped `port reg` reset, a
+    wrong or dropped initializer, an initializer on a combinational net, an
+    inverted or wrong-constant parameter comparison, a wrong async reset
+    constant, and an async reset branch that reads a signal.
+  * 9 semantics-preserving rewrites are accepted: a redundant cast, a
     different-but-equivalent cast width, reordered resets, a sized vs
-    unsized literal, a parameter vs literal cast width, and `+:` vs `[hi:lo]`.
-* **Corpus sweep** (`scripts/codegen_cert_sweep.sh`, 964 `.arch` files):
-  * **107 files certify, with 0 failures**, including `tests/e203/e203_core`
-    and `e203_cpu`. The count was 78 before parameters and async reset. It
-    peaked at 111: #1102 then made the compiler reject undriven wires, and 4
-    e203 files that had certified (`e203_core_top`, `e203_exu`,
-    `e203_exu_top`, `e203_soc_top`) no longer build at all. Their
+    unsized literal, a parameter vs literal cast width, `+:` vs `[hi:lo]`,
+    a sized initializer, a swapped constant comparison, and a literal async
+    reset constant.
+* **Corpus sweep** (`scripts/codegen_cert_sweep.sh`, 969 `.arch` files):
+  * **173 files certify, with 0 failures**, including `tests/e203/e203_core`
+    and `e203_cpu`. The count was 78 before parameters and async reset, 107
+    before `let` / `port reg` / `init`. In between, #1102 made the compiler
+    reject undriven wires, so 4 e203 files that had certified
+    (`e203_core_top`, `e203_exu`, `e203_exu_top`, `e203_soc_top`) no longer
+    build at all. Their
     certificates were not wrong: an undriven wire is unconstrained on both
     sides, so the traces still matched. Flagging undriven wires is the job
     of the per-program well-typedness check (roadmap C1).
@@ -165,6 +182,13 @@ Assumptions:
     proved rule: a 32-bit signed `?:` vs a 1-bit ARCH mux, a 32-bit vs
     6-bit product under a 4-bit truncation, and reordered resets
     (`Stmts.eqvN`).
+  * Adding `let` / `port reg` / `init` first produced 3 rejections
+    (`cvdp/strob_gen`, `cvdp/soundgenerator`, `cvdp/data_bus_controller`).
+    All three were validator gaps: a signed `int`-parameter comparison the
+    lowering did not support, and an async reset to a cast constant that
+    the shape guard accepted only as a bare literal. Both were closed in
+    Lean (signed comparison `Sir.scmp`, comparison folding, closed-expression
+    guard).
   * The two e203 certificates first exceeded the elaborator's `maxRecDepth`
     under `decide`. Certificates now use `decide +kernel`, which evaluates
     in the kernel directly (same trusted base).
@@ -172,12 +196,12 @@ Assumptions:
 * **Cost:** most certificates replay in 1–2 s; `e203_core` takes about 18 s.
   The whole sweep takes about 20 s with 8 jobs.
 
-Why modules are skipped (first reason per module, 884 module-level reasons
-over the sweep): bus ports 118, untyped `let` 115, `port reg`/`pipe_reg`
-ports 95, `inst` 85, unsupported expression forms 75, `reg … init` 58,
-non-integer parameters 57, `Vec`/struct/enum data types ≈ 119 (ports, regs
-and wires together), more than one `seq` block 19, `assert`/`cover` 15,
-signed types 15, `<<` 14.
+Why modules are skipped (first reason per module, 728 module-level reasons
+over the sweep): bus ports 117, unsupported expression forms 98, `inst` 92,
+non-integer parameters 56, `Vec`/struct/enum data types ≈ 128 (ports, regs
+and wires together), registers without reset 40, statements other than
+assignment/`if` 35, more than one `seq` block 23, assignment to a
+non-signal target 17, signed types 16, `<<` 16, `assert`/`cover` 15.
 
 ## 6. Roadmap
 
@@ -194,9 +218,9 @@ Ordered by the skip-reason evidence in §5.
 3. **Types (M).** `SInt`: signed compare (`Sv.cmpInt` already exists), `sext`,
    `$signed`. Packed `Vec`/struct/enum: flatten to bit ranges in Core, with
    SV part-selects.
-4. **Untyped `let`, `port reg`/`pipe_reg` ports, `reg … init`, shifts,
-   concatenation/replication, `Index` (S each).** Untyped `let` (115) and
-   `port reg` (95) are the largest single items after bus ports.
+4. **Untyped `let`, `port reg` (`pipe_reg<T, 1>`), `reg … init` — done.**
+   Remaining small items: shifts, concatenation/replication, `Index`,
+   registers without reset, more than one `seq` block (S each).
 5. **Hierarchy (L).** `inst` with a compositional theorem: if every module
    certifies, the flattened design certifies. Also bus-port flattening.
 6. **SV semantics cross-check (S).** Differential-test `Sv.evalCtx` (it is

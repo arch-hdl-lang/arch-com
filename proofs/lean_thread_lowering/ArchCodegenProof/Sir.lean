@@ -93,6 +93,17 @@ def CmpOp.apply : CmpOp → Nat → Nat → Bool
 
 def b2n (b : Bool) : Nat := if b then 1 else 0
 
+/-- Two's-complement reading of the low `w` bits of `v`. -/
+def toInt (w v : Nat) : Int := if 0 < w ∧ 2 ^ (w - 1) ≤ v then (v : Int) - 2 ^ w else v
+
+def cmpInt : CmpOp → Int → Int → Bool
+  | .eq, x, y => x == y
+  | .ne, x, y => x != y
+  | .lt, x, y => decide (x < y)
+  | .le, x, y => decide (x ≤ y)
+  | .gt, x, y => decide (x > y)
+  | .ge, x, y => decide (x ≥ y)
+
 theorem b2n_lt (b : Bool) : b2n b < 2 ^ 1 := by cases b <;> decide
 
 /-- Sign-extend (or truncate) the low `src` bits of `v` to width `w`. -/
@@ -131,6 +142,8 @@ inductive Sir where
   | bin (op : BinOp) (w : Nat) (a b : Sir)
   | bnot (w : Nat) (a : Sir)
   | cmp (op : CmpOp) (a b : Sir)
+  /-- Signed comparison of two `w`-bit operands. -/
+  | scmp (op : CmpOp) (w : Nat) (a b : Sir)
   | mux (w : Nat) (c a b : Sir)
   | lnot (a : Sir)
   | land (a b : Sir)
@@ -148,6 +161,7 @@ def eval (σ : Env) : Sir → Nat
   | .bin op w a b => op.apply w (a.eval σ) (b.eval σ)
   | .bnot w a => notW w (a.eval σ)
   | .cmp op a b => b2n (op.apply (a.eval σ) (b.eval σ))
+  | .scmp op w a b => b2n (cmpInt op (toInt w (a.eval σ)) (toInt w (b.eval σ)))
   | .mux w c a b => if c.eval σ ≠ 0 then mask w (a.eval σ) else mask w (b.eval σ)
   | .lnot a => b2n (a.eval σ == 0)
   | .land a b => b2n (a.eval σ != 0 && b.eval σ != 0)
@@ -161,7 +175,7 @@ def width : Sir → Nat
   | .sext w _ _ => w
   | .bin _ w _ _ => w
   | .bnot w _ => w
-  | .cmp .. => 1
+  | .cmp .. | .scmp .. => 1
   | .mux w .. => w
   | .lnot _ => 1
   | .land .. => 1
@@ -183,7 +197,7 @@ theorem eval_lt (σ : Env) : ∀ e : Sir, e.eval σ < 2 ^ e.width
   | .sext .. => sextVal_lt _ _ _
   | .bin .. => binOp_lt _ _ _ _
   | .bnot .. => notW_lt _ _
-  | .cmp .. | .lnot _ | .land .. | .lor .. => b2n_lt _
+  | .cmp .. | .scmp .. | .lnot _ | .land .. | .lor .. => b2n_lt _
   | .mux w c a b => by
     simp only [eval, width]; split <;> exact mask_lt _ _
 
@@ -297,6 +311,15 @@ def simpResize (w : Nat) : Sir → Sir
   | .mux w' c a b => if w ≤ w' then .mux w c (narrow w a) (narrow w b) else .mux w' c a b
   | e => if e.width ≤ w then e else .resize w e
 
+/-- Comparisons of two literals fold to their 0/1 result. -/
+def foldCmp (op : CmpOp) : Sir → Sir → Sir
+  | .lit n, .lit m => .lit (b2n (op.apply n m))
+  | a, b => .cmp op a b
+
+def foldSCmp (op : CmpOp) (w : Nat) : Sir → Sir → Sir
+  | .lit n, .lit m => .lit (b2n (cmpInt op (toInt w n) (toInt w m)))
+  | a, b => .scmp op w a b
+
 /-- Simplify `sext w s e`, assuming `e` is already normalized. -/
 def simpSext (w s : Nat) : Sir → Sir
   | .lit n => .lit (sextVal w s n)
@@ -309,7 +332,8 @@ def norm : Sir → Sir
   | .sext w s e => simpSext w s (norm e)
   | .bin op w a b => shrinkBin op w (narrow w (norm a)) (narrow w (norm b))
   | .bnot w a => .bnot w (narrow w (norm a))
-  | .cmp op a b => .cmp op (norm a) (norm b)
+  | .cmp op a b => foldCmp op (norm a) (norm b)
+  | .scmp op w a b => foldSCmp op w (norm a) (norm b)
   | .mux w c a b => shrinkMux w (norm c) (narrow w (norm a)) (narrow w (norm b))
   | .lnot a => .lnot (norm a)
   | .land a b => .land (norm a) (norm b)
@@ -347,7 +371,7 @@ theorem mask_narrow (σ : Env) (w : Nat) : ∀ e : Sir,
       · rw [mask_mask, mask_narrow σ w a, mask_mask_of_le (by omega)]
       · rw [mask_mask, mask_narrow σ w b, mask_mask_of_le (by omega)]
     · rfl
-  | .sext .. | .cmp .. | .lnot _ | .land .. | .lor .. | .slice .. => by simp [narrow]
+  | .sext .. | .cmp .. | .scmp .. | .lnot _ | .land .. | .lor .. | .slice .. => by simp [narrow]
 
 theorem eval_mask_of_width_le (σ : Env) {e : Sir} {w : Nat} (h : e.width ≤ w) :
     mask w (e.eval σ) = e.eval σ :=
@@ -383,7 +407,7 @@ theorem eval_simpResize (σ : Env) (w : Nat) : ∀ e : Sir,
       · rw [mask_narrow σ w b, mask_mask_of_le (by omega)]
     · have := eval_mask_of_width_le σ (e := .mux w' c a b) (w := w) (by simp [width]; omega)
       rw [this]
-  | .sext .. | .cmp .. | .lnot _ | .land .. | .lor .. | .slice .. => by
+  | .sext .. | .cmp .. | .scmp .. | .lnot _ | .land .. | .lor .. | .slice .. => by
     simp only [simpResize]; split
     · next h => rw [eval_mask_of_width_le σ h]
     · rfl
@@ -453,6 +477,14 @@ theorem eval_shrinkMux (σ : Env) (w : Nat) (c a b : Sir) :
     · rw [mask_of_lt hb, mask_of_lt (Nat.lt_of_lt_of_le hb (pow_le_pow_of_le hw))]
   · rfl
 
+theorem eval_foldCmp (σ : Env) (op : CmpOp) (a b : Sir) :
+    (foldCmp op a b).eval σ = (Sir.cmp op a b).eval σ := by
+  unfold foldCmp; split <;> rfl
+
+theorem eval_foldSCmp (σ : Env) (op : CmpOp) (w : Nat) (a b : Sir) :
+    (foldSCmp op w a b).eval σ = (Sir.scmp op w a b).eval σ := by
+  unfold foldSCmp; split <;> rfl
+
 theorem eval_norm (σ : Env) : ∀ e : Sir, (norm e).eval σ = e.eval σ
   | .var .. | .lit _ => rfl
   | .resize w e => by simp only [norm, eval]; rw [eval_simpResize, eval_norm σ e]
@@ -462,7 +494,10 @@ theorem eval_norm (σ : Env) : ∀ e : Sir, (norm e).eval σ = e.eval σ
     rw [binOp_low, mask_narrow, mask_narrow, eval_norm σ a, eval_norm σ b, ← binOp_low]
   | .bnot w a => by
     simp only [norm, eval]; rw [notW_low, mask_narrow, eval_norm σ a, ← notW_low]
-  | .cmp op a b => by simp only [norm, eval]; rw [eval_norm σ a, eval_norm σ b]
+  | .cmp op a b => by
+    simp only [norm]; rw [eval_foldCmp]; simp only [eval, eval_norm σ a, eval_norm σ b]
+  | .scmp op w a b => by
+    simp only [norm]; rw [eval_foldSCmp]; simp only [eval, eval_norm σ a, eval_norm σ b]
   | .mux w c a b => by
     simp only [norm]; rw [eval_shrinkMux]; simp only [eval]
     rw [eval_norm σ c, mask_narrow, mask_narrow, eval_norm σ a, eval_norm σ b]

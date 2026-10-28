@@ -317,6 +317,8 @@ structure Netlist where
   to a reset edge. In a cycle where it holds, the clocked process runs on
   that cycle's own state instead of waiting for the clock. -/
   async : Option Sir := none
+  /-- Declaration initializers: the value of each listed register at time 0. -/
+  inits : List (Sig × Sir) := []
 
 namespace Netlist
 
@@ -330,8 +332,21 @@ def next (n : Netlist) (pre post : Env) : Env :=
   | some c => if c.eval post ≠ 0 then n.seq.execN post post else n.edge pre
   | none => n.edge pre
 
+/-- Every initialized register holds its initial value in state `σ`. -/
+def InitOk (n : Netlist) (σ : Env) : Prop := ∀ p ∈ n.inits, σ p.1 = p.2.eval σ
+
 def Run (n : Netlist) (tr : Nat → Env) : Prop :=
-  ∀ t, AllStable n.combs (tr t) ∧ ∀ r ∈ n.regs, tr (t + 1) r = n.next (tr t) (tr (t + 1)) r
+  n.InitOk (tr 0) ∧
+    ∀ t, AllStable n.combs (tr t) ∧ ∀ r ∈ n.regs, tr (t + 1) r = n.next (tr t) (tr (t + 1)) r
+
+def canonInits (n : Netlist) : List (Sig × Sir) := n.inits.map (fun p => (p.1, p.2.norm))
+
+theorem initOk_canon (n : Netlist) (σ : Env) :
+    n.InitOk σ ↔ ∀ p ∈ n.canonInits, σ p.1 = p.2.eval σ := by
+  simp only [InitOk, canonInits, List.mem_map, forall_exists_index, and_imp]
+  constructor
+  · rintro h _ p hp rfl; simp only [Sir.eval_norm]; exact h p hp
+  · intro h p hp; have := h _ p hp rfl; simpa [Sir.eval_norm] using this
 
 /-- Canonical form compared by the validator: normalized expressions,
 straight-line processes split into single assignments. -/
@@ -364,7 +379,8 @@ theorem regSubB_sound {a b : List Sig} (h : regSubB a b = true) : ∀ x ∈ a, x
 def sameB (a b : Netlist) : Bool :=
   listSubB a.canonCombs b.canonCombs && listSubB b.canonCombs a.canonCombs &&
   Stmts.eqvN a.seq.norm b.seq.norm && regSubB a.regs b.regs && regSubB b.regs a.regs &&
-  decide (a.async.map Sir.norm = b.async.map Sir.norm)
+  decide (a.async.map Sir.norm = b.async.map Sir.norm) &&
+  Stmts.pairSubB a.canonInits b.canonInits && Stmts.pairSubB b.canonInits a.canonInits
 
 theorem allStable_canon (n : Netlist) (σ : Env) :
     AllStable n.canonCombs σ ↔ AllStable n.combs σ := by
@@ -391,7 +407,12 @@ theorem next_eq {a b : Netlist} (h : Stmts.eqvN a.seq.norm b.seq.norm = true)
 theorem run_iff_of_sameB {a b : Netlist} (h : sameB a b = true) (tr : Nat → Env) :
     a.Run tr ↔ b.Run tr := by
   simp only [sameB, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨⟨⟨hab, hba⟩, hseq⟩, hrab⟩, hrba⟩, hasync⟩ := h
+  obtain ⟨⟨⟨⟨⟨⟨⟨hab, hba⟩, hseq⟩, hrab⟩, hrba⟩, hasync⟩, hiab⟩, hiba⟩ := h
+  have hinit : a.InitOk (tr 0) ↔ b.InitOk (tr 0) := by
+    rw [initOk_canon, initOk_canon]
+    constructor
+    · intro hs p hp; exact hs p (Stmts.pairSubB_sound hiba p hp)
+    · intro hs p hp; exact hs p (Stmts.pairSubB_sound hiab p hp)
   have hcomb : ∀ σ, AllStable a.combs σ ↔ AllStable b.combs σ := by
     intro σ
     rw [← allStable_canon, ← allStable_canon]
@@ -400,7 +421,7 @@ theorem run_iff_of_sameB {a b : Netlist} (h : sameB a b = true) (tr : Nat → En
     · intro hs p hp; exact hs p (listSubB_sound hab p hp)
   have hregs : ∀ r, r ∈ a.regs ↔ r ∈ b.regs :=
     fun r => ⟨regSubB_sound hrab r, regSubB_sound hrba r⟩
-  simp only [Run, hcomb, hregs, next_eq hseq hasync]
+  simp only [Run, hinit, hcomb, hregs, next_eq hseq hasync]
 
 end Netlist
 

@@ -132,6 +132,8 @@ structure Module where
   rstAsync : Bool := false
   /-- Registers of the `seq` block with their reset values. -/
   regs : List (Sig × Expr)
+  /-- `reg r: T init V`: the register's value at power-up (time 0). -/
+  inits : List (Sig × Expr) := []
   /-- One process per `let` and per `comb` block. -/
   combs : List Stmts
   /-- Body of `seq on clk rising`. -/
@@ -169,6 +171,7 @@ def next (m : Module) (pre post : Env) : Env :=
 and every register takes its `next` value in the next cycle. Inputs are
 unconstrained. -/
 def Run (m : Module) (tr : Nat → Env) : Prop :=
+  (∀ p ∈ m.inits, tr 0 p.1 = mask (m.W p.1) (eval m.W (tr 0) p.2)) ∧
   ∀ t, (∀ p ∈ m.combs, ∀ y, execB m.W p (tr t) y = tr t y) ∧
     ∀ r ∈ m.regs.map Prod.fst, tr (t + 1) r = m.next (tr t) (tr (t + 1)) r
 
@@ -257,6 +260,7 @@ def toNetlist (m : Module) : Netlist where
   seq := m.lowerSeq
   regs := m.regs.map Prod.fst
   async := if m.rstAsync then m.rst.map (fun p => rstCond m.W p.1 p.2) else none
+  inits := m.inits.map (fun p => (p.1, .resize (m.W p.1) (lower m.W p.2)))
 
 theorem edge_toNetlist (m : Module) (σ : Env) : m.toNetlist.edge σ = m.edge σ := by
   simp only [Netlist.edge, toNetlist, lowerSeq, edge]
@@ -289,7 +293,17 @@ theorem next_toNetlist (m : Module) (pre post : Env) :
       · exact he pre
 
 theorem run_iff (m : Module) (tr : Nat → Env) : m.Run tr ↔ m.toNetlist.Run tr := by
-  simp only [Run, Netlist.Run, AllStable, Arch.CodegenProof.Stmts.Stable, next_toNetlist]
+  have hinit : (∀ p ∈ m.inits, tr 0 p.1 = mask (m.W p.1) (eval m.W (tr 0) p.2)) ↔
+      m.toNetlist.InitOk (tr 0) := by
+    simp only [Netlist.InitOk, toNetlist, List.mem_map, forall_exists_index, and_imp]
+    constructor
+    · rintro hs _ p hpm rfl
+      simp only [Sir.eval, eval_lower]
+      exact hs p hpm
+    · intro hs p hpm
+      simpa only [Sir.eval, eval_lower] using hs _ p hpm rfl
+  simp only [Run, Netlist.Run, hinit, AllStable, Arch.CodegenProof.Stmts.Stable,
+    next_toNetlist]
   simp [toNetlist, execB_lower]
 
 end Module

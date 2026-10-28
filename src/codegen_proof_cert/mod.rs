@@ -94,6 +94,7 @@ struct CoreModule {
     rst: Option<(u32, bool)>,
     rst_async: bool,
     regs: Vec<(u32, CoreExpr)>,
+    inits: Vec<(u32, CoreExpr)>,
     combs: Vec<Vec<CoreStmt>>,
     seq: Vec<CoreStmt>,
 }
@@ -142,6 +143,8 @@ struct SvModule {
     /// `or posedge s` → `(s, true)`, `or negedge s` → `(s, false)`.
     ff_async: Option<(u32, bool)>,
     ff_body: Vec<SvStmt>,
+    /// Declaration initializers `logic [..] x = e;`.
+    inits: Vec<(u32, SvExpr)>,
 }
 
 /// Signal names ↔ the natural-number ids used on the Lean side. Both the
@@ -393,12 +396,19 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
     // reset port name → (active-high?, asynchronous?)
     let mut resets: HashMap<String, (bool, bool)> = HashMap::new();
     let mut outputs = Vec::new();
+    let mut reg_sigs = Vec::new();
+    // Registers in declaration order: (name, reset clause).
+    let mut reg_specs: Vec<(String, RegReset)> = Vec::new();
     for p in &m.ports {
         let name = &p.name.name;
         let unsupported_port = if p.bus_info.is_some() {
             Some("bus ports")
-        } else if p.reg_info.is_some() {
-            Some("`port reg` / `pipe_reg` ports")
+        } else if p.reg_info.as_ref().is_some_and(|ri| ri.latency != 1) {
+            Some("`pipe_reg` ports with latency above 1")
+        } else if p.reg_info.as_ref().is_some_and(|ri| ri.init.is_some()) {
+            Some("`port reg` ports with `init`")
+        } else if p.reg_info.as_ref().is_some_and(|ri| ri.guard.is_some()) {
+            Some("`port reg` ports with `guard`")
         } else if p.shared.is_some() {
             Some("`shared` ports")
         } else if p.unpacked {
@@ -430,16 +440,25 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
         let dir = match p.direction {
             crate::ast::Direction::In => Dir::Input,
             crate::ast::Direction::Out => {
-                outputs.push(sig);
+                // A `port reg` output is driven by the `seq` block like a reg.
+                match &p.reg_info {
+                    Some(ri) => {
+                        reg_sigs.push(sig);
+                        reg_specs.push((name.clone(), ri.reset.clone()));
+                    }
+                    None => outputs.push(sig),
+                }
                 Dir::Output
             }
         };
+        if p.reg_info.is_some() && dir == Dir::Input {
+            return Err(format!("port `{name}`: `port reg` on an input"));
+        }
         ports.push(Port { sig, dir, width });
     }
 
     // Declarations first, so processes may reference signals declared later.
     let mut locals = Vec::new();
-    let mut reg_sigs = Vec::new();
     let mut wire_sigs = Vec::new();
     for item in &m.body {
         match item {
@@ -449,6 +468,7 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
                 let sig = sigs.add(&r.name.name)?;
                 locals.push((sig, w));
                 reg_sigs.push(sig);
+                reg_specs.push((r.name.name.clone(), r.reset.clone()));
             }
             ModuleBodyItem::WireDecl(wd) => {
                 if wd.unpacked || !wd.bus_params.is_empty() {
@@ -467,9 +487,9 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
                 if !l.destructure_fields.is_empty() {
                     return Err("destructuring `let` is not yet covered".to_string());
                 }
-                let ty = l.ty.as_ref().ok_or_else(|| {
-                    format!("let `{}`: untyped `let` is not yet covered", l.name.name)
-                })?;
+                // An untyped `let x = e;` drives an existing wire or output;
+                // it declares nothing.
+                let Some(ty) = l.ty.as_ref() else { continue };
                 let w = data_width(ty, &sigs.params)
                     .map_err(|e| format!("let `{}`: {e}", l.name.name))?;
                 let sig = sigs.add(&l.name.name)?;
@@ -486,12 +506,54 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
     let mut regs = Vec::new();
     let mut rst: Option<(u32, bool)> = None;
     let mut rst_async = false;
+    let mut inits = Vec::new();
+    for (name, reset) in &reg_specs {
+        let (rst_name, high, is_async, value) = match reset {
+            RegReset::None => {
+                return Err(format!(
+                    "reg `{name}`: registers without reset are not yet covered"
+                ))
+            }
+            RegReset::Inherit(rs, v) => {
+                let (high, is_async) = *resets.get(&rs.name).ok_or_else(|| {
+                    format!("reg `{name}`: reset `{}` is not a reset port", rs.name)
+                })?;
+                (rs.name.clone(), high, is_async, v)
+            }
+            RegReset::Explicit(rs, kind, level, v) => {
+                let Some(&(_, port_async)) = resets.get(&rs.name) else {
+                    return Err(format!(
+                        "reg `{name}`: reset `{}` is not a reset port",
+                        rs.name
+                    ));
+                };
+                let is_async = *kind == ResetKind::Async;
+                if is_async != port_async {
+                    return Err(format!(
+                        "reg `{name}`: reset kind differs from its port's; not covered"
+                    ));
+                }
+                (rs.name.clone(), *level == ResetLevel::High, is_async, v)
+            }
+        };
+        let rs = sigs
+            .get(&rst_name)
+            .expect("reset port is in the signal table");
+        if let Some(prev) = rst {
+            if prev != (rs, high) || rst_async != is_async {
+                return Err("registers with different resets are not yet covered".to_string());
+            }
+        }
+        rst = Some((rs, high));
+        rst_async = is_async;
+        let sig = sigs.get(name).expect("reg is in the signal table");
+        regs.push((sig, expr(value, &sigs)?));
+    }
     for item in &m.body {
         match item {
             ModuleBodyItem::RegDecl(r) => {
                 let name = &r.name.name;
                 for (present, what) in [
-                    (r.init.is_some(), "`init`"),
                     (r.guard.is_some(), "`guard`"),
                     (r.multicycle.is_some(), "`multicycle`"),
                 ] {
@@ -499,51 +561,19 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
                         return Err(format!("reg `{name}`: {what} is not yet covered"));
                     }
                 }
-                let (rst_name, high, is_async, value) = match &r.reset {
-                    RegReset::None => {
-                        return Err(format!(
-                            "reg `{name}`: registers without reset are not yet covered"
-                        ))
-                    }
-                    RegReset::Inherit(rs, v) => {
-                        let (high, is_async) = *resets.get(&rs.name).ok_or_else(|| {
-                            format!("reg `{name}`: reset `{}` is not a reset port", rs.name)
-                        })?;
-                        (rs.name.clone(), high, is_async, v)
-                    }
-                    RegReset::Explicit(rs, kind, level, v) => {
-                        let Some(&(_, port_async)) = resets.get(&rs.name) else {
-                            return Err(format!(
-                                "reg `{name}`: reset `{}` is not a reset port",
-                                rs.name
-                            ));
-                        };
-                        let is_async = *kind == ResetKind::Async;
-                        if is_async != port_async {
-                            return Err(format!(
-                                "reg `{name}`: reset kind differs from its port's; not covered"
-                            ));
-                        }
-                        (rs.name.clone(), *level == ResetLevel::High, is_async, v)
-                    }
-                };
-                let rs = sigs
-                    .get(&rst_name)
-                    .expect("reset port is in the signal table");
-                if let Some(prev) = rst {
-                    if prev != (rs, high) || rst_async != is_async {
-                        return Err(
-                            "registers with different resets are not yet covered".to_string()
-                        );
-                    }
+                if let Some(v) = &r.init {
+                    let sig = sigs.get(name).expect("reg is in the signal table");
+                    inits.push((sig, expr(v, &sigs)?));
                 }
-                rst = Some((rs, high));
-                rst_async = is_async;
-                let sig = sigs.get(name).expect("reg is in the signal table");
-                regs.push((sig, expr(value, &sigs)?));
             }
             ModuleBodyItem::LetBinding(l) => {
                 let sig = sigs.get(&l.name.name).expect("let is in the signal table");
+                if l.ty.is_none() && !comb_targets.contains(&sig) {
+                    return Err(format!(
+                        "untyped `let {}` does not drive a wire or a plain output",
+                        l.name.name
+                    ));
+                }
                 combs.push(vec![CoreStmt::Assign(sig, expr(&l.value, &sigs)?)]);
             }
             ModuleBodyItem::CombBlock(c) => combs.push(stmts(&c.stmts, &sigs, &comb_targets)?),
@@ -582,6 +612,7 @@ fn translate_module(m: &ModuleDecl) -> R<(CoreModule, SigTable)> {
         rst,
         rst_async,
         regs,
+        inits,
         combs,
         seq: seq.unwrap_or_default(),
     };
@@ -885,6 +916,12 @@ fn render_module(
         .map(|(s, v)| format!("({s}, {})", lean_core_expr(v)))
         .collect();
     let _ = writeln!(out, "  regs := [{}]", regs.join(", "));
+    let inits: Vec<String> = core
+        .inits
+        .iter()
+        .map(|(s, v)| format!("({s}, {})", lean_core_expr(v)))
+        .collect();
+    let _ = writeln!(out, "  inits := [{}]", inits.join(", "));
     let combs: Vec<String> = core.combs.iter().map(|c| lean_core_stmts(c)).collect();
     let _ = writeln!(out, "  combs := [{}]", combs.join(",\n    "));
     let _ = writeln!(out, "  seq := {}\n", lean_core_stmts(&core.seq));
@@ -906,7 +943,13 @@ fn render_module(
         .ff_async
         .map_or("none".to_string(), |(s, pos)| format!("some ({s}, {pos})"));
     let _ = writeln!(out, "  ffAsync := {ff_async}");
-    let _ = writeln!(out, "  ffBody := {}\n", lean_sv_stmts(&sv.ff_body));
+    let _ = writeln!(out, "  ffBody := {}", lean_sv_stmts(&sv.ff_body));
+    let sv_inits: Vec<String> = sv
+        .inits
+        .iter()
+        .map(|(s, e)| format!("({s}, {})", lean_sv_expr(e)))
+        .collect();
+    let _ = writeln!(out, "  inits := [{}]\n", sv_inits.join(", "));
 
     // `+kernel` evaluates the checker in the kernel directly; the elaborator's
     // own evaluator hits `maxRecDepth` on large modules (e.g. e203_core).

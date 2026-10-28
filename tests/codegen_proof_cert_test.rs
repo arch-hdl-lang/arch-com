@@ -17,6 +17,9 @@ const FIXTURES: &[&str] = &[
     "counter_fsm",
     "param_datapath",
     "async_counter",
+    "let_port_reg",
+    "init_reg",
+    "param_select_async",
 ];
 
 fn find_lake() -> Option<PathBuf> {
@@ -271,6 +274,60 @@ fn miscompiled_sv_is_rejected() {
             "@(posedge clk)",
             "@(posedge clk or posedge rst)",
         ),
+        (
+            "let_port_reg",
+            "wrong constant in a let",
+            "(s + 5);",
+            "(s + 6);",
+        ),
+        (
+            "let_port_reg",
+            "port reg reset dropped",
+            "      flag <= 1'b0;\n",
+            "",
+        ),
+        (
+            "init_reg",
+            "wrong initial value",
+            "logic [7:0] r = 7;",
+            "logic [7:0] r = 6;",
+        ),
+        (
+            "init_reg",
+            "dropped initializer",
+            "logic [7:0] r = 7;",
+            "logic [7:0] r;",
+        ),
+        (
+            "init_reg",
+            "initializer on a combinational net",
+            "logic [7:0] w;",
+            "logic [7:0] w = 3;",
+        ),
+        (
+            "param_select_async",
+            "inverted parameter comparison",
+            "if (SEL == 0)",
+            "if (SEL != 0)",
+        ),
+        (
+            "param_select_async",
+            "wrong comparison constant",
+            "if (SEL == 0)",
+            "if (SEL == 1)",
+        ),
+        (
+            "param_select_async",
+            "wrong async reset constant",
+            "cnt <= 12'($unsigned(START));\n      q <= 0;",
+            "cnt <= 12'($unsigned(START + 1));\n      q <= 0;",
+        ),
+        (
+            "param_select_async",
+            "async reset branch reads a signal",
+            "      q <= 0;",
+            "      q <= a;",
+        ),
     ];
     let mut failures = Vec::new();
     for (i, (name, what, from, to)) in cases.iter().enumerate() {
@@ -327,6 +384,27 @@ fn semantics_preserving_rewrites_are_accepted() {
         ),
         // Indexed part-select spelled as a constant range.
         ("param_datapath", "range select", "a[W - 4 +: 4]", "a[7:4]"),
+        // Sized vs unsized initializer of the same value.
+        (
+            "init_reg",
+            "sized initializer",
+            "logic [7:0] r = 7;",
+            "logic [7:0] r = 8'd7;",
+        ),
+        // Operand order of a constant signed comparison.
+        (
+            "param_select_async",
+            "swapped comparison",
+            "if (SEL == 0)",
+            "if (0 == SEL)",
+        ),
+        // Async reset constant spelled as a sized literal.
+        (
+            "param_select_async",
+            "literal reset constant",
+            "cnt <= 12'($unsigned(START));\n      q <= 0;",
+            "cnt <= 12'd9;\n      q <= 0;",
+        ),
     ];
     let mut failures = Vec::new();
     for (i, (name, what, from, to)) in cases.iter().enumerate() {
