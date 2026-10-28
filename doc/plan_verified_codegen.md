@@ -153,8 +153,14 @@ Assumptions:
     different-but-equivalent cast width, reordered resets, a sized vs
     unsized literal, a parameter vs literal cast width, and `+:` vs `[hi:lo]`.
 * **Corpus sweep** (`scripts/codegen_cert_sweep.sh`, 964 `.arch` files):
-  * **111 files certify, with 0 failures**, including `tests/e203/e203_core`
-    and `e203_cpu`. The count was 78 before parameters and async reset.
+  * **107 files certify, with 0 failures**, including `tests/e203/e203_core`
+    and `e203_cpu`. The count was 78 before parameters and async reset. It
+    peaked at 111: #1102 then made the compiler reject undriven wires, and 4
+    e203 files that had certified (`e203_core_top`, `e203_exu`,
+    `e203_exu_top`, `e203_soc_top`) no longer build at all. Their
+    certificates were not wrong: an undriven wire is unconstrained on both
+    sides, so the traces still matched. Flagging undriven wires is the job
+    of the per-program well-typedness check (roadmap C1).
   * Earlier sweeps exposed only validator incompleteness, each fixed with a
     proved rule: a 32-bit signed `?:` vs a 1-bit ARCH mux, a 32-bit vs
     6-bit product under a 4-bit truncation, and reordered resets
@@ -224,8 +230,10 @@ as its target. Each gets a validator of the same shape:
 
 1. **(S) Per-program.** A decidable `Core.wellTyped` in Lean, asserted by
    every certificate. It requires: no truncating assignment; ARCH width rules
-   satisfied; single driver; complete assignment in `comb` (no latch);
-   acyclic combinational dependencies. This catches typechecker
+   satisfied; single driver; every wire and output driven (the trace
+   semantics leaves an undriven net unconstrained, so equivalence alone
+   does not catch it); complete assignment in `comb` (no latch); acyclic
+   combinational dependencies. This catches typechecker
    unsoundness on each compiled program.
 2. **(M) Determinism theorem.** `wellTyped → ∃! settled state` per cycle.
    This bridges the relational trace semantics to the deterministic
