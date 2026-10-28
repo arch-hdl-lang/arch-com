@@ -178,7 +178,7 @@ Assumptions:
     a sized initializer, a swapped constant comparison, a literal async
     reset constant, `a[2]` vs `a[2:2]`, and redundant parentheses inside a
     concatenation.
-* **Corpus sweep** (`scripts/codegen_cert_sweep.sh`, 969 `.arch` files):
+* **Corpus sweep** (`scripts/codegen_cert_sweep.sh`, 970 `.arch` files):
   * **225 files certify, with 0 unexplained failures**, including
     `tests/e203/e203_core` and `e203_cpu`. The count was 78 before
     parameters and async reset, 107 before `let` / `port reg` / `init`, and
