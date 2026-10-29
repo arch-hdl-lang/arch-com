@@ -1,7 +1,10 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-10-25
-> Compiler version: 0.74.1
+> Last updated: 2026-10-28
+> Compiler version: 0.74.2
+>
+> **0.74.2 release highlights:**
+> - **Residual single-driver and undeclared-name gaps are closed** (PR #1102, closes #1074). Two user-written `seq` blocks assigning the same register (or overlapping vector elements) are a multiple-driver error. A declared `wire` with no driver is an error. Instance input expressions must resolve (a misspelled name no longer becomes an implicit net). Compiler-generated thread/TLM blocks keep their register-sharing exemption. Generated SV now opens with `` `default_nettype none `` and restores `` `default_nettype wire `` at the end. See the [v0.74.2 release notes](../docs/release-notes/v0.74.2.md).
 >
 > **0.74.1 release highlights:**
 > - **The carry cast is dropped where it is provably redundant** (PR #1099). 0.74.0's `v[6'(30 - cnt)]` index casts tripped Verilator `WIDTHTRUNC`. `+`/`*` with a narrow literal operand, and `lit - x` as an index when `2^(W-1) >= N`, are emitted as in 0.73.0. Subtraction elsewhere keeps the cast. See the [v0.74.1 release notes](../docs/release-notes/v0.74.1.md).
