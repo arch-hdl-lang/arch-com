@@ -198,6 +198,17 @@ pub struct TypeChecker<'a> {
     /// when the index isn't a compile-time literal (e.g. inside a `for`
     /// loop). Cleared between modules.
     pub vec_of_bus_ports: HashMap<String, u32>,
+    /// Span of each `<<` already reported by `check_shift_demand`, so a
+    /// shift reachable from two width boundaries is reported once.
+    shift_demand_reported: HashSet<(usize, usize)>,
+    /// Left-operand width of each shift, keyed by the shift's span, recorded
+    /// as it is resolved. `check_shift_demand` reads it instead of
+    /// re-resolving the operand (which would repeat diagnostics and cost
+    /// exponential time on nested shifts). Both are cleared per item.
+    shift_lhs_width: HashMap<(usize, usize), Ty>,
+    /// Iterators of the `for` loops enclosing the statement being checked:
+    /// compile-time values, like params (see `is_const_int_expr`).
+    for_iters: Vec<String>,
     /// Parameter scope for the construct currently being typechecked.
     ///
     /// Constant-width expressions must resolve `local param` names within the
@@ -229,6 +240,9 @@ impl<'a> TypeChecker<'a> {
             in_sva_context: false,
             in_bound_err: false,
             vec_of_bus_ports: HashMap::new(),
+            shift_demand_reported: HashSet::new(),
+            shift_lhs_width: HashMap::new(),
+            for_iters: Vec::new(),
             active_inst_output_nets: HashSet::new(),
             active_params: Vec::new(),
             file_scopes: Vec::new(),
@@ -423,6 +437,8 @@ impl<'a> TypeChecker<'a> {
                 Self::item_inst_output_nets(item),
             );
             self.check_item_port_visibility(item);
+            self.shift_demand_reported.clear();
+            self.shift_lhs_width.clear();
             item.as_construct().typecheck(&mut self);
             self.active_params = saved_params;
             self.active_inst_output_nets = saved_nets;
@@ -1553,13 +1569,16 @@ impl<'a> TypeChecker<'a> {
                                     l.value.span,
                                 ));
                             }
-                            // Shift width check (IEEE §11.6.1: shifts are non-widening)
+                            // Shift width check (ARCH shifts are non-widening)
                             if let (Some(ew), Some(aw)) = (expected.width(), ty.width()) {
+                                if !expr_is_shift(&l.value) {
+                                    self.check_shift_demand(&l.value, ew);
+                                }
                                 if ew > aw && expr_is_shift(&l.value) {
                                     self.errors.push(CompileError::general(
                                         &format!(
                                             "shift result is UInt<{aw}> but target `{}` is UInt<{ew}>; \
-                                             shifts do not widen (IEEE §11.6.1). \
+                                             shifts do not widen. \
                                              To capture overflow, widen the operand first: `.zext<{ew}>() << n`",
                                             l.name.name
                                         ),
@@ -3823,11 +3842,14 @@ impl<'a> TypeChecker<'a> {
                 if let Some(lhs_ty) = lhs_ty {
                     self.check_width_compatible(&lhs_ty, &rhs_ty, &target_name, a.span);
                     if let (Some(lw), Some(rw)) = (lhs_ty.width(), rhs_ty.width()) {
+                        if !expr_is_shift(&a.value) {
+                            self.check_shift_demand(&a.value, lw);
+                        }
                         if lw > rw && expr_is_shift(&a.value) {
                             self.errors.push(CompileError::general(
                                 &format!(
                                     "shift result is UInt<{rw}> but target `{target_name}` is UInt<{lw}>; \
-                                     shifts do not widen (IEEE §11.6.1). \
+                                     shifts do not widen. \
                                      To capture overflow, widen the operand first: `.zext<{lw}>() << n`"
                                 ),
                                 a.span,
@@ -3905,9 +3927,11 @@ impl<'a> TypeChecker<'a> {
                 // Giving iterators a real integer type is a separate change.
                 let mut body_types = local_types.clone();
                 body_types.insert(f.var.name.clone(), Ty::Error);
+                self.for_iters.push(f.var.name.clone());
                 for s in &f.body {
                     self.check_stmt(s, module_name, &body_types, driven, block_kind, reg_names);
                 }
+                self.for_iters.pop();
             }
             Stmt::Init(ib) => {
                 if in_comb {
@@ -4826,6 +4850,80 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// arch#937: `a << n` is non-widening — its result is `W(a)` bits. SV
+    /// instead sizes `a` by the surrounding expression, so older builds kept
+    /// the shifted-out bits whenever more than `W(a)` bits of the shift were
+    /// observed. Report every `<<` whose result reaches a width boundary that
+    /// uses `demand > W(a)` bits, so that no design changes value silently.
+    ///
+    /// `e` is evaluated in the context of a boundary that uses its low
+    /// `demand` bits (an assignment target, `.trunc<N>()`, a comparison, …).
+    /// The walk descends only through operators whose SV operands take the
+    /// surrounding context; everything else is a boundary of its own and is
+    /// checked where it is resolved.
+    fn check_shift_demand(&mut self, e: &Expr, demand: u32) {
+        match &e.kind {
+            ExprKind::Binary(BinOp::Shl, _, _) => {
+                let Some(ty) = self.shift_lhs_width.get(&(e.span.start, e.span.end)) else {
+                    return;
+                };
+                let (Some(w), shown) = (ty.width(), ty.display()) else {
+                    return;
+                };
+                if demand > w
+                    && self
+                        .shift_demand_reported
+                        .insert((e.span.start, e.span.end))
+                {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "shift result is {shown} but {demand} bits of it are used here; \
+                             shifts do not widen, so the bits shifted out of the top are \
+                             dropped. To keep them, widen the operand first: \
+                             `.zext<{demand}>() << n`; to drop them, bind the shift to a \
+                             `let` of width {w}"
+                        ),
+                        e.span,
+                    ));
+                }
+            }
+            // A right shift pulls higher bits down, so it observes at least
+            // its whole operand.
+            ExprKind::Binary(BinOp::Shr, a, _) => {
+                let w = self
+                    .shift_lhs_width
+                    .get(&(e.span.start, e.span.end))
+                    .and_then(Ty::width)
+                    .unwrap_or(0);
+                self.check_shift_demand(a, demand.max(w));
+            }
+            ExprKind::Binary(
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::AddWrap
+                | BinOp::SubWrap
+                | BinOp::MulWrap
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor,
+                l,
+                r,
+            ) => {
+                self.check_shift_demand(l, demand);
+                self.check_shift_demand(r, demand);
+            }
+            ExprKind::Unary(UnaryOp::BitNot | UnaryOp::Neg, x) => {
+                self.check_shift_demand(x, demand);
+            }
+            ExprKind::Ternary(_, t, f) => {
+                self.check_shift_demand(t, demand);
+                self.check_shift_demand(f, demand);
+            }
+            _ => {}
+        }
+    }
+
     fn resolve_expr_type(
         &mut self,
         expr: &Expr,
@@ -5083,6 +5181,39 @@ impl<'a> TypeChecker<'a> {
                 let lt = self.resolve_expr_type(lhs, module_name, local_types);
                 let rt = self.resolve_expr_type(rhs, module_name, local_types);
                 self.check_operand_latency_alignment(&[lhs.as_ref(), rhs.as_ref()], expr.span);
+                // Width boundaries for the non-widening `<<` check (arch#937).
+                match op {
+                    BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
+                        if let (Some(lw), Some(rw)) = (lt.width(), rt.width()) {
+                            // SV gives an unsized literal 32 bits, which
+                            // then sizes the comparison.
+                            let unsized_lit =
+                                is_unsized_int_literal(lhs) || is_unsized_int_literal(rhs);
+                            let demand = if unsized_lit {
+                                lw.max(rw).max(32)
+                            } else {
+                                lw.max(rw)
+                            };
+                            self.check_shift_demand(lhs, demand);
+                            self.check_shift_demand(rhs, demand);
+                        }
+                    }
+                    // A constant shift (`(1 << W) - 1`) is integer
+                    // arithmetic, and codegen leaves it unsized.
+                    BinOp::Shl | BinOp::Shr
+                        if !crate::width::is_const_int_expr(expr, &|n| {
+                            self.active_params.iter().any(|p| p.name.name == n)
+                                || self.for_iters.iter().any(|v| v == n)
+                        }) =>
+                    {
+                        if let Some(lw) = lt.width() {
+                            self.shift_lhs_width
+                                .insert((expr.span.start, expr.span.end), lt.clone());
+                            self.check_shift_demand(lhs, lw);
+                        }
+                    }
+                    _ => {}
+                }
                 self.binop_result_type(*op, &lt, &rt, expr.span)
             }
             ExprKind::Unary(op, operand) => {
@@ -5307,16 +5438,17 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::Concat(parts) => {
                 // Total width = sum of each part's width (Bool=1, UInt<N>=N, else 1)
-                let total: u32 = parts
-                    .iter()
-                    .map(
-                        |p| match self.resolve_expr_type(p, module_name, local_types) {
-                            Ty::UInt(w) | Ty::SInt(w) => w,
-                            Ty::Bool => 1,
-                            _ => 1,
-                        },
-                    )
-                    .sum();
+                let mut total = 0;
+                for p in parts {
+                    let w = match self.resolve_expr_type(p, module_name, local_types) {
+                        Ty::UInt(w) | Ty::SInt(w) => w,
+                        Ty::Bool => 1,
+                        _ => 1,
+                    };
+                    // A concatenation operand is self-determined in SV.
+                    self.check_shift_demand(p, w);
+                    total += w;
+                }
                 Ty::UInt(total)
             }
             ExprKind::Repeat(count, value) => {
@@ -6009,6 +6141,16 @@ impl<'a> TypeChecker<'a> {
                                 ));
                                 return Ty::Error;
                             }
+                        }
+                        // `.trunc<N>()` uses the low N bits of its operand;
+                        // the extending casts make the operand self-determined.
+                        let demand = if method.name == "trunc" {
+                            Some(target_w)
+                        } else {
+                            source_w
+                        };
+                        if let Some(demand) = demand {
+                            self.check_shift_demand(base, demand);
                         }
                         if method.name == "sext" {
                             Ty::SInt(target_w)
@@ -10890,6 +11032,13 @@ fn expr_is_port_field(expr: &Expr, port: &str, field_name: &str) -> bool {
 }
 
 /// Returns true if the expression's top-level operation is a shift (`<<` or `>>`).
+fn is_unsized_int_literal(e: &Expr) -> bool {
+    matches!(
+        &e.kind,
+        ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_))
+    )
+}
+
 fn expr_is_shift(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Binary(BinOp::Shl | BinOp::Shr, _, _))
 }

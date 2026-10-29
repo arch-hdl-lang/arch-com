@@ -2221,6 +2221,25 @@ impl<'a> Codegen<'a> {
                     };
                     let wp = Self::paren_width(&w);
                     format!("{wp}'({l} {op_str} {r})")
+                } else if *op == BinOp::Shl && !self.is_const_int_expr(expr) {
+                    // `<<` keeps W(a) bits; pin it against SV context
+                    // widening (arch#937), as in the module emitter. The
+                    // width is resolved in this stage's scope (arch#845).
+                    let emit = |e: &Expr| {
+                        self.emit_pipeline_stage_expr_str(
+                            e,
+                            current_prefix,
+                            current_stage_idx,
+                            stage_names,
+                            stage_regs,
+                            port_names,
+                        )
+                    };
+                    let signal_width =
+                        |e: &Expr| self.pipeline_signal_width_str(e, Some(current_stage_idx));
+                    let w = self.infer_sv_width_str_in(lhs, &emit, &signal_width);
+                    let wp = Self::paren_width(&w);
+                    format!("{wp}'({l} {op_str} {r})")
                 } else {
                     format!("({l} {op_str} {r})")
                 }
@@ -2588,6 +2607,17 @@ impl<'a> Codegen<'a> {
                     } else {
                         format!("({lw} > {rw} ? {lw} : {rw})")
                     };
+                    let wp = Self::paren_width(&w);
+                    format!("{wp}'({l} {op_str} {r})")
+                } else if *op == BinOp::Shl && !self.is_const_int_expr(expr) {
+                    // `<<` keeps W(a) bits; pin it against SV context
+                    // widening (arch#937), as in the module emitter. The
+                    // width is resolved in the pipeline's scope (arch#845).
+                    let emit = |e: &Expr| {
+                        self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names)
+                    };
+                    let signal_width = |e: &Expr| self.pipeline_signal_width_str(e, None);
+                    let w = self.infer_sv_width_str_in(lhs, &emit, &signal_width);
                     let wp = Self::paren_width(&w);
                     format!("{wp}'({l} {op_str} {r})")
                 } else {

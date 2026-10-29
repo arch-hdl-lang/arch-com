@@ -563,9 +563,11 @@ pub(super) fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize,
                         "{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n",
                         ind(indent)
                     ));
+                    ctx.for_iters.borrow_mut().push(var.clone());
                     for s in &f.body {
                         emit_stmt(s, ctx, out, indent + 1, k);
                     }
+                    ctx.for_iters.borrow_mut().pop();
                     out.push_str(&format!("{}}}\n", ind(indent)));
                 }
                 ForRange::ValueList(vals) => {
@@ -573,9 +575,11 @@ pub(super) fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize,
                         let val = cpp_expr(v, ctx);
                         out.push_str(&format!("{}{{\n", ind(indent)));
                         out.push_str(&format!("{}int {var} = {val};\n", ind(indent + 1)));
+                        ctx.for_iters.borrow_mut().push(var.clone());
                         for s in &f.body {
                             emit_stmt(s, ctx, out, indent + 1, k);
                         }
+                        ctx.for_iters.borrow_mut().pop();
                         out.push_str(&format!("{}}}\n", ind(indent)));
                     }
                 }
