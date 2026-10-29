@@ -255,6 +255,7 @@ impl<'a> SimCodegen<'a> {
                                     let lo_s = cpp_expr(lo, ctx);
                                     let hi_s = cpp_expr(hi, ctx);
                                     out.push_str(&format!("{indent}for (int {var} = {lo_s}; {var} <= {hi_s}; {var}++) {{\n"));
+                                    ctx.for_iters.borrow_mut().push(var.clone());
                                     emit_fn_items(
                                         &fl.body,
                                         ctx,
@@ -262,6 +263,7 @@ impl<'a> SimCodegen<'a> {
                                         &format!("{indent}  "),
                                         out,
                                     );
+                                    ctx.for_iters.borrow_mut().pop();
                                     out.push_str(&format!("{indent}}}\n"));
                                 }
                                 ForRange::ValueList(vals) => {
@@ -269,6 +271,7 @@ impl<'a> SimCodegen<'a> {
                                         let v = cpp_expr(val, ctx);
                                         out.push_str(&format!("{indent}{{\n"));
                                         out.push_str(&format!("{indent}  int {var} = {v};\n"));
+                                        ctx.for_iters.borrow_mut().push(var.clone());
                                         emit_fn_items(
                                             &fl.body,
                                             ctx,
@@ -276,6 +279,7 @@ impl<'a> SimCodegen<'a> {
                                             &format!("{indent}  "),
                                             out,
                                         );
+                                        ctx.for_iters.borrow_mut().pop();
                                         out.push_str(&format!("{indent}}}\n"));
                                     }
                                 }

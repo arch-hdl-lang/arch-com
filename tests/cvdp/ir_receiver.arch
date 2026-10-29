@@ -30,7 +30,7 @@ module ir_receiver
       end if
     elsif (raw_function >= 16) & (raw_function < 23)
       decoded_address = (1.zext<5>() << raw_address);
-      decoded_function = (((raw_function - 15).trunc<3>() << 4) | 7'h0F);
+      decoded_function = (((raw_function - 15).trunc<3>().zext<7>() << 4) | 7'h0F);
     else
       decoded_address = 0;
       decoded_function = 0;

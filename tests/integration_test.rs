@@ -36665,7 +36665,7 @@ fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
         // `return` became an assignment to the (monomorphized) function
         // name (arch#932) — so match the math, not the name.
         flat.contains("logic [ADDR_W-1:0] stepped;")
-            && flat.contains("stepped = done << size;")
+            && flat.contains("stepped = ADDR_W'(done << size);")
             && flat.contains("ADDR_W'((ADDR_W + 1)'(base + stepped));"),
         "sub-burst start address must step by (i*16)<<size:\n{sv}",
     );

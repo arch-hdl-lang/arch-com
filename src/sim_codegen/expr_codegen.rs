@@ -315,6 +315,11 @@ pub(super) struct Ctx<'a> {
     /// for interior mutability — the for-loop emitter mutates per
     /// iteration while emit_stmt walks the body. None = no active unroll.
     pub(super) loop_var_subst: Option<&'a std::cell::RefCell<HashMap<String, u32>>>,
+    /// Iterators of the `for` loops enclosing the current emission point.
+    /// They are compile-time values, so a shift built only from them,
+    /// literals and params is integer arithmetic (`1 << j`), as in SV.
+    /// Shared by every `Ctx` copied from the same root.
+    pub(super) for_iters: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     /// Vec-of-bus port name → element count. Used by the for-loop emitter
     /// to decide whether the body needs static unrolling.
     pub(super) vec_of_bus_port_count: Option<&'a HashMap<String, u32>>,
@@ -392,6 +397,7 @@ impl<'a> Ctx<'a> {
             fsm_vec_port_regs: None,
             ident_subst: None,
             loop_var_subst: None,
+            for_iters: Default::default(),
             vec_of_bus_port_count: None,
             vec_of_bus_wire_count: None,
             coverage: None,
@@ -402,6 +408,18 @@ impl<'a> Ctx<'a> {
             block_helpers: None,
             function_names: None,
         }
+    }
+
+    /// A compile-time integer expression in this scope: built from
+    /// literals, params and enclosing `for` iterators.
+    pub(super) fn is_const_int_expr(&self, e: &Expr) -> bool {
+        crate::width::is_const_int_expr(e, &|n| {
+            self.params.iter().any(|p| p.name.name == n)
+                || self.for_iters.borrow().iter().any(|v| v == n)
+                || self
+                    .loop_var_subst
+                    .is_some_and(|m| m.borrow().contains_key(n))
+        })
     }
 
     pub(super) fn with_vec_of_bus(
@@ -1043,6 +1061,7 @@ pub(super) fn lower_vec_method_cpp(
             fsm_vec_port_regs: ctx.fsm_vec_port_regs,
             ident_subst: None, // replaced below via a temporary binding
             loop_var_subst: ctx.loop_var_subst,
+            for_iters: ctx.for_iters.clone(),
             vec_of_bus_port_count: ctx.vec_of_bus_port_count,
             vec_of_bus_wire_count: ctx.vec_of_bus_wire_count,
             coverage: ctx.coverage,
@@ -1350,6 +1369,20 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 let loc = base_ident_name(rhs).unwrap_or("<div>");
                 let op_name = if *op == BinOp::Div { "/" } else { "%" };
                 return format!("(_ARCH_DCHK(({r}), \"{loc} {op_name}\"), ({l} {op_str} {r}))");
+            }
+            if *op == BinOp::Shl && !ctx.is_const_int_expr(expr) {
+                // `<<` is non-widening: the result keeps W(a) bits. The C++
+                // carrier is wider, so mask it (arch#937); a constant shift
+                // such as `(1 << W) - 1` stays integer arithmetic, as in SV.
+                let bits = infer_expr_width(lhs, ctx);
+                if bits <= 128 {
+                    let value = format!("({l} {op_str} {r})");
+                    return if infer_expr_signed(lhs, ctx) {
+                        cast_to_signed_carrier(&value, bits)
+                    } else {
+                        cast_to_unsigned_carrier(&value, bits)
+                    };
+                }
             }
             if matches!(op, BinOp::AddWrap | BinOp::SubWrap) {
                 let value = format!("({l} {op_str} {r})");

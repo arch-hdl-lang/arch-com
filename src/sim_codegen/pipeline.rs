@@ -1481,6 +1481,7 @@ impl<'a> SimCodegen<'a> {
             fsm_vec_port_regs: None,
             ident_subst: None,
             loop_var_subst: None,
+            for_iters: Default::default(),
             vec_of_bus_port_count: None,
             vec_of_bus_wire_count: None,
             coverage: None,
@@ -1610,6 +1611,17 @@ impl<'a> SimCodegen<'a> {
                     BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
+                if *op == BinOp::Shl
+                    && !crate::width::is_const_int_expr(expr, &|n| {
+                        params.iter().any(|p| p.name.name == n)
+                    })
+                {
+                    // `<<` keeps W(a) bits (arch#937); mask the wider carrier.
+                    let bits = self.pipeline_sim_expr_width(lhs, prefix, si, srn, w, pn, params);
+                    if bits <= 64 {
+                        return cast_to_bits(&format!("({l} {os} {r})"), bits);
+                    }
+                }
                 format!("({l} {os} {r})")
             }
             ExprKind::Unary(op, inner) => {
