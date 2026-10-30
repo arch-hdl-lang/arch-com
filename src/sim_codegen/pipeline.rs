@@ -248,6 +248,9 @@ impl<'a> SimCodegen<'a> {
                             walk_comb_targets(&ie.then_stmts, out);
                             walk_comb_targets(&ie.else_stmts, out);
                         }
+                        Stmt::For(f) => {
+                            walk_comb_targets(&f.body, out);
+                        }
                         _ => {}
                     }
                 }
@@ -1399,6 +1402,39 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
                 cpp.push_str(&format!("{pad}}}\n"));
+            }
+            Stmt::For(f) => {
+                if let ForRange::Range(ref lo_expr, ref hi_expr) = f.range {
+                    let lo = self.pipeline_sim_expr(
+                        lo_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
+                    );
+                    let hi = self.pipeline_sim_expr(
+                        hi_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
+                    );
+                    cpp.push_str(&format!(
+                        "{pad}for (int {v} = {lo}; {v} <= {hi}; {v}++) {{\n",
+                        v = f.var.name
+                    ));
+                    for s in &f.body {
+                        self.emit_pipeline_sim_comb_stmt(
+                            cpp,
+                            s,
+                            prefix,
+                            si,
+                            sn,
+                            sp,
+                            srn,
+                            pn,
+                            rn,
+                            ln,
+                            w,
+                            em,
+                            params,
+                            indent + 2,
+                        );
+                    }
+                    cpp.push_str(&format!("{pad}}}\n"));
+                }
             }
             _ => {}
         }
