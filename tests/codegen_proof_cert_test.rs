@@ -341,8 +341,14 @@ fn miscompiled_sv_is_rejected() {
         (
             "concat_shift",
             "lost non-widening shift",
-            "9'($unsigned(a << 1))",
+            "9'($unsigned(8'(a << 1)))",
             "9'(a << 1)",
+        ),
+        (
+            "concat_shift",
+            "shift pinned to the wrong width",
+            "8'(a << sh)",
+            "$bits(sh)'(a << sh)",
         ),
     ];
     let mut failures = Vec::new();
@@ -406,6 +412,20 @@ fn semantics_preserving_rewrites_are_accepted() {
             "sized initializer",
             "logic [7:0] r = 7;",
             "logic [7:0] r = 8'd7;",
+        ),
+        // A `$bits` cast width, as codegen emits when it cannot fold one.
+        (
+            "concat_shift",
+            "bits cast width",
+            "8'(a << sh)",
+            "$bits(a)'(a << sh)",
+        ),
+        // The shift's own pin is redundant in a same-width context.
+        (
+            "concat_shift",
+            "unpinned same-width shift",
+            "8'(a << sh)",
+            "a << sh",
         ),
         // A constant bit select is a 1-bit range.
         ("concat_shift", "bit as range", "a[2];", "a[2:2];"),

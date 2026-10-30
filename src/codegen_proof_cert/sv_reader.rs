@@ -387,6 +387,12 @@ impl<'a> Parser<'a> {
                 self.expect_punct("(")?;
                 let x = self.ident()?;
                 self.expect_punct(")")?;
+                // `$bits(x)'(e)`: a system call is itself a legal cast width.
+                if matches!(self.peek(), Some(Tok::CastTick)) {
+                    self.pos += 1;
+                    let inner = self.paren_expr()?;
+                    return Ok(P::Cast(Box::new(P::Bits(x)), Box::new(inner)));
+                }
                 Ok(P::Bits(x))
             }
             Some(Tok::Ident(name)) if name == "$unsigned" => {

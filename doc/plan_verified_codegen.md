@@ -155,7 +155,7 @@ Assumptions:
   inside `check`. "Constant" means an expression that reads no signal, such
   as `40'($unsigned(DELAY))`.
 * **Fixtures** (`tests/codegen_proof/*.arch`): all ten certify.
-* **Negative controls** (`tests/codegen_proof_cert_test.rs`): 32 hand-made
+* **Negative controls** (`tests/codegen_proof_cert_test.rs`): 33 hand-made
   miscompiles are all rejected by the kernel.
   * 11 core cases: a dropped carry, an inverted reset, a wrong reset value,
     a wrong operator, a narrowed port, a wrong flop clock, a wrong literal,
@@ -169,20 +169,23 @@ Assumptions:
     wrong or dropped initializer, an initializer on a combinational net, an
     inverted or wrong-constant parameter comparison, a wrong async reset
     constant, and an async reset branch that reads a signal.
-  * 5 for concatenation, shifts and bit select: swapped concatenation
+  * 6 for concatenation, shifts and bit select: swapped concatenation
     operands, a wrong constant bit, a wrong dynamic index, a flipped shift
-    direction, and a shift that loses its non-widening size cast.
-  * 11 semantics-preserving rewrites are accepted: a redundant cast, a
+    direction, a shift that loses its non-widening size cast, and a shift
+    pinned to the wrong `$bits` width.
+  * 13 semantics-preserving rewrites are accepted: a redundant cast, a
     different-but-equivalent cast width, reordered resets, a sized vs
     unsized literal, a parameter vs literal cast width, `+:` vs `[hi:lo]`,
     a sized initializer, a swapped constant comparison, a literal async
-    reset constant, `a[2]` vs `a[2:2]`, and redundant parentheses inside a
-    concatenation.
+    reset constant, `a[2]` vs `a[2:2]`, redundant parentheses inside a
+    concatenation, a `$bits(a)` cast width, and an unpinned shift in a
+    same-width context.
 * **Corpus sweep** (`scripts/codegen_cert_sweep.sh`, 970 `.arch` files):
-  * **225 files certify, with 0 unexplained failures**, including
+  * **227 files certify, with 0 failures**, including
     `tests/e203/e203_core` and `e203_cpu`. The count was 78 before
     parameters and async reset, 107 before `let` / `port reg` / `init`, and
-    173 before concatenation, shifts and bit select. Between the first two, #1102 made the compiler
+    173 before concatenation, shifts and bit select (225 until #1107 fixed
+    #937). Between the first two, #1102 made the compiler
     reject undriven wires, so 4 e203 files that had certified
     (`e203_core_top`, `e203_exu`, `e203_exu_top`, `e203_soc_top`) no longer
     build at all. Their
@@ -209,20 +212,27 @@ Assumptions:
     `Nic400SparseDemo`, where `CONNECT_MASK >> sel` is 2 bits wide in Core
     and 32 bits in SV (a `>>` width shrink and the sign-extension-as-
     truncation rule).
-  * The other two, `cvdp/palindrome_detect` and `cvdp/ir_receiver`, are the
-    open spec/implementation divergence **#937**. The spec gives `a << n`
-    the width `W(a)`, but both backends widen the shifted operand to the
-    surrounding context first. `(sr[1:0] << 1) | x.zext<3>()` keeps `sr[1]`
-    in `arch sim`, in Verilator on the emitted SV, and in the source
-    author's evident intent, but drops it under the spec. Core follows the
-    spec, so the certificate correctly fails. The sweep lists both files in
-    `scripts/codegen_cert_known_divergences.txt` and reports them as
-    `KNOWN`. It fails if a listed file stops failing, so the entries go
-    away when #937 is decided (and Core's shift rule then follows the
-    decision).
-  * **No disagreement between `arch sim` and the emitted SV was found in
-    the covered subset.** The only rejected code is #937, where both
-    backends agree with each other and differ from the written spec.
+  * The other two, `cvdp/palindrome_detect` and `cvdp/ir_receiver`, were
+    the spec/implementation divergence **#937**. The spec gives `a << n`
+    the width `W(a)`, but the emitted SV widened the shifted operand to the
+    surrounding context. `(sr[1:0] << 1) | x.zext<3>()` kept `sr[1]`, and
+    the source authors relied on it. Core follows the spec, so the
+    certificate correctly failed. While the two files waited on that
+    decision, the sweep listed them in
+    `scripts/codegen_cert_known_divergences.txt` and reported them as
+    `KNOWN`.
+  * Investigating #937 also exposed a live `arch sim` bug (#1106): the sim
+    never masked a shift, so a 2-bit signal assigned `a << 1` held 6. #1107
+    fixed both. The sim and SV now compute `W(a)`, and `arch check` rejects
+    a shift whose dropped bits are used. The two designs now widen the
+    operand first and certify, and the known-divergence list is empty. The
+    new SV shift casts sometimes use a `$bits(x)` width, so the SV reader
+    now also accepts a bare `$bits(x)'(e)` cast; without that,
+    `cvdp/gf_multiplier` would have dropped out of coverage.
+  * **No miscompile of the emitted SV was found in the covered subset.**
+    The certificate compares ARCH semantics with the emitted SV only; it
+    does not check `arch sim`. Agreement with the sim is roadmap D, and
+    #1106 shows that it needs its own check.
 * **Cost:** most certificates replay in 1–2 s; `e203_core` takes about 18 s.
   The whole sweep takes about 20 s with 8 jobs.
 
@@ -253,8 +263,7 @@ Ordered by the skip-reason evidence in §5.
 4. **Untyped `let`, `port reg` (`pipe_reg<T, 1>`), `reg … init` — done.**
    **Concatenation, shifts and bit select — done.** Remaining small items:
    replication, registers without reset, more than one `seq` block, `?:` in
-   SV width expressions (S each). Core's shift width follows the outcome of
-   #937.
+   SV width expressions (S each).
 5. **Hierarchy (L).** `inst` with a compositional theorem: if every module
    certifies, the flattened design certifies. Also bus-port flattening.
 6. **SV semantics cross-check (S).** Differential-test `Sv.evalCtx` (it is
