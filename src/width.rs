@@ -35,6 +35,24 @@ pub fn index_width(n: u64) -> u32 {
     clog2(n).max(1)
 }
 
+/// True when `e` is built only from literals, `$clog2` and names for which
+/// `is_param` holds: a compile-time integer expression. The backends
+/// evaluate such an expression as an integer (so `(1 << W) - 1` is a mask,
+/// not a 1-bit shift), and the typechecker's non-widening `<<` check skips
+/// it. One shared rule keeps the three in agreement.
+pub fn is_const_int_expr(e: &crate::ast::Expr, is_param: &dyn Fn(&str) -> bool) -> bool {
+    use crate::ast::ExprKind;
+    match &e.kind {
+        ExprKind::Literal(_) => true,
+        ExprKind::Ident(n) => is_param(n),
+        ExprKind::Clog2(a) | ExprKind::Unary(_, a) => is_const_int_expr(a, is_param),
+        ExprKind::Binary(_, a, b) => {
+            is_const_int_expr(a, is_param) && is_const_int_expr(b, is_param)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

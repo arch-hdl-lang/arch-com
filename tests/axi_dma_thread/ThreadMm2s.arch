@@ -150,7 +150,7 @@ module ThreadMm2s
         r_ready    = false;
         push_valid = false;
       end default
-      wait until active and ((thread_complete[i] << 2) + i < xfer_ctr_r);
+      wait until active and (((thread_complete[i].zext<17>() << 2) +% i) < xfer_ctr_r);
       for b in 0..burst_len_r-1
         do
           r_ready    = 1;

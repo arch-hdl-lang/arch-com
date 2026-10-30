@@ -404,9 +404,9 @@ Every assignment, port connection, and arithmetic result is width-checked at com
 | cnt \<= (cnt + 1).trunc\<8\>(); // ✓ explicit wrap-around truncation        |
 +-----------------------------------------------------------------------------+
 
-**Shift operators: non-widening (IEEE 1800-2012 §11.6.1)**
+**Shift operators: non-widening**
 
-Unlike addition and multiplication, shift operators (`<<`, `>>`) do **not** widen the result. The result width equals the left operand width, regardless of the shift amount:
+Unlike addition and multiplication, shift operators (`<<`, `>>`) do **not** widen the result. The result width equals the left operand width, regardless of the shift amount. (This differs from SystemVerilog, where the left operand of a shift is context-determined, IEEE 1800-2017 §11.6.1: SV evaluates `(a << 1) | wide` at the width of `wide` and keeps the shifted-out bit. ARCH does not, and the compiler emits `W'(a << n)` so the generated SV agrees.)
 
 ```
 let a: UInt<8> = 0xAB;
@@ -424,7 +424,9 @@ let wide: UInt<9> = a.zext<9>() << 1;    // UInt<9>, MSB preserved — explicit 
 | `a << n` | `W(a)` | **Non-widening** — shift amount does not affect result width |
 | `a >> n` | `W(a)` | **Non-widening** |
 
-> *⚑ The compiler emits a **compile error** when a shift result is assigned to a wider target (e.g. `let wide: UInt<9> = a << 1;`), because the extra bit will always be zero --- the shift did not capture the overflow. The fix is to widen the operand first: `a.zext<9>() << 1`. Same-width shifts (e.g. `let x: UInt<8> = a << 1;`) are silent --- MSB loss is the normal, intended behavior of a fixed-width shift.*
+> *⚑ The compiler emits a **compile error** whenever more bits of a `<<` result are used than the shift produces, because the bits shifted out of the top are always dropped. That covers a wider assignment target (`let wide: UInt<9> = a << 1;`) and a shift inside a wider expression: `(a << 1) | b` with `b` wider than `a`, `(a << 1) + a` assigned at the sum's width, a comparison with a wider operand or an unsized literal (`(a << 1) == 0`), or a `>>` that brings the dropped bits back down. The fix is to widen the operand first: `a.zext<9>() << 1`. To drop the bits deliberately, bind the shift to a `let` of the operand's width, or truncate the result. Same-width uses (e.g. `let x: UInt<8> = a << 1;`, `(a << 1).zext<9>()`, `((a << 1) + a).trunc<8>()`) are silent --- MSB loss is the normal, intended behavior of a fixed-width shift. An unsized literal on the left counts as its own width: `x | (1 << i)` with an 8-bit `x` is an error; write `1.zext<8>() << i`.*
+
+> *A shift built only from compile-time values --- literals, `param`s, `generate` indices and `for` iterators, e.g. `(1 << WIDTH) - 1` or `1 << j` inside `for j in ...` --- is integer arithmetic and is exempt: it is not sized and not checked (arch#937).*
 
 **Built-in functions:**
 
