@@ -320,6 +320,10 @@ pub struct Codegen<'a> {
     /// bail is harmless there because `emit_function_for` does not
     /// register its iterator in this set to begin with.)
     runtime_for_loop_vars: std::collections::HashSet<String>,
+    /// Iterators of the `function` `for` loops enclosing the emission point
+    /// (module loops use `runtime_for_loop_vars`, unrolled ones
+    /// `loop_var_subst`). See `is_const_int_expr`.
+    fn_for_loop_vars: Vec<String>,
 }
 
 /// One pending portability hoist temp (see `Codegen::index_hoist_temps`).
@@ -450,6 +454,7 @@ impl<'a> Codegen<'a> {
             index_hoist_counter: std::cell::Cell::new(0),
             hoist_scope: HoistScope::Module,
             runtime_for_loop_vars: std::collections::HashSet::new(),
+            fn_for_loop_vars: Vec::new(),
         }
     }
 
@@ -2018,6 +2023,7 @@ impl<'a> Codegen<'a> {
                 self.line(&format!(
                     "for (int {var} = {lo_s}; {var} <= {hi_s}; {var}++) begin"
                 ));
+                self.fn_for_loop_vars.push(var.clone());
             }
             ForRange::ValueList(_vals) => {
                 if let ForRange::ValueList(vals) = &fl.range {
@@ -2038,7 +2044,9 @@ impl<'a> Codegen<'a> {
                                 "for (int {var} = {v}; {var} == {v}; {var}++) begin"
                             ));
                             self.indent += 1;
+                            self.fn_for_loop_vars.push(var.clone());
                             self.emit_function_body_items(&fl.body);
+                            self.fn_for_loop_vars.pop();
                             self.indent -= 1;
                             self.line("end");
                         }
@@ -2049,8 +2057,23 @@ impl<'a> Codegen<'a> {
         }
         self.indent += 1;
         self.emit_function_body_items(&fl.body);
+        self.fn_for_loop_vars.pop();
         self.indent -= 1;
         self.line("end");
+    }
+
+    /// A compile-time integer expression at the current emission point:
+    /// built from literals, the construct's params and enclosing `for`
+    /// iterators. Codegen leaves such a shift unsized (integer arithmetic),
+    /// matching the sim and the typechecker's `<<` width check.
+    fn is_const_int_expr(&self, e: &Expr) -> bool {
+        let params = self.current_construct_params().unwrap_or_default();
+        crate::width::is_const_int_expr(e, &|n| {
+            params.iter().any(|p| p.name.name == n)
+                || self.runtime_for_loop_vars.contains(n)
+                || self.loop_var_subst.contains_key(n)
+                || self.fn_for_loop_vars.iter().any(|v| v == n)
+        })
     }
 
     pub(crate) fn emit_package(&mut self, pkg: &PackageDecl) {
@@ -5863,17 +5886,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn is_const_reducible_with(e: &Expr, const_params: &std::collections::HashSet<String>) -> bool {
-        match &e.kind {
-            ExprKind::Literal(_) => true,
-            ExprKind::Ident(n) => const_params.contains(n),
-            ExprKind::Clog2(a) => Self::is_const_reducible_with(a, const_params),
-            ExprKind::Binary(_, a, b) => {
-                Self::is_const_reducible_with(a, const_params)
-                    && Self::is_const_reducible_with(b, const_params)
-            }
-            ExprKind::Unary(_, a) => Self::is_const_reducible_with(a, const_params),
-            _ => false,
-        }
+        crate::width::is_const_int_expr(e, &|n| const_params.contains(n))
     }
 
     /// Emit Tier-2 SVA protocol assertions for each credit_channel on this
@@ -8292,6 +8305,13 @@ impl<'a> Codegen<'a> {
                     // evaluation context and prevents a parent expression
                     // from resizing the arithmetic before it is evaluated.
                     let w = Self::paren_width(&self.infer_sv_width_str(expr));
+                    format!("{w}'({l} {op_str} {r})")
+                } else if *op == BinOp::Shl && !self.is_const_int_expr(expr) {
+                    // `<<` is non-widening in ARCH (result width W(a)), but
+                    // SV sizes its left operand by the surrounding context,
+                    // so `(a << 1) | wide` would keep the shifted-out bit.
+                    // The size cast pins the ARCH width (arch#937).
+                    let w = Self::paren_width(&self.infer_sv_width_str(lhs));
                     format!("{w}'({l} {op_str} {r})")
                 } else {
                     format!("{l} {op_str} {r}")

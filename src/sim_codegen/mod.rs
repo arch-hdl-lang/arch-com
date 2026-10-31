@@ -3434,6 +3434,7 @@ impl<'a> SimCodegen<'a> {
                                     fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
                                     ident_subst: Some(&sub),
                                     loop_var_subst: ctx_comb.loop_var_subst,
+                                    for_iters: ctx_comb.for_iters.clone(),
                                     vec_of_bus_port_count: ctx_comb.vec_of_bus_port_count,
                                     vec_of_bus_wire_count: ctx_comb.vec_of_bus_wire_count,
                                     coverage: ctx_comb.coverage,

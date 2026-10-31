@@ -248,6 +248,9 @@ impl<'a> SimCodegen<'a> {
                             walk_comb_targets(&ie.then_stmts, out);
                             walk_comb_targets(&ie.else_stmts, out);
                         }
+                        Stmt::For(f) => {
+                            walk_comb_targets(&f.body, out);
+                        }
                         _ => {}
                     }
                 }
@@ -1400,6 +1403,39 @@ impl<'a> SimCodegen<'a> {
                 }
                 cpp.push_str(&format!("{pad}}}\n"));
             }
+            Stmt::For(f) => {
+                if let ForRange::Range(ref lo_expr, ref hi_expr) = f.range {
+                    let lo = self.pipeline_sim_expr(
+                        lo_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
+                    );
+                    let hi = self.pipeline_sim_expr(
+                        hi_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
+                    );
+                    cpp.push_str(&format!(
+                        "{pad}for (int {v} = {lo}; {v} <= {hi}; {v}++) {{\n",
+                        v = f.var.name
+                    ));
+                    for s in &f.body {
+                        self.emit_pipeline_sim_comb_stmt(
+                            cpp,
+                            s,
+                            prefix,
+                            si,
+                            sn,
+                            sp,
+                            srn,
+                            pn,
+                            rn,
+                            ln,
+                            w,
+                            em,
+                            params,
+                            indent + 2,
+                        );
+                    }
+                    cpp.push_str(&format!("{pad}}}\n"));
+                }
+            }
             _ => {}
         }
     }
@@ -1481,6 +1517,7 @@ impl<'a> SimCodegen<'a> {
             fsm_vec_port_regs: None,
             ident_subst: None,
             loop_var_subst: None,
+            for_iters: Default::default(),
             vec_of_bus_port_count: None,
             vec_of_bus_wire_count: None,
             coverage: None,
@@ -1610,6 +1647,17 @@ impl<'a> SimCodegen<'a> {
                     BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
+                if *op == BinOp::Shl
+                    && !crate::width::is_const_int_expr(expr, &|n| {
+                        params.iter().any(|p| p.name.name == n)
+                    })
+                {
+                    // `<<` keeps W(a) bits (arch#937); mask the wider carrier.
+                    let bits = self.pipeline_sim_expr_width(lhs, prefix, si, srn, w, pn, params);
+                    if bits <= 64 {
+                        return cast_to_bits(&format!("({l} {os} {r})"), bits);
+                    }
+                }
                 format!("({l} {os} {r})")
             }
             ExprKind::Unary(op, inner) => {

@@ -10,7 +10,7 @@ module palindrome_detect
   wire sr_next: UInt<3>;
 
   comb
-    sr_next = (sr[1:0] << 1) | bit_stream.zext<3>();
+    sr_next = (sr[1:0].zext<3>() << 1) | bit_stream.zext<3>();
   end comb
 
   seq on clk rising
