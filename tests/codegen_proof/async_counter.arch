@@ -1,0 +1,16 @@
+// Active-low asynchronous reset (reset edge in the always_ff sensitivity list).
+module AsyncCnt
+  port clk: in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port en: in Bool;
+  port q: out UInt<4>;
+  reg cnt: UInt<4> reset rst_n => 5;
+  comb
+    q = cnt;
+  end comb
+  seq on clk rising
+    if en
+      cnt <= cnt +% 1;
+    end if
+  end seq
+end module AsyncCnt

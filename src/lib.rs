@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod codegen;
+pub mod codegen_proof_cert;
 pub mod comb_graph;
 pub mod construct_formal_ir;
 pub mod construct_proof_cert;

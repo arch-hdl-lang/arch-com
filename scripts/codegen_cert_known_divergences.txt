@@ -1,0 +1,8 @@
+# Corpus files whose certificate Lean REJECTS because of a known, open
+# spec/implementation divergence (not a validator gap). The sweep reports them
+# as KNOWN instead of FAIL, and fails if a listed file no longer FAILs, so the
+# entry is removed once the divergence is resolved.
+#
+# Format: <path relative to the repo root> <issue> <one-line reason>
+
+# (none: the #937 shift-width divergence was fixed by #1107)

@@ -1,0 +1,25 @@
+// `port reg` outputs and untyped `let` (a continuous assignment to an
+// existing wire or output).
+module LetReg
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port en: in Bool;
+  port reg q: out UInt<9> reset rst => 0;
+  port reg flag: out Bool reset rst => false;
+  port y: out UInt<9>;
+  port z: out UInt<8>;
+  wire s: UInt<9>;
+  let s = a + b;
+  let y = s +% 5;
+  let z = s.trunc<8>() ^ a;
+  seq on clk rising
+    if en and (a == b)
+      q <= s;
+    else
+      q <= z.zext<9>();
+    end if
+    flag <= en;
+  end seq
+end module LetReg

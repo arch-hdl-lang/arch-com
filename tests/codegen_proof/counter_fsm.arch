@@ -1,0 +1,34 @@
+// Two registers sharing an active-high reset, a wire driven by an
+// if/elsif chain, and resize methods.
+module CounterFsm
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port start: in Bool;
+  port limit: in UInt<6>;
+  port busy: out Bool;
+  port count_o: out UInt<6>;
+  reg running: Bool reset rst => false;
+  reg count: UInt<6> reset rst => 0;
+  wire next_count: UInt<6>;
+  comb
+    if not running
+      next_count = 0;
+    elsif count == limit
+      next_count = count;
+    else
+      next_count = (count + 1).trunc<6>();
+    end if
+    busy = running;
+    count_o = count;
+  end comb
+  seq on clk rising
+    if start and not running
+      running <= true;
+      count <= 0;
+    elsif running and (count == limit)
+      running <= false;
+    else
+      count <= next_count;
+    end if
+  end seq
+end module CounterFsm
