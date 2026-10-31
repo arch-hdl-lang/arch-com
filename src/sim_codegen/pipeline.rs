@@ -1355,7 +1355,31 @@ impl<'a> SimCodegen<'a> {
                 let val = self.pipeline_sim_expr(
                     &a.value, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
                 );
-                cpp.push_str(&format!("{pad}{tgt} = {val};\n"));
+                // Width-mask to the target's declared width, mirroring the
+                // seq-block emitter (`emit_pipeline_sim_stmt`). Without this an
+                // overflowing/wrapping comb value (e.g. `a +% b`) keeps its
+                // extra high bits in native sim while SV truncates to the
+                // declared width — a sim≠SV miscompile (#1111). The width-map
+                // key is `format!("{prefix}_{n}")` for a plain ident in both
+                // arms (implicit wires/lets/regs are stored under that key);
+                // non-ident targets build an empty key and stay unmasked, as
+                // in the seq arm.
+                let tgt_key = if let ExprKind::Ident(n) = &a.target.kind {
+                    format!("{}_{}", prefix, n)
+                } else {
+                    String::new()
+                };
+                let mask = w
+                    .get(&tgt_key)
+                    .and_then(|&b| {
+                        if b > 0 && b < 64 {
+                            Some(format!(" & 0x{:X}ULL", (1u64 << b) - 1))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                cpp.push_str(&format!("{pad}{tgt} = ({val}){mask};\n"));
             }
             Stmt::IfElse(ie) => {
                 let cond = self.pipeline_sim_expr(
