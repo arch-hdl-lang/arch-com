@@ -240,8 +240,10 @@ tests/assert_cover/match_test.arch	verilator	OK	-
 tests/assert_cover/simple_axi_bus.arch	-	NO_MODULE	-
 tests/assert_cover/sync_fifo_readme.arch	iverilog	OK	-
 tests/assert_cover/sync_fifo_readme.arch	verilator	OK	-
-tests/axi_dma/AxiDmaTop.arch	-	BUILD_FAIL	Error:   × duplicate definition: `BusAxiLite`
-tests/axi_dma/AxiLiteRegs.arch	-	BUILD_FAIL	Error:   × duplicate definition: `BusAxiLite`
+tests/axi_dma/AxiDmaTop.arch	iverilog	OK	-
+tests/axi_dma/AxiDmaTop.arch	verilator	OK	-
+tests/axi_dma/AxiLiteRegs.arch	iverilog	OK	-
+tests/axi_dma/AxiLiteRegs.arch	verilator	OK	-
 tests/axi_dma/BusAxi4.arch	-	NO_MODULE	-
 tests/axi_dma/BusAxiLite.arch	-	NO_MODULE	-
 tests/axi_dma/BusAxis.arch	-	NO_MODULE	-
@@ -258,8 +260,10 @@ tests/axi_dma/Mm2sFifo.arch	verilator	OK	-
 tests/axi_dma/PkgAxiDma.arch	-	NO_MODULE	-
 tests/axi_dma/S2mmFifo.arch	iverilog	OK	-
 tests/axi_dma/S2mmFifo.arch	verilator	OK	-
-tests/axi_dma_multi/AxiDmaTop.arch	-	BUILD_FAIL	Error:   × duplicate definition: `BusAxiLite`
-tests/axi_dma_multi/AxiLiteRegs.arch	-	BUILD_FAIL	Error:   × duplicate definition: `BusAxiLite`
+tests/axi_dma_multi/AxiDmaTop.arch	iverilog	OK	-
+tests/axi_dma_multi/AxiDmaTop.arch	verilator	OK	-
+tests/axi_dma_multi/AxiLiteRegs.arch	iverilog	OK	-
+tests/axi_dma_multi/AxiLiteRegs.arch	verilator	OK	-
 tests/axi_dma_multi/BusAxi4.arch	-	NO_MODULE	-
 tests/axi_dma_multi/BusAxiLite.arch	-	NO_MODULE	-
 tests/axi_dma_multi/BusAxis.arch	-	NO_MODULE	-
@@ -276,8 +280,10 @@ tests/axi_dma_multi/Mm2sFifo.arch	verilator	OK	-
 tests/axi_dma_multi/PkgAxiDma.arch	-	NO_MODULE	-
 tests/axi_dma_multi/S2mmFifo.arch	iverilog	OK	-
 tests/axi_dma_multi/S2mmFifo.arch	verilator	OK	-
-tests/axi_dma_thread/AxiDmaTop.arch	-	BUILD_FAIL	Error:   × duplicate definition: `BusAxiLite`
-tests/axi_dma_thread/AxiLiteRegs.arch	-	BUILD_FAIL	Error:   × duplicate definition: `BusAxiLite`
+tests/axi_dma_thread/AxiDmaTop.arch	iverilog	OK	-
+tests/axi_dma_thread/AxiDmaTop.arch	verilator	OK	-
+tests/axi_dma_thread/AxiLiteRegs.arch	iverilog	OK	-
+tests/axi_dma_thread/AxiLiteRegs.arch	verilator	OK	-
 tests/axi_dma_thread/BusAxi4.arch	-	NO_MODULE	-
 tests/axi_dma_thread/BusAxiLite.arch	-	NO_MODULE	-
 tests/axi_dma_thread/BusAxis.arch	-	NO_MODULE	-

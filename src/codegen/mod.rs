@@ -3838,7 +3838,7 @@ impl<'a> Codegen<'a> {
         declared: &std::collections::HashSet<String>,
     ) {
         // Look up the instantiated module's port info
-        let module_ports = if let Some((Symbol::Module(info), _)) =
+        let mut module_ports = if let Some((Symbol::Module(info), _)) =
             self.symbols.globals.get(&inst.module_name.name)
         {
             info.ports.clone()
@@ -3850,6 +3850,33 @@ impl<'a> Codegen<'a> {
             self.symbols.globals.get(&inst.module_name.name)
         {
             info.ports.clone()
+        } else if matches!(
+            self.symbols.globals.get(&inst.module_name.name),
+            Some((Symbol::Synchronizer(_) | Symbol::Linklist(_), _))
+        ) {
+            // These symbols do not carry their ports. Recover the actual SV
+            // boundary, including the flattened linklist operation ports.
+            self.source
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Synchronizer(s) if s.name.name == inst.module_name.name => {
+                        Some(s.ports.clone())
+                    }
+                    Item::Linklist(l) if l.name.name == inst.module_name.name => {
+                        let mut ports = l.ports.clone();
+                        for op in &l.ops {
+                            for port in &op.ports {
+                                let mut port = port.clone();
+                                port.name.name = format!("{}_{}", op.name.name, port.name.name);
+                                ports.push(port);
+                            }
+                        }
+                        Some(ports)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
         } else if let Some((Symbol::Ram(_), _)) = self.symbols.globals.get(&inst.module_name.name) {
             // RAM uses port groups — handle separately below
             Vec::new()
@@ -3861,6 +3888,78 @@ impl<'a> Codegen<'a> {
         } else {
             return;
         };
+
+        // Resolve child parameters in recovered synchronizer/linklist ports:
+        // their names live in the child's scope, not the enclosing module.
+        let child_params = self.source.items.iter().find_map(|item| match item {
+            Item::Synchronizer(s) if s.name.name == inst.module_name.name => Some(&s.params),
+            Item::Linklist(l) if l.name.name == inst.module_name.name => Some(&l.params),
+            _ => None,
+        });
+        if let Some(params) = child_params {
+            let mut resolved_values: std::collections::HashMap<String, Expr> = params
+                .iter()
+                .filter_map(|p| p.default.as_ref().map(|v| (p.name.name.clone(), v.clone())))
+                .collect();
+            for override_ in &inst.param_assigns {
+                if override_.ty.is_none() {
+                    resolved_values.insert(override_.name.name.clone(), override_.value.clone());
+                }
+            }
+            // Expand defaults through other child defaults/overrides. Start
+            // from each original default on every pass so an override RHS
+            // remains in parent scope, even if its name matches a child param.
+            for _ in 0..params.len() {
+                for p in params {
+                    if inst
+                        .param_assigns
+                        .iter()
+                        .any(|a| a.name.name == p.name.name)
+                    {
+                        continue;
+                    }
+                    if let Some(default) = &p.default {
+                        let refs = resolved_values
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v))
+                            .collect();
+                        let value = Self::subst_expr(default, &refs);
+                        resolved_values.insert(p.name.name.clone(), value);
+                    }
+                }
+            }
+            let values = resolved_values
+                .iter()
+                .map(|(k, v)| (k.clone(), v))
+                .collect();
+            for port in &mut module_ports {
+                if let TypeExpr::Named(id) = &port.ty {
+                    if let Some(override_ty) = inst
+                        .param_assigns
+                        .iter()
+                        .find(|a| a.name.name == id.name)
+                        .and_then(|a| a.ty.as_ref())
+                    {
+                        // An override is written in the parent's scope. Do not
+                        // substitute same-named child parameters into it.
+                        port.ty = override_ty.clone();
+                        continue;
+                    }
+                    if let Some(default_ty) = params.iter().find_map(|p| {
+                        if p.name.name == id.name {
+                            if let ParamKind::Type(ty) = &p.kind {
+                                return Some(ty);
+                            }
+                        }
+                        None
+                    }) {
+                        port.ty = Self::subst_type_expr(default_ty, &values);
+                        continue;
+                    }
+                }
+                port.ty = Self::subst_type_expr(&port.ty, &values);
+            }
+        }
 
         // For RAM instances, build a flattened port map from port groups
         // Resolve type params (e.g. WIDTH → UInt<32>) from the RAM's param list.

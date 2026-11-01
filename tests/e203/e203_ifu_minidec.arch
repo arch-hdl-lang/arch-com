@@ -33,7 +33,6 @@ module e203_ifu_minidec
   wire nc5:  Bool;
   wire nc6:  Bool;
   wire nc7:  Bool;
-  wire nc8:  Bool;
   wire nc_u0: UInt<5>;
   wire nc_u1: UInt<32>;
   wire nc_u2: UInt<32>;

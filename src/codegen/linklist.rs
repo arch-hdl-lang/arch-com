@@ -76,6 +76,13 @@ impl<'a> Codegen<'a> {
         // ── Module header ─────────────────────────────────────────────────────
         self.line(&format!("module {n} #("));
         self.indent += 1;
+        // Preserve additional user parameters referenced by operation port
+        // types, and keep them available for instance overrides.
+        for p in &l.params {
+            if !matches!(p.name.name.as_str(), "DEPTH" | "DATA" | "NUM_HEADS") {
+                self.emit_param_decl(p, ",");
+            }
+        }
         if multi_head {
             self.line(&format!("parameter int  NUM_HEADS = {num_heads_expr},"));
         }

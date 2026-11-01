@@ -282,7 +282,6 @@ module e203_exu
   wire alu_wbck_csr_dat:     UInt<32>;
   // ALU NICE
   wire alu_nice_longp_wbck_valid: Bool;
-  wire alu_nice_longp_wbck_ready: Bool;
   wire alu_nice_o_itag:           UInt<1>;
   // ALU misc wires
   wire amo_wait_w:         Bool;
@@ -579,7 +578,7 @@ module e203_exu
     i_misalgn  <- disp_alu_misalgn;
     // Control
     nice_xs_off <- csr_nice_xs_off;
-    amo_wait    <- amo_wait_w;
+    amo_wait    -> amo_wait_w;
     oitf_empty  <- oitf_empty_w;
     flush_req   <- flush_req_w;
     flush_pulse <- pipe_flush_pulse_w;
@@ -651,7 +650,7 @@ module e203_exu
     nice_rsp_multicyc_valid <- nice_rsp_multicyc_valid;
     nice_rsp_multicyc_ready -> nice_rsp_multicyc_ready;
     nice_longp_wbck_valid   -> alu_nice_longp_wbck_valid;
-    nice_longp_wbck_ready   <- alu_nice_longp_wbck_ready;
+    nice_longp_wbck_ready   <- false; // NICE writeback is stubbed below
     nice_o_itag             -> alu_nice_o_itag;
   end inst alu_u
 
