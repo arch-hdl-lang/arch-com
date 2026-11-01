@@ -139,6 +139,7 @@ module PacketQueue #(
   output logic [3:0] length
 );
 
+  logic [2:0] _push_handle;
   TaskQueue #(.DEPTH(8)) q (
     .clk(clk),
     .rst(rst),

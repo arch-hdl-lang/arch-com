@@ -8253,7 +8253,211 @@ fn test_linklist_inst_in_module() {
     let (_warnings, overload_map) = checker.check().expect("type check error");
     let mut codegen = Codegen::new(&symbols, &ast, overload_map);
     let sv = codegen.generate();
+    assert!(
+        sv.contains("logic [2:0] _push_handle;"),
+        "missing correctly sized linklist output: {sv}"
+    );
     insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn linklist_implicit_output_resolves_child_width_override() {
+    let source = std::fs::read_to_string("examples/pkt_queue.arch")
+        .unwrap()
+        .replace(
+            "param DEPTH: const = 8;\n  param DATA",
+            "param DEPTH: const = 8;\n  param W: const = 3;\n  param DATA",
+        )
+        .replace(
+            "port resp_handle: out UInt<3>;",
+            "port resp_handle: out UInt<W>;",
+        )
+        .replace(
+            "param DEPTH = 8;\n    clk",
+            "param DEPTH = 8;\n    param W = 5;\n    clk",
+        );
+    let sv = compile_to_sv(&source);
+    assert!(
+        sv.contains("logic [4:0] _push_handle;"),
+        "output must use the child override: {sv}"
+    );
+}
+
+#[test]
+fn linklist_implicit_output_resolves_chained_parameter_defaults() {
+    let source = std::fs::read_to_string("examples/pkt_queue.arch").unwrap()
+        .replace("param DEPTH: const = 8;\n  param DATA", "param DEPTH: const = 8;\n  param BASE: const = 2;\n  param W: const = BASE + 1;\n  param DATA")
+        .replace("port resp_handle: out UInt<3>;", "port resp_handle: out UInt<W>;")
+        .replace("param DEPTH = 8;\n    clk", "param DEPTH = 8;\n    param BASE = 4;\n    clk");
+    let sv = compile_to_sv(&source);
+    let decl = sv
+        .lines()
+        .find(|line| line.contains("logic") && line.contains("_push_handle;"))
+        .expect("missing output declaration");
+    assert!(
+        !decl.contains("BASE") && !decl.contains("W"),
+        "child parameter leaked into parent: {decl}"
+    );
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("linked.sv");
+        std::fs::write(&path, sv).unwrap();
+        let out = std::process::Command::new("iverilog")
+            .args(["-g2012", "-s", "PacketQueue", "-o"])
+            .arg(dir.path().join("sim"))
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "iverilog: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn linklist_implicit_output_resolves_default_type_parameter() {
+    let source = std::fs::read_to_string("examples/pkt_queue.arch")
+        .unwrap()
+        .replace(
+            "delete_head_resp_data     -> pop_data;",
+            "delete_head_resp_data     -> _pop_data;",
+        )
+        .replace(
+            "  end inst q\n",
+            "  end inst q\n  let pop_data = _pop_data;\n",
+        );
+    let sv = compile_to_sv(&source);
+    assert!(
+        sv.contains("logic [31:0] _pop_data;"),
+        "output must use the child type parameter: {sv}"
+    );
+}
+
+#[test]
+fn linklist_output_type_override_uses_parent_parameter_scope() {
+    let source = std::fs::read_to_string("examples/pkt_queue.arch")
+        .unwrap()
+        .replace(
+            "param DEPTH: const = 8;\n  param DATA",
+            "param DEPTH: const = 8;\n  param W: const = 3;\n  param DATA",
+        )
+        .replace(
+            "module PacketQueue\n  param DEPTH: const = 8;",
+            "module PacketQueue\n  param DEPTH: const = 8;\n  param W: const = 32;",
+        )
+        .replace(
+            "param DEPTH = 8;\n    clk",
+            "param DEPTH = 8;\n    param DATA = UInt<W>;\n    clk",
+        )
+        .replace(
+            "delete_head_resp_data     -> pop_data;",
+            "delete_head_resp_data     -> _pop_data;",
+        )
+        .replace(
+            "  end inst q\n",
+            "  end inst q\n  let pop_data = _pop_data;\n",
+        );
+    let sv = compile_to_sv(&source);
+    assert!(
+        sv.contains("logic [W-1:0] _pop_data;") || sv.contains("logic [(W)-1:0] _pop_data;"),
+        "type override must refer to parent W: {sv}"
+    );
+}
+
+#[test]
+fn synchronizer_implicit_output_uses_width_override() {
+    let source = r#"
+domain Src
+  freq_mhz: 100
+end domain Src
+domain Dst
+  freq_mhz: 200
+end domain Dst
+synchronizer SyncUnit
+  kind ff;
+  param STAGES: const = 2;
+  param W: const = 3;
+  port src_clk: in Clock<Src>;
+  port dst_clk: in Clock<Dst>;
+  port data_in: in UInt<W>;
+  port data_out: out UInt<W>;
+end synchronizer SyncUnit
+module M
+  port src_clk: in Clock<Src>;
+  port dst_clk: in Clock<Dst>;
+  port data: in UInt<8>;
+  port result: out UInt<8>;
+  inst s: SyncUnit
+    param W = 8;
+    src_clk <- src_clk;
+    dst_clk <- dst_clk;
+    data_in <- data;
+    data_out -> synced;
+  end inst s
+  let result = synced;
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [7:0] synced;"),
+        "missing correctly sized wire: {sv}"
+    );
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sync.sv");
+        std::fs::write(&path, sv).unwrap();
+        let out = std::process::Command::new("iverilog")
+            .args(["-g2012", "-s", "M", "-o"])
+            .arg(dir.path().join("sim"))
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "iverilog: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn synchronizer_output_wire_is_declared_for_strict_frontends() {
+    let source = include_str!("../tests/rdc/rdc_h2_single_reset_sync_ok.arch");
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic rst_a;"),
+        "missing synchronizer output declaration: {sv}"
+    );
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sync.sv");
+        std::fs::write(&path, sv).unwrap();
+        let output = std::process::Command::new("iverilog")
+            .args(["-g2012", "-s", "M", "-o"])
+            .arg(dir.path().join("sim"))
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "iverilog: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -36240,6 +36444,186 @@ fn bus_port_type_auto_discovers_sibling_definition() {
 
 /// The `.archi` bus interface emitted by `arch build` must parse back in —
 /// `emit_bus_interface` previously wrote `port name: ...` members, but a
+#[test]
+fn cvdp_cache_tag_reset_is_active_low_and_async() {
+    let tag = include_str!("cvdp/tag_controller.arch");
+    let cache = include_str!("cvdp/instruction_cache_controller.arch");
+    let td = tempfile::tempdir().unwrap();
+    let tag_path = td.path().join("tag_controller.arch");
+    let cache_path = td.path().join("instruction_cache_controller.arch");
+    std::fs::write(&tag_path, tag).unwrap();
+    std::fs::write(&cache_path, cache).unwrap();
+    let arch = env!("CARGO_BIN_EXE_arch");
+    let output = std::process::Command::new(arch)
+        .arg("check")
+        .arg(&cache_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cache reset connection: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let sv = strip_auto_handshake_sva(&compile_to_sv(tag));
+    assert!(
+        sv.contains("negedge rst"),
+        "tag reset must assert asynchronously low: {sv}"
+    );
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok()
+        && std::process::Command::new("vvp").arg("-V").output().is_ok()
+    {
+        let dut = td.path().join("tag.sv");
+        let tb = td.path().join("tb.sv");
+        let executable = td.path().join("sim");
+        std::fs::write(
+            &tb,
+            r#"
+module tb;
+  reg clk = 0, rst = 1, we = 0;
+  reg [8:0] wa = 0;
+  reg [7:0] ra0 = 0, ra1 = 0, di0 = 0, di1 = 0;
+  wire [8:0] do0, do1;
+  wire we0, we1;
+  wire [7:0] ao0, ao1;
+  tag_controller dut(clk, rst, we, wa, ra0, ra1, di0, di1, do0, do1, we0, we1, ao0, ao1);
+  initial begin
+    #1 rst = 0; #1;
+    if (do0[8] !== 1'b0) $fatal(1, "low reset did not clear tag");
+    rst = 1; we = 1; #1 clk = 1; #1 clk = 0; we = 0; #1;
+    if (do0[8] !== 1'b1) $fatal(1, "tag was not retained after reset release");
+    rst = 0; #1;
+    if (do0[8] !== 1'b0) $fatal(1, "reset must clear tag without a clock edge");
+    $finish;
+  end
+endmodule
+"#,
+        )
+        .unwrap();
+        for source in [
+            sv.as_str(),
+            include_str!("cvdp/tag_controller.sv"),
+            include_str!("cvdp/instruction_cache_controller.sv"),
+        ] {
+            std::fs::write(&dut, source).unwrap();
+            let out = std::process::Command::new("iverilog")
+                .args(["-g2012", "-gno-assertions", "-s", "tb", "-o"])
+                .arg(&executable)
+                .arg(&dut)
+                .arg(&tb)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "iverilog: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let out = std::process::Command::new("vvp")
+                .arg(&executable)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "reset simulation: {} {}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn bus_interface_preserves_transaction_methods() {
+    let td = tempfile::tempdir().unwrap();
+    let bus = td.path().join("Methods.arch");
+    std::fs::write(&bus, "bus Methods\n  param SELECT: const = 0;\n  tlm_method ping(): blocking;\n  generate_if SELECT\n    tlm_method read(addr: UInt<8>) -> UInt<16>: out_of_order tags 2;\n  generate_else\n    tlm_method write(data: UInt<8>): blocking;\n  end generate_if\nend bus Methods\n").unwrap();
+    let arch = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch)
+        .arg("build")
+        .arg(bus)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "build: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = td.path().join("Methods.archi");
+    let text = std::fs::read_to_string(&path).unwrap();
+    for fragment in [
+        "tlm_method ping(): blocking;",
+        "tlm_method read(addr: UInt<8>) -> UInt<16>: out_of_order tags 2;",
+        "tlm_method write(data: UInt<8>): blocking;",
+        "generate_else",
+    ] {
+        assert!(text.contains(fragment), "missing {fragment} in {text}");
+    }
+    let out = std::process::Command::new(arch)
+        .arg("check")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "check interface: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn bus_interface_preserves_conditional_members_for_autodiscovery() {
+    let td = tempfile::tempdir().unwrap();
+    let bus = td.path().join("Conditional.arch");
+    std::fs::write(&bus, "bus Conditional\n  param ENABLE: const = 0;\n  generate_if ENABLE\n    data: out UInt<8>;\n  generate_else\n    idle: out Bool;\n  end generate_if\nend bus Conditional\n").unwrap();
+    let arch = env!("CARGO_BIN_EXE_arch");
+    let output = std::process::Command::new(arch)
+        .arg("build")
+        .arg(&bus)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "build bus: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::remove_file(bus).unwrap();
+    let consumer = td.path().join("Consumer.arch");
+    std::fs::write(&consumer, "module Consumer\n  port b: initiator Conditional<ENABLE=1>;\n  comb b.data = 8'h5a; end comb\nend module Consumer\n").unwrap();
+    let output = std::process::Command::new(arch)
+        .arg("build")
+        .arg(&consumer)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "consume interface: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sv = std::fs::read_to_string(td.path().join("Consumer.sv")).unwrap();
+    assert!(sv.contains("b_data"), "enabled output missing: {sv}");
+    assert!(!sv.contains("b_idle"), "disabled output present: {sv}");
+    let consumer = td.path().join("Disabled.arch");
+    std::fs::write(&consumer, "module Disabled\n  port b: initiator Conditional<ENABLE=0>;\n  comb b.idle = true; end comb\nend module Disabled\n").unwrap();
+    let output = std::process::Command::new(arch)
+        .arg("build")
+        .arg(&consumer)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "consume else interface: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sv = std::fs::read_to_string(td.path().join("Disabled.sv")).unwrap();
+    assert!(
+        sv.contains("b_idle") && !sv.contains("b_data"),
+        "wrong conditional branch: {sv}"
+    );
+}
+
 /// `bus` body is parsed with bare `name: dir Type;` members, so the
 /// emitted interface tripped "'port' is a reserved keyword" on read-back.
 /// This guards the round-trip now that bus interfaces are auto-discovered.

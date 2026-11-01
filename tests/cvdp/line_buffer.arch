@@ -55,11 +55,11 @@ module line_buffer
         elsif i_mode == 2
           comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] =
             (pix_rows[((i_image_row_start.zext<8>() + wr.zext<8>()) < NS_ROW.zext<8>() ? (i_image_row_start.zext<8>() + wr.zext<8>()) : (NS_ROW - 1).zext<8>()).trunc<4>()] >>
-             ((NS_COLUMN.zext<8>() - 1 - ((i_image_col_start.zext<8>() + wc.zext<8>()) < NS_COLUMN.zext<8>() ? (i_image_col_start.zext<8>() + wc.zext<8>()) : (NS_COLUMN - 1).zext<8>())) * NBW_DATA.zext<8>())).trunc<NBW_DATA>();
+             ((NS_COLUMN.zext<8>() - 1 - ((i_image_col_start.zext<8>() + wc.zext<8>()) < NS_COLUMN.zext<8>() ? (i_image_col_start.zext<8>() + wc.zext<8>()) : (NS_COLUMN - 1).zext<9>())) * NBW_DATA.zext<8>())).trunc<NBW_DATA>();
         elsif i_mode == 3
           comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] =
             (pix_rows[((i_image_row_start.zext<8>() + wr.zext<8>()) < NS_ROW.zext<8>() ? (i_image_row_start.zext<8>() + wr.zext<8>()) : ((2 * NS_ROW - 1).zext<8>() - (i_image_row_start.zext<8>() + wr.zext<8>()))).trunc<4>()] >>
-             ((NS_COLUMN.zext<8>() - 1 - ((i_image_col_start.zext<8>() + wc.zext<8>()) < NS_COLUMN.zext<8>() ? (i_image_col_start.zext<8>() + wc.zext<8>()) : ((2 * NS_COLUMN - 1).zext<8>() - (i_image_col_start.zext<8>() + wc.zext<8>())))) * NBW_DATA.zext<8>())).trunc<NBW_DATA>();
+             ((NS_COLUMN.zext<8>() - 1 - ((i_image_col_start.zext<8>() + wc.zext<8>()) < NS_COLUMN.zext<8>() ? (i_image_col_start.zext<8>() + wc.zext<8>()).zext<10>() : ((2 * NS_COLUMN - 1).zext<8>() - (i_image_col_start.zext<8>() + wc.zext<8>())))) * NBW_DATA.zext<8>())).trunc<NBW_DATA>();
         elsif i_mode == 4
           comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] =
             (pix_rows[((i_image_row_start.zext<8>() + wr.zext<8>()) % NS_ROW.zext<8>()).trunc<4>()] >>

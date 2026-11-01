@@ -17,6 +17,6 @@ module TopModule
   end seq
 
   comb
-    q = clk ? q_pos : q_neg;
+    q = (clk != false) ? q_pos : q_neg;
   end comb
 end module TopModule

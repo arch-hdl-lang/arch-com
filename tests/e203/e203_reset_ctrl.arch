@@ -36,9 +36,9 @@ module e203_reset_ctrl
     // MASTER=1: in test_mode bypass synchronizer, else use rst_sync_r1
     // MASTER=0: just pass rst_n through directly
     if MASTER > 0
-      rst_sync_n = test_mode ? rst_n : rst_sync_r1;
+      rst_sync_n = test_mode ? (rst_n != false) : rst_sync_r1;
     else
-      rst_sync_n = rst_n;
+      rst_sync_n = rst_n != false;
     end if
 
     rst_core = rst_sync_n;

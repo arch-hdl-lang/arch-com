@@ -33,8 +33,8 @@ module sobel_filter
   wire magnitude: UInt<13>;
 
   comb
-    abs_gx = gx_r[10] ? unsigned(~gx_r + 1).trunc<11>() : unsigned(gx_r).trunc<11>();
-    abs_gy = gy_r[10] ? unsigned(~gy_r + 1).trunc<11>() : unsigned(gy_r).trunc<11>();
+    abs_gx = gx_r[10] ? unsigned(~gx_r + 1).trunc<11>() : unsigned(gx_r);
+    abs_gy = gy_r[10] ? unsigned(~gy_r + 1).trunc<11>() : unsigned(gy_r);
     magnitude = (abs_gx.zext<13>() + abs_gy.zext<13>()).trunc<13>();
   end comb
 
@@ -48,10 +48,10 @@ module sobel_filter
 
       // Sobel Gx: img[0][0] - img[0][2] + 2*img[1][0] - 2*img[1][2] + img[2][0] - img[2][2]
       // With p8=img[0][0]...p0=img[2][2]:
-      gx_r <= (signed(p8) - signed(p6) + (signed(p5) << 1) - (signed(p3) << 1) + signed(p2) - signed(p0)).trunc<11>();
+      gx_r <= (signed(p8) - signed(p6) + (signed(p5).sext<11>() << 1) - (signed(p3).sext<11>() << 1) + signed(p2) - signed(p0)).trunc<11>();
 
       // Sobel Gy: img[0][0] + 2*img[0][1] + img[0][2] - img[2][0] - 2*img[2][1] - img[2][2]
-      gy_r <= (signed(p8) + (signed(p7) << 1) + signed(p6) - signed(p2) - (signed(p1) << 1) - signed(p0)).trunc<11>();
+      gy_r <= (signed(p8) + (signed(p7).sext<11>() << 1) + signed(p6) - signed(p2) - (signed(p1).sext<11>() << 1) - signed(p0)).trunc<11>();
 
       // Threshold from PREVIOUS gx_r/gy_r (pipeline delay)
       edge_out_r <= magnitude > THRESHOLD.zext<13>() ? 8'hff : 8'h00;

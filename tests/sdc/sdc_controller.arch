@@ -52,8 +52,6 @@ module sdc_controller
 
   // Controller WB outputs
   wire new_cmd_w:     Bool;
-  wire d_write_w:     Bool;
-  wire d_read_w:      Bool;
   wire we_ack_w:      Bool;
   wire int_ack_w:     Bool;
   wire cmd_int_busy_w: Bool;
@@ -99,11 +97,8 @@ module sdc_controller
   wire dm_a_cmp_tx_w:     Bool;
   wire dm_re_s_rx_w:      Bool;
   wire dm_a_cmp_rx_w:     Bool;
-  wire dm_we_req_w:       Bool;
   wire dm_d_write_w:      Bool;
   wire dm_d_read_w:       Bool;
-  wire dm_cmd_arg_w:      UInt<32>;
-  wire dm_cmd_set_w:      UInt<16>;
   wire dm_start_tx_fifo_w: Bool;
   wire dm_start_rx_fifo_w: Bool;
   wire dm_sys_adr_w:      UInt<32>;

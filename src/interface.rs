@@ -174,8 +174,69 @@ pub(crate) fn emit_bus_interface(b: &BusDecl) -> String {
             type_str(&sig.ty)
         ));
     }
+    for method in &b.tlm_methods {
+        emit_bus_tlm_method(&mut s, method, "  ");
+    }
+    for group in &b.generates {
+        s.push_str(&format!("  generate_if {}\n", expr_str(&group.cond)));
+        for sig in &group.then_signals {
+            let dir = match sig.direction {
+                Direction::In => "in",
+                Direction::Out => "out",
+            };
+            s.push_str(&format!(
+                "    {}: {dir} {};\n",
+                sig.name.name,
+                type_str(&sig.ty)
+            ));
+        }
+        for method in &group.then_tlm_methods {
+            emit_bus_tlm_method(&mut s, method, "    ");
+        }
+        if !group.else_signals.is_empty() || !group.else_tlm_methods.is_empty() {
+            s.push_str("  generate_else\n");
+            for sig in &group.else_signals {
+                let dir = match sig.direction {
+                    Direction::In => "in",
+                    Direction::Out => "out",
+                };
+                s.push_str(&format!(
+                    "    {}: {dir} {};\n",
+                    sig.name.name,
+                    type_str(&sig.ty)
+                ));
+            }
+            for method in &group.else_tlm_methods {
+                emit_bus_tlm_method(&mut s, method, "    ");
+            }
+        }
+        s.push_str("  end generate_if\n");
+    }
     s.push_str(&format!("end bus {name}\n"));
     s
+}
+
+fn emit_bus_tlm_method(out: &mut String, method: &TlmMethodMeta, indent: &str) {
+    let args = method
+        .args
+        .iter()
+        .map(|(name, ty)| format!("{}: {}", name.name, type_str(ty)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ret = method
+        .ret
+        .as_ref()
+        .map(|ty| format!(" -> {}", type_str(ty)))
+        .unwrap_or_default();
+    let tags = method
+        .out_of_order_tags
+        .as_ref()
+        .map(|e| format!(" tags {}", expr_str(e)))
+        .unwrap_or_default();
+    out.push_str(&format!(
+        "{indent}tlm_method {}({args}){ret}: {}{tags};\n",
+        method.name.name, method.mode.name
+    ));
 }
 
 /// Generic emitter for constructs with name + params + ports (regfile, etc.)

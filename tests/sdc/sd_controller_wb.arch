@@ -88,7 +88,6 @@ module sd_controller_wb
   wire int_ack_w: Bool;
   // Combinational wb_ack (blocking in reference)
   wire wb_ack_comb: Bool;
-  wire wb_dat_o_r: UInt<32>;
 
   // Register address constants
   // argument=0x00, command=0x04, status=0x08, resp1=0x0c,
