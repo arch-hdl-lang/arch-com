@@ -42245,6 +42245,170 @@ end module StructDrivers
     }
 }
 
+/// #1118: a constant index followed by a struct field (`pr[1].value`) names
+/// one element. Writes to disjoint elements or fields from separate `seq`
+/// blocks are distinct drivers; any write that can reach the same bits still
+/// conflicts.
+#[test]
+fn test_seq_vec_struct_field_driver_ownership_1118() {
+    for (first, second, valid) in [
+        ("pr[0].value", "pr[1].value", true),
+        ("pr[0].value", "pr[0].reserved", true),
+        ("pr[1][0].value", "pr[0][0].value", true),
+        ("pr[idx].value", "pr[jdx].reserved", true),
+        ("pr[0].value", "pr[0].value", false),
+        ("pr[0].value", "pr[idx].value", false),
+        ("pr[0].value", "pr[0]", false),
+        ("pr[0].value", "pr[idx]", false),
+        ("pr[0].value", "pr", false),
+        ("pr[0].value[1]", "pr[0].value[1]", false),
+        ("pr[0].value[1]", "pr[0].value[2]", true),
+    ] {
+        let two_d = first.starts_with("pr[1][0]");
+        let ty = if two_d {
+            "Vec<Vec<PriorityReg, 2>, 2>"
+        } else {
+            "Vec<PriorityReg, 2>"
+        };
+        let rhs = |target: &str| match target {
+            "pr" => "pr_in",
+            "pr[0]" | "pr[idx]" => "pr_in[0]",
+            t if t.ends_with(".reserved") => "b",
+            t if t.ends_with(']') && t.contains(".value[") => "a[0]",
+            _ => "a",
+        };
+        let source = format!(
+            r#"
+struct PriorityReg
+  value: UInt<3>;
+  reserved: UInt<3>;
+end struct PriorityReg
+module StructVecDrivers
+  port clk: in Clock<SysDomain>;
+  port a: in UInt<3>;
+  port b: in UInt<3>;
+  port pr_in: in Vec<PriorityReg, 2>;
+  port idx: in UInt<1>;
+  port jdx: in UInt<1>;
+  port o: out Bool;
+  reg pr: {ty} reset none;
+  seq on clk rising
+    {first} <= {rhs_first};
+  end seq
+  seq on clk rising
+    {second} <= {rhs_second};
+  end seq
+  comb
+    o = idx == jdx;
+  end comb
+end module StructVecDrivers
+"#,
+            rhs_first = rhs(first),
+            rhs_second = rhs(second),
+        );
+        let result = typecheck_errors(&source);
+        if valid {
+            result.unwrap_or_else(|errs| {
+                panic!("{first} / {second}: disjoint writes are legal: {errs:?}")
+            });
+        } else {
+            let errs = result.expect_err(&format!("{first} / {second}: overlapping writes"));
+            assert!(
+                errs.iter().any(|e| e.contains("multiple drivers")),
+                "{first} / {second}: {errs:?}"
+            );
+        }
+    }
+}
+
+/// #1118, the shape that broke arch-ibex: a `generate_for` emits one `seq`
+/// block per element, each writing `pr[i].value` of a reset-bearing reg.
+#[test]
+fn test_generate_for_seq_vec_struct_field_1118() {
+    let source = r#"
+struct PriorityReg
+  value: UInt<3>;
+  reserved: UInt<29>;
+end struct PriorityReg
+module Plic
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port we: in Bool;
+  port addr: in UInt<4>;
+  port d: in UInt<3>;
+  port q: out UInt<3>;
+  reg pr: Vec<PriorityReg, 4> reset rst => PriorityReg { value: 0, reserved: 0 };
+  generate_for i in 0..3
+    seq on clk rising
+      if we and addr == i
+        pr[i].value <= d;
+      end if
+    end seq
+  end generate_for
+  comb
+    q = pr[2].value;
+  end comb
+end module Plic
+"#;
+    typecheck_errors(source).expect("per-element struct-field writes are distinct drivers");
+    // A module-scope block writing one of those elements still conflicts.
+    let same = source.replace(
+        "  comb\n    q = pr[2].value;",
+        "  seq on clk rising\n    pr[1].value <= d;\n  end seq\n  comb\n    q = pr[2].value;",
+    );
+    assert_ne!(same, source);
+    let errs = typecheck_errors(&same).expect_err("element 1 written by two blocks");
+    assert!(
+        errs.iter().any(|e| e.contains("multiple drivers")),
+        "{errs:?}"
+    );
+}
+
+/// #1118: `inst` outputs wired to disjoint struct fields of distinct vector
+/// elements are distinct drivers; the same element field twice still conflicts.
+#[test]
+fn test_inst_output_vec_struct_field_driver_1118() {
+    for (second, valid) in [("w[1].a", true), ("w[0].b", true), ("w[0].a", false)] {
+        let source = format!(
+            r#"
+struct P
+  a: UInt<3>;
+  b: UInt<3>;
+end struct P
+module Leaf
+  port x: in UInt<3>;
+  port y: out UInt<3>;
+  let y = x;
+end module Leaf
+module Top
+  port x: in UInt<3>;
+  port q: out UInt<3>;
+  wire w: Vec<P, 2>;
+  inst l0: Leaf
+    x <- x;
+    y -> w[0].a;
+  end inst l0
+  inst l1: Leaf
+    x <- x;
+    y -> {second};
+  end inst l1
+  let q = w[0].a;
+end module Top
+"#
+        );
+        let result = typecheck_errors(&source);
+        if valid {
+            result.unwrap_or_else(|errs| panic!("{second}: disjoint inst outputs: {errs:?}"));
+        } else {
+            let errs = result.expect_err("same element field from two insts");
+            assert!(
+                errs.iter().any(|e| e.contains("multiple drivers")),
+                "{errs:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn test_inst_input_resolution_in_preserved_generate_1074() {
     for (input, valid) in [("din[i]", true), ("dinn[i]", false)] {
