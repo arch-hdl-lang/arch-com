@@ -8253,7 +8253,211 @@ fn test_linklist_inst_in_module() {
     let (_warnings, overload_map) = checker.check().expect("type check error");
     let mut codegen = Codegen::new(&symbols, &ast, overload_map);
     let sv = codegen.generate();
+    assert!(
+        sv.contains("logic [2:0] _push_handle;"),
+        "missing correctly sized linklist output: {sv}"
+    );
     insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn linklist_implicit_output_resolves_child_width_override() {
+    let source = std::fs::read_to_string("examples/pkt_queue.arch")
+        .unwrap()
+        .replace(
+            "param DEPTH: const = 8;\n  param DATA",
+            "param DEPTH: const = 8;\n  param W: const = 3;\n  param DATA",
+        )
+        .replace(
+            "port resp_handle: out UInt<3>;",
+            "port resp_handle: out UInt<W>;",
+        )
+        .replace(
+            "param DEPTH = 8;\n    clk",
+            "param DEPTH = 8;\n    param W = 5;\n    clk",
+        );
+    let sv = compile_to_sv(&source);
+    assert!(
+        sv.contains("logic [4:0] _push_handle;"),
+        "output must use the child override: {sv}"
+    );
+}
+
+#[test]
+fn linklist_implicit_output_resolves_chained_parameter_defaults() {
+    let source = std::fs::read_to_string("examples/pkt_queue.arch").unwrap()
+        .replace("param DEPTH: const = 8;\n  param DATA", "param DEPTH: const = 8;\n  param BASE: const = 2;\n  param W: const = BASE + 1;\n  param DATA")
+        .replace("port resp_handle: out UInt<3>;", "port resp_handle: out UInt<W>;")
+        .replace("param DEPTH = 8;\n    clk", "param DEPTH = 8;\n    param BASE = 4;\n    clk");
+    let sv = compile_to_sv(&source);
+    let decl = sv
+        .lines()
+        .find(|line| line.contains("logic") && line.contains("_push_handle;"))
+        .expect("missing output declaration");
+    assert!(
+        !decl.contains("BASE") && !decl.contains("W"),
+        "child parameter leaked into parent: {decl}"
+    );
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("linked.sv");
+        std::fs::write(&path, sv).unwrap();
+        let out = std::process::Command::new("iverilog")
+            .args(["-g2012", "-s", "PacketQueue", "-o"])
+            .arg(dir.path().join("sim"))
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "iverilog: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn linklist_implicit_output_resolves_default_type_parameter() {
+    let source = std::fs::read_to_string("examples/pkt_queue.arch")
+        .unwrap()
+        .replace(
+            "delete_head_resp_data     -> pop_data;",
+            "delete_head_resp_data     -> _pop_data;",
+        )
+        .replace(
+            "  end inst q\n",
+            "  end inst q\n  let pop_data = _pop_data;\n",
+        );
+    let sv = compile_to_sv(&source);
+    assert!(
+        sv.contains("logic [31:0] _pop_data;"),
+        "output must use the child type parameter: {sv}"
+    );
+}
+
+#[test]
+fn linklist_output_type_override_uses_parent_parameter_scope() {
+    let source = std::fs::read_to_string("examples/pkt_queue.arch")
+        .unwrap()
+        .replace(
+            "param DEPTH: const = 8;\n  param DATA",
+            "param DEPTH: const = 8;\n  param W: const = 3;\n  param DATA",
+        )
+        .replace(
+            "module PacketQueue\n  param DEPTH: const = 8;",
+            "module PacketQueue\n  param DEPTH: const = 8;\n  param W: const = 32;",
+        )
+        .replace(
+            "param DEPTH = 8;\n    clk",
+            "param DEPTH = 8;\n    param DATA = UInt<W>;\n    clk",
+        )
+        .replace(
+            "delete_head_resp_data     -> pop_data;",
+            "delete_head_resp_data     -> _pop_data;",
+        )
+        .replace(
+            "  end inst q\n",
+            "  end inst q\n  let pop_data = _pop_data;\n",
+        );
+    let sv = compile_to_sv(&source);
+    assert!(
+        sv.contains("logic [W-1:0] _pop_data;") || sv.contains("logic [(W)-1:0] _pop_data;"),
+        "type override must refer to parent W: {sv}"
+    );
+}
+
+#[test]
+fn synchronizer_implicit_output_uses_width_override() {
+    let source = r#"
+domain Src
+  freq_mhz: 100
+end domain Src
+domain Dst
+  freq_mhz: 200
+end domain Dst
+synchronizer SyncUnit
+  kind ff;
+  param STAGES: const = 2;
+  param W: const = 3;
+  port src_clk: in Clock<Src>;
+  port dst_clk: in Clock<Dst>;
+  port data_in: in UInt<W>;
+  port data_out: out UInt<W>;
+end synchronizer SyncUnit
+module M
+  port src_clk: in Clock<Src>;
+  port dst_clk: in Clock<Dst>;
+  port data: in UInt<8>;
+  port result: out UInt<8>;
+  inst s: SyncUnit
+    param W = 8;
+    src_clk <- src_clk;
+    dst_clk <- dst_clk;
+    data_in <- data;
+    data_out -> synced;
+  end inst s
+  let result = synced;
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [7:0] synced;"),
+        "missing correctly sized wire: {sv}"
+    );
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sync.sv");
+        std::fs::write(&path, sv).unwrap();
+        let out = std::process::Command::new("iverilog")
+            .args(["-g2012", "-s", "M", "-o"])
+            .arg(dir.path().join("sim"))
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "iverilog: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn synchronizer_output_wire_is_declared_for_strict_frontends() {
+    let source = include_str!("../tests/rdc/rdc_h2_single_reset_sync_ok.arch");
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic rst_a;"),
+        "missing synchronizer output declaration: {sv}"
+    );
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sync.sv");
+        std::fs::write(&path, sv).unwrap();
+        let output = std::process::Command::new("iverilog")
+            .args(["-g2012", "-s", "M", "-o"])
+            .arg(dir.path().join("sim"))
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "iverilog: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -36240,6 +36444,186 @@ fn bus_port_type_auto_discovers_sibling_definition() {
 
 /// The `.archi` bus interface emitted by `arch build` must parse back in —
 /// `emit_bus_interface` previously wrote `port name: ...` members, but a
+#[test]
+fn cvdp_cache_tag_reset_is_active_low_and_async() {
+    let tag = include_str!("cvdp/tag_controller.arch");
+    let cache = include_str!("cvdp/instruction_cache_controller.arch");
+    let td = tempfile::tempdir().unwrap();
+    let tag_path = td.path().join("tag_controller.arch");
+    let cache_path = td.path().join("instruction_cache_controller.arch");
+    std::fs::write(&tag_path, tag).unwrap();
+    std::fs::write(&cache_path, cache).unwrap();
+    let arch = env!("CARGO_BIN_EXE_arch");
+    let output = std::process::Command::new(arch)
+        .arg("check")
+        .arg(&cache_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cache reset connection: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let sv = strip_auto_handshake_sva(&compile_to_sv(tag));
+    assert!(
+        sv.contains("negedge rst"),
+        "tag reset must assert asynchronously low: {sv}"
+    );
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok()
+        && std::process::Command::new("vvp").arg("-V").output().is_ok()
+    {
+        let dut = td.path().join("tag.sv");
+        let tb = td.path().join("tb.sv");
+        let executable = td.path().join("sim");
+        std::fs::write(
+            &tb,
+            r#"
+module tb;
+  reg clk = 0, rst = 1, we = 0;
+  reg [8:0] wa = 0;
+  reg [7:0] ra0 = 0, ra1 = 0, di0 = 0, di1 = 0;
+  wire [8:0] do0, do1;
+  wire we0, we1;
+  wire [7:0] ao0, ao1;
+  tag_controller dut(clk, rst, we, wa, ra0, ra1, di0, di1, do0, do1, we0, we1, ao0, ao1);
+  initial begin
+    #1 rst = 0; #1;
+    if (do0[8] !== 1'b0) $fatal(1, "low reset did not clear tag");
+    rst = 1; we = 1; #1 clk = 1; #1 clk = 0; we = 0; #1;
+    if (do0[8] !== 1'b1) $fatal(1, "tag was not retained after reset release");
+    rst = 0; #1;
+    if (do0[8] !== 1'b0) $fatal(1, "reset must clear tag without a clock edge");
+    $finish;
+  end
+endmodule
+"#,
+        )
+        .unwrap();
+        for source in [
+            sv.as_str(),
+            include_str!("cvdp/tag_controller.sv"),
+            include_str!("cvdp/instruction_cache_controller.sv"),
+        ] {
+            std::fs::write(&dut, source).unwrap();
+            let out = std::process::Command::new("iverilog")
+                .args(["-g2012", "-gno-assertions", "-s", "tb", "-o"])
+                .arg(&executable)
+                .arg(&dut)
+                .arg(&tb)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "iverilog: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let out = std::process::Command::new("vvp")
+                .arg(&executable)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "reset simulation: {} {}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn bus_interface_preserves_transaction_methods() {
+    let td = tempfile::tempdir().unwrap();
+    let bus = td.path().join("Methods.arch");
+    std::fs::write(&bus, "bus Methods\n  param SELECT: const = 0;\n  tlm_method ping(): blocking;\n  generate_if SELECT\n    tlm_method read(addr: UInt<8>) -> UInt<16>: out_of_order tags 2;\n  generate_else\n    tlm_method write(data: UInt<8>): blocking;\n  end generate_if\nend bus Methods\n").unwrap();
+    let arch = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch)
+        .arg("build")
+        .arg(bus)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "build: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = td.path().join("Methods.archi");
+    let text = std::fs::read_to_string(&path).unwrap();
+    for fragment in [
+        "tlm_method ping(): blocking;",
+        "tlm_method read(addr: UInt<8>) -> UInt<16>: out_of_order tags 2;",
+        "tlm_method write(data: UInt<8>): blocking;",
+        "generate_else",
+    ] {
+        assert!(text.contains(fragment), "missing {fragment} in {text}");
+    }
+    let out = std::process::Command::new(arch)
+        .arg("check")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "check interface: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn bus_interface_preserves_conditional_members_for_autodiscovery() {
+    let td = tempfile::tempdir().unwrap();
+    let bus = td.path().join("Conditional.arch");
+    std::fs::write(&bus, "bus Conditional\n  param ENABLE: const = 0;\n  generate_if ENABLE\n    data: out UInt<8>;\n  generate_else\n    idle: out Bool;\n  end generate_if\nend bus Conditional\n").unwrap();
+    let arch = env!("CARGO_BIN_EXE_arch");
+    let output = std::process::Command::new(arch)
+        .arg("build")
+        .arg(&bus)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "build bus: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::remove_file(bus).unwrap();
+    let consumer = td.path().join("Consumer.arch");
+    std::fs::write(&consumer, "module Consumer\n  port b: initiator Conditional<ENABLE=1>;\n  comb b.data = 8'h5a; end comb\nend module Consumer\n").unwrap();
+    let output = std::process::Command::new(arch)
+        .arg("build")
+        .arg(&consumer)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "consume interface: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sv = std::fs::read_to_string(td.path().join("Consumer.sv")).unwrap();
+    assert!(sv.contains("b_data"), "enabled output missing: {sv}");
+    assert!(!sv.contains("b_idle"), "disabled output present: {sv}");
+    let consumer = td.path().join("Disabled.arch");
+    std::fs::write(&consumer, "module Disabled\n  port b: initiator Conditional<ENABLE=0>;\n  comb b.idle = true; end comb\nend module Disabled\n").unwrap();
+    let output = std::process::Command::new(arch)
+        .arg("build")
+        .arg(&consumer)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "consume else interface: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sv = std::fs::read_to_string(td.path().join("Disabled.sv")).unwrap();
+    assert!(
+        sv.contains("b_idle") && !sv.contains("b_data"),
+        "wrong conditional branch: {sv}"
+    );
+}
+
 /// `bus` body is parsed with bare `name: dir Type;` members, so the
 /// emitted interface tripped "'port' is a reserved keyword" on read-back.
 /// This guards the round-trip now that bus interfaces are auto-discovered.
@@ -41853,6 +42237,170 @@ end module StructDrivers
             result.expect("disjoint fields or writes in one block are legal");
         } else {
             let errs = result.expect_err("overlapping sequential writers must fail");
+            assert!(
+                errs.iter().any(|e| e.contains("multiple drivers")),
+                "{errs:?}"
+            );
+        }
+    }
+}
+
+/// #1118: a constant index followed by a struct field (`pr[1].value`) names
+/// one element. Writes to disjoint elements or fields from separate `seq`
+/// blocks are distinct drivers; any write that can reach the same bits still
+/// conflicts.
+#[test]
+fn test_seq_vec_struct_field_driver_ownership_1118() {
+    for (first, second, valid) in [
+        ("pr[0].value", "pr[1].value", true),
+        ("pr[0].value", "pr[0].reserved", true),
+        ("pr[1][0].value", "pr[0][0].value", true),
+        ("pr[idx].value", "pr[jdx].reserved", true),
+        ("pr[0].value", "pr[0].value", false),
+        ("pr[0].value", "pr[idx].value", false),
+        ("pr[0].value", "pr[0]", false),
+        ("pr[0].value", "pr[idx]", false),
+        ("pr[0].value", "pr", false),
+        ("pr[0].value[1]", "pr[0].value[1]", false),
+        ("pr[0].value[1]", "pr[0].value[2]", true),
+    ] {
+        let two_d = first.starts_with("pr[1][0]");
+        let ty = if two_d {
+            "Vec<Vec<PriorityReg, 2>, 2>"
+        } else {
+            "Vec<PriorityReg, 2>"
+        };
+        let rhs = |target: &str| match target {
+            "pr" => "pr_in",
+            "pr[0]" | "pr[idx]" => "pr_in[0]",
+            t if t.ends_with(".reserved") => "b",
+            t if t.ends_with(']') && t.contains(".value[") => "a[0]",
+            _ => "a",
+        };
+        let source = format!(
+            r#"
+struct PriorityReg
+  value: UInt<3>;
+  reserved: UInt<3>;
+end struct PriorityReg
+module StructVecDrivers
+  port clk: in Clock<SysDomain>;
+  port a: in UInt<3>;
+  port b: in UInt<3>;
+  port pr_in: in Vec<PriorityReg, 2>;
+  port idx: in UInt<1>;
+  port jdx: in UInt<1>;
+  port o: out Bool;
+  reg pr: {ty} reset none;
+  seq on clk rising
+    {first} <= {rhs_first};
+  end seq
+  seq on clk rising
+    {second} <= {rhs_second};
+  end seq
+  comb
+    o = idx == jdx;
+  end comb
+end module StructVecDrivers
+"#,
+            rhs_first = rhs(first),
+            rhs_second = rhs(second),
+        );
+        let result = typecheck_errors(&source);
+        if valid {
+            result.unwrap_or_else(|errs| {
+                panic!("{first} / {second}: disjoint writes are legal: {errs:?}")
+            });
+        } else {
+            let errs = result.expect_err(&format!("{first} / {second}: overlapping writes"));
+            assert!(
+                errs.iter().any(|e| e.contains("multiple drivers")),
+                "{first} / {second}: {errs:?}"
+            );
+        }
+    }
+}
+
+/// #1118, the shape that broke arch-ibex: a `generate_for` emits one `seq`
+/// block per element, each writing `pr[i].value` of a reset-bearing reg.
+#[test]
+fn test_generate_for_seq_vec_struct_field_1118() {
+    let source = r#"
+struct PriorityReg
+  value: UInt<3>;
+  reserved: UInt<29>;
+end struct PriorityReg
+module Plic
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port we: in Bool;
+  port addr: in UInt<4>;
+  port d: in UInt<3>;
+  port q: out UInt<3>;
+  reg pr: Vec<PriorityReg, 4> reset rst => PriorityReg { value: 0, reserved: 0 };
+  generate_for i in 0..3
+    seq on clk rising
+      if we and addr == i
+        pr[i].value <= d;
+      end if
+    end seq
+  end generate_for
+  comb
+    q = pr[2].value;
+  end comb
+end module Plic
+"#;
+    typecheck_errors(source).expect("per-element struct-field writes are distinct drivers");
+    // A module-scope block writing one of those elements still conflicts.
+    let same = source.replace(
+        "  comb\n    q = pr[2].value;",
+        "  seq on clk rising\n    pr[1].value <= d;\n  end seq\n  comb\n    q = pr[2].value;",
+    );
+    assert_ne!(same, source);
+    let errs = typecheck_errors(&same).expect_err("element 1 written by two blocks");
+    assert!(
+        errs.iter().any(|e| e.contains("multiple drivers")),
+        "{errs:?}"
+    );
+}
+
+/// #1118: `inst` outputs wired to disjoint struct fields of distinct vector
+/// elements are distinct drivers; the same element field twice still conflicts.
+#[test]
+fn test_inst_output_vec_struct_field_driver_1118() {
+    for (second, valid) in [("w[1].a", true), ("w[0].b", true), ("w[0].a", false)] {
+        let source = format!(
+            r#"
+struct P
+  a: UInt<3>;
+  b: UInt<3>;
+end struct P
+module Leaf
+  port x: in UInt<3>;
+  port y: out UInt<3>;
+  let y = x;
+end module Leaf
+module Top
+  port x: in UInt<3>;
+  port q: out UInt<3>;
+  wire w: Vec<P, 2>;
+  inst l0: Leaf
+    x <- x;
+    y -> w[0].a;
+  end inst l0
+  inst l1: Leaf
+    x <- x;
+    y -> {second};
+  end inst l1
+  let q = w[0].a;
+end module Top
+"#
+        );
+        let result = typecheck_errors(&source);
+        if valid {
+            result.unwrap_or_else(|errs| panic!("{second}: disjoint inst outputs: {errs:?}"));
+        } else {
+            let errs = result.expect_err("same element field from two insts");
             assert!(
                 errs.iter().any(|e| e.contains("multiple drivers")),
                 "{errs:?}"

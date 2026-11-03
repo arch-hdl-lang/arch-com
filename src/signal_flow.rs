@@ -62,6 +62,105 @@ pub struct DriveEntry {
     pub block_id: usize,
     pub span: Span,
     pub kind: DriveKind,
+    /// Every distinct element path this block writes under the entry's key.
+    /// Two entries under one key conflict only when some pair of their paths
+    /// can name the same bits (see [`paths_overlap`]).
+    pub paths: Vec<DrivePath>,
+}
+
+/// One step of a driven element path.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PathSeg {
+    /// The signal name (first segment) or a struct/bus field.
+    Name(String),
+    /// A compile-time-constant index.
+    Index(u64),
+    /// A non-constant index, or one deliberately coarsened: any element.
+    AnyIndex,
+}
+
+/// The element an assignment target names: `pr[1].value` is
+/// `[Name(pr), Index(1), Name(value)]`.  A bit/part-select ends the path, so a
+/// sliced write conservatively covers the whole element it slices.
+pub type DrivePath = Vec<PathSeg>;
+
+/// Builds the element path of an assignment target.  With `coarse`, every
+/// index becomes [`PathSeg::AnyIndex`]: `comb` blocks keep the conservative
+/// whole-array rule (`test_multi_driver_vec_index_from_two_blocks_errors`).
+fn drive_path(expr: &Expr, coarse: bool) -> Option<DrivePath> {
+    fn walk(expr: &Expr, coarse: bool) -> Option<(DrivePath, bool)> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some((vec![PathSeg::Name(name.clone())], false)),
+            ExprKind::Index(base, idx) => {
+                let (mut path, sliced) = walk(base, coarse)?;
+                if !sliced {
+                    path.push(match const_index_value(idx) {
+                        Some(v) if !coarse => PathSeg::Index(v),
+                        _ => PathSeg::AnyIndex,
+                    });
+                }
+                Some((path, sliced))
+            }
+            ExprKind::FieldAccess(base, field) => {
+                let (mut path, sliced) = walk(base, coarse)?;
+                if !sliced {
+                    path.push(PathSeg::Name(field.name.clone()));
+                }
+                Some((path, sliced))
+            }
+            ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => {
+                walk(base, coarse).map(|(path, _)| (path, true))
+            }
+            ExprKind::LatencyAt(base, _) => walk(base, coarse),
+            _ => None,
+        }
+    }
+    walk(expr, coarse).map(|(path, _)| path)
+}
+
+/// True when two element paths can name the same bits.  Paths are compared
+/// over their common prefix: a shorter path covers everything below it, and
+/// [`PathSeg::AnyIndex`] matches any index.  Only a differing constant index
+/// or field proves the writes disjoint.
+fn paths_overlap(a: &[PathSeg], b: &[PathSeg]) -> bool {
+    a.iter().zip(b).all(|pair| match pair {
+        (PathSeg::Index(x), PathSeg::Index(y)) => x == y,
+        (PathSeg::Name(x), PathSeg::Name(y)) => x == y,
+        _ => true,
+    })
+}
+
+/// The driver keys naming strict ancestors of `path` (`pr[0].value` gives
+/// `pr` and `pr[0]`).  Stops at a non-constant index, past which no key
+/// names one specific ancestor.
+fn path_key_prefixes(path: &[PathSeg]) -> Vec<String> {
+    let mut prefixes = Vec::new();
+    let mut key = String::new();
+    for (i, seg) in path.iter().enumerate() {
+        if i > 0 {
+            prefixes.push(key.clone());
+        }
+        match seg {
+            PathSeg::Name(n) if i == 0 => key.push_str(n),
+            PathSeg::Name(n) => {
+                key.push('.');
+                key.push_str(n);
+            }
+            PathSeg::Index(v) => key.push_str(&format!("[{v}]")),
+            PathSeg::AnyIndex => break,
+        }
+    }
+    prefixes
+}
+
+/// True when two drive records can write the same bits.  A record without a
+/// path (never produced today) is assumed to overlap everything.
+fn entries_overlap(a: &DriveEntry, b: &DriveEntry) -> bool {
+    a.paths.is_empty()
+        || b.paths.is_empty()
+        || a.paths
+            .iter()
+            .any(|pa| b.paths.iter().any(|pb| paths_overlap(pa, pb)))
 }
 
 /// Extracts the integer value of a compile-time-constant literal index.
@@ -161,7 +260,7 @@ fn inst_conn_driver_name(expr: &Expr) -> Option<String> {
 }
 
 /// Resolve one `inst` output connection to the parent signal name it drives,
-/// returning `(driver_key, span)`, or `None` when the connection drives
+/// returning `(driver_key, span, element_path)`, or `None` when the connection drives
 /// nothing in the parent module: a non-output connection, a declared
 /// bus/struct wire shared by design, a bus port, or a child INPUT port
 /// reached with `->` (the SV port map only reads the parent signal there).
@@ -173,7 +272,7 @@ fn inst_output_driver(
     conn: &Connection,
     named_wire_names: &HashSet<&str>,
     source: &SourceFile,
-) -> Option<(String, Span)> {
+) -> Option<(String, Span, Option<DrivePath>)> {
     if conn.direction != ConnectDir::Output {
         return None;
     }
@@ -195,7 +294,7 @@ fn inst_output_driver(
     if is_input_port_in_child(inst_module_name, &conn.port_name.name, source) {
         return None;
     }
-    Some((name, conn.span))
+    Some((name, conn.span, drive_path(&conn.signal, false)))
 }
 
 /// Build the module's const params mapped to their default integer values,
@@ -270,48 +369,63 @@ fn target_mentions_loop_var(expr: &Expr, loop_var: &str) -> bool {
 /// Collect every distinct signal name driven by `stmts`, storing the
 /// span of the first assignment to each name.
 fn collect_stmts(stmts: &[Stmt], out: &mut HashMap<String, Span>) {
-    for s in stmts {
-        collect_one_stmt(s, out, false);
+    for_each_assign(stmts, &mut |target, span| {
+        if let Some(name) = lhs_base_name(target) {
+            out.entry(name).or_insert(span);
+        }
+    });
+}
+
+/// One block's drive targets: driver key -> (span of the first assignment,
+/// distinct element paths written under that key).
+type BlockTargets = HashMap<String, (Span, Vec<DrivePath>)>;
+
+fn add_block_target(out: &mut BlockTargets, name: String, span: Span, path: Option<DrivePath>) {
+    let (_, paths) = out.entry(name).or_insert((span, Vec::new()));
+    if let Some(path) = path {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
     }
 }
 
-fn collect_seq_stmts(stmts: &[Stmt], out: &mut HashMap<String, Span>) {
-    for s in stmts {
-        collect_one_stmt(s, out, true);
-    }
+/// Drive targets of a `comb` (`sequential == false`) or `seq`/`latch` block.
+/// Sequential keys retain leading constant indices and element paths keep
+/// every constant index, so a generate loop's per-element `always_ff` blocks
+/// stay distinct drivers; `comb` keys and paths are coarse.
+fn collect_block_targets(stmts: &[Stmt], sequential: bool, out: &mut BlockTargets) {
+    for_each_assign(stmts, &mut |target, span| {
+        let name = if sequential {
+            inst_conn_driver_name(target)
+        } else {
+            lhs_base_name(target)
+        };
+        if let Some(name) = name {
+            add_block_target(out, name, span, drive_path(target, !sequential));
+        }
+    });
 }
 
-fn collect_one_stmt(stmt: &Stmt, out: &mut HashMap<String, Span>, sequential: bool) {
-    match stmt {
-        Stmt::Assign(a) => {
-            let name = if sequential {
-                inst_conn_driver_name(&a.target)
-            } else {
-                lhs_base_name(&a.target)
-            };
-            if let Some(name) = name {
-                out.entry(name).or_insert(a.span);
-            }
-        }
-        Stmt::IfElse(ie) => {
-            collect_nested_stmts(&ie.then_stmts, out, sequential);
-            collect_nested_stmts(&ie.else_stmts, out, sequential);
-        }
-        Stmt::Match(ms) => {
-            for arm in &ms.arms {
-                collect_nested_stmts(&arm.body, out, sequential);
-            }
-        }
-        Stmt::For(fl) => collect_nested_stmts(&fl.body, out, sequential),
-        Stmt::Init(ib) => collect_nested_stmts(&ib.body, out, sequential),
-        Stmt::DoUntil { body, .. } => collect_nested_stmts(body, out, sequential),
-        Stmt::Log(_) | Stmt::WaitUntil(_, _) => {}
-    }
-}
-
-fn collect_nested_stmts(stmts: &[Stmt], out: &mut HashMap<String, Span>, sequential: bool) {
+/// Calls `f` with the target and span of every assignment in `stmts`,
+/// including those nested in control flow.
+fn for_each_assign(stmts: &[Stmt], f: &mut impl FnMut(&Expr, Span)) {
     for stmt in stmts {
-        collect_one_stmt(stmt, out, sequential);
+        match stmt {
+            Stmt::Assign(a) => f(&a.target, a.span),
+            Stmt::IfElse(ie) => {
+                for_each_assign(&ie.then_stmts, f);
+                for_each_assign(&ie.else_stmts, f);
+            }
+            Stmt::Match(ms) => {
+                for arm in &ms.arms {
+                    for_each_assign(&arm.body, f);
+                }
+            }
+            Stmt::For(fl) => for_each_assign(&fl.body, f),
+            Stmt::Init(ib) => for_each_assign(&ib.body, f),
+            Stmt::DoUntil { body, .. } => for_each_assign(body, f),
+            Stmt::Log(_) | Stmt::WaitUntil(_, _) => {}
+        }
     }
 }
 
@@ -391,21 +505,23 @@ pub fn collect_module_drivers(
     for (block_id, item) in m.body.iter().enumerate() {
         // Collect signals driven by this block (one entry per signal —
         // deduplicates repeated assignments inside the same block).
-        let (kind, block_targets): (DriveKind, HashMap<String, Span>) = match item {
+        let (kind, block_targets): (DriveKind, BlockTargets) = match item {
             ModuleBodyItem::CombBlock(b) => {
                 let mut t = HashMap::new();
-                collect_stmts(&b.stmts, &mut t);
+                collect_block_targets(&b.stmts, false, &mut t);
                 (DriveKind::Comb, t)
             }
             // A `let` is a continuous assignment of its name(s).
             ModuleBodyItem::LetBinding(lb) => {
                 let mut t = HashMap::new();
-                if lb.destructure_fields.is_empty() {
-                    t.insert(lb.name.name.clone(), lb.span);
+                let names = if lb.destructure_fields.is_empty() {
+                    std::slice::from_ref(&lb.name)
                 } else {
-                    for f in &lb.destructure_fields {
-                        t.insert(f.name.clone(), lb.span);
-                    }
+                    lb.destructure_fields.as_slice()
+                };
+                for n in names {
+                    let path = vec![PathSeg::Name(n.name.clone())];
+                    add_block_target(&mut t, n.name.clone(), lb.span, Some(path));
                 }
                 (DriveKind::Comb, t)
             }
@@ -413,7 +529,7 @@ pub fn collect_module_drivers(
             // Preserve that exemption without exempting user-written seq blocks.
             ModuleBodyItem::RegBlock(rb) => {
                 let mut t = HashMap::new();
-                collect_seq_stmts(&rb.stmts, &mut t);
+                collect_block_targets(&rb.stmts, true, &mut t);
                 (
                     if rb.compiler_generated {
                         DriveKind::GeneratedSeq
@@ -426,7 +542,7 @@ pub fn collect_module_drivers(
             // Latch blocks: same treatment as seq blocks.
             ModuleBodyItem::LatchBlock(lb) => {
                 let mut t = HashMap::new();
-                collect_seq_stmts(&lb.stmts, &mut t);
+                collect_block_targets(&lb.stmts, true, &mut t);
                 (DriveKind::Seq, t)
             }
             // Thread items are only present at typecheck time when threads
@@ -437,10 +553,10 @@ pub fn collect_module_drivers(
             ModuleBodyItem::Inst(inst) => {
                 let mut t = HashMap::new();
                 for conn in &inst.connections {
-                    if let Some((name, span)) =
+                    if let Some((name, span, path)) =
                         inst_output_driver(&inst.module_name.name, conn, &named_wire_names, source)
                     {
-                        t.entry(name).or_insert(span);
+                        add_block_target(&mut t, name, span, path);
                     }
                 }
                 (DriveKind::Inst, t)
@@ -472,7 +588,7 @@ pub fn collect_module_drivers(
                 for gi in &gf.items {
                     if let GenItem::Inst(inst) = gi {
                         for conn in &inst.connections {
-                            let Some((name, span)) = inst_output_driver(
+                            let Some((name, span, path)) = inst_output_driver(
                                 &inst.module_name.name,
                                 conn,
                                 &named_wire_names,
@@ -482,11 +598,13 @@ pub fn collect_module_drivers(
                             };
                             let varies = target_mentions_loop_var(&conn.signal, &gf.var.name);
                             let self_conflict = !varies && iters.map(|n| n >= 2).unwrap_or(false);
+                            let paths: Vec<DrivePath> = path.into_iter().collect();
                             let list = drivers.entry(name).or_default();
                             list.push(DriveEntry {
                                 block_id,
                                 span,
                                 kind: DriveKind::Inst,
+                                paths: paths.clone(),
                             });
                             if self_conflict {
                                 // Same net driven on >= 2 iterations: record a
@@ -496,6 +614,7 @@ pub fn collect_module_drivers(
                                     block_id,
                                     span,
                                     kind: DriveKind::Inst,
+                                    paths,
                                 });
                             }
                         }
@@ -515,11 +634,12 @@ pub fn collect_module_drivers(
             | ModuleBodyItem::TypeAlias(_) => continue,
         };
 
-        for (name, span) in block_targets {
+        for (name, (span, paths)) in block_targets {
             drivers.entry(name).or_default().push(DriveEntry {
                 block_id,
                 span,
                 kind,
+                paths,
             });
         }
     }
@@ -555,48 +675,74 @@ pub fn check_multi_driver(
         };
         // An indexed or field write aliases its enclosing aggregate, but not
         // a sibling element or field. Look up only ancestor keys: large lowered
-        // modules must not pay for an all-pairs driver scan.
+        // modules must not pay for an all-pairs driver scan. The key drops an
+        // index that precedes a field (`pr[0].value` keys as `pr.value`), so
+        // the element paths also name ancestors (`pr[0]`).
+        let mut ancestors: Vec<String> = name
+            .match_indices(['[', '.'])
+            .map(|(offset, _)| name[..offset].to_string())
+            .collect();
+        for path in entries.iter().flat_map(|e| &e.paths) {
+            for prefix in path_key_prefixes(path) {
+                if prefix != *name && !ancestors.contains(&prefix) {
+                    ancestors.push(prefix);
+                }
+            }
+        }
         let mut overlapping: Vec<&DriveEntry> = entries.iter().collect();
-        for (offset, _) in name.match_indices(['[', '.']) {
-            if let Some(parent) = drivers.get(&name[..offset]) {
+        for ancestor in &ancestors {
+            if let Some(parent) = drivers.get(ancestor) {
                 if has_seq(entries) || has_seq(parent) {
                     overlapping.extend(parent);
                 }
             }
         }
         let entries = overlapping;
-        let continuous: Vec<&DriveEntry> = entries
-            .iter()
-            .filter(|e| matches!(e.kind, DriveKind::Comb | DriveKind::Inst))
-            .copied()
-            .collect();
-        let mut seq_blocks = HashSet::new();
-        let sequential: Vec<&DriveEntry> = entries
-            .iter()
-            .filter(|e| matches!(e.kind, DriveKind::Seq | DriveKind::GeneratedSeq))
-            .filter(|e| seq_blocks.insert(e.block_id))
-            .copied()
-            .collect();
-        let report_span =
-            if sequential.len() >= 2 && sequential.iter().any(|e| e.kind == DriveKind::Seq) {
-                sequential
+        let is_seq = |e: &DriveEntry| matches!(e.kind, DriveKind::Seq | DriveKind::GeneratedSeq);
+        // A key groups writes that may alias, but only records whose element
+        // paths overlap actually conflict: `pr[1].value` and `pr[2].value`
+        // share the key `pr.value` yet name disjoint bits (#1118).
+        let conflicting_pair = |accept: &dyn Fn(&DriveEntry, &DriveEntry) -> bool| {
+            entries.iter().enumerate().find_map(|(i, a)| {
+                entries[i + 1..]
                     .iter()
-                    .find(|e| e.kind == DriveKind::Seq)
-                    .map(|e| e.span)
-            } else if continuous.len() >= 2 {
-                Some(continuous[1].span)
-            } else if entries.iter().any(|e| e.kind == DriveKind::Inst) {
-                // Seq/latch target that an `inst` output also drives: report at
-                // the seq/latch write. That is always user-written, whereas the
-                // inst may be compiler-generated (a lowered `thread` lives in a
-                // `_<Module>_threads` child, whose inst has no source span).
-                entries
-                    .iter()
-                    .find(|e| matches!(e.kind, DriveKind::Seq | DriveKind::GeneratedSeq))
-                    .map(|e| e.span)
+                    .find(|b| accept(a, b) && entries_overlap(a, b))
+                    .map(|b| (*a, *b))
+            })
+        };
+        // Two sequential blocks, at least one user-written. Report at the
+        // user-written block.
+        let seq_conflict = conflicting_pair(&|a, b| {
+            is_seq(a)
+                && is_seq(b)
+                && a.block_id != b.block_id
+                && (a.kind == DriveKind::Seq || b.kind == DriveKind::Seq)
+        })
+        .map(|(a, b)| {
+            if a.kind == DriveKind::Seq {
+                a.span
             } else {
-                None
-            };
+                b.span
+            }
+        });
+        // Two continuous drivers (a surviving generate loop records a
+        // self-conflict as two entries of one block).
+        let continuous = |e: &DriveEntry| matches!(e.kind, DriveKind::Comb | DriveKind::Inst);
+        let continuous_conflict =
+            || conflicting_pair(&|a, b| continuous(a) && continuous(b)).map(|(_, b)| b.span);
+        // Seq/latch target that an `inst` output also drives: report at the
+        // seq/latch write. That is always user-written, whereas the inst may
+        // be compiler-generated (a lowered `thread` lives in a
+        // `_<Module>_threads` child, whose inst has no source span).
+        let inst_seq_conflict = || {
+            conflicting_pair(&|a, b| {
+                (a.kind == DriveKind::Inst && is_seq(b)) || (is_seq(a) && b.kind == DriveKind::Inst)
+            })
+            .map(|(a, b)| if is_seq(a) { a.span } else { b.span })
+        };
+        let report_span = seq_conflict
+            .or_else(continuous_conflict)
+            .or_else(inst_seq_conflict);
         if let Some(span) = report_span {
             errors.push(CompileError::MultipleDrivers {
                 name: name.clone(),

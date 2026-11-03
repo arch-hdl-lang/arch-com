@@ -1,6 +1,6 @@
 module tag_controller
   port clk:          in Clock<SysDomain>;
-  port rst:          in Reset<Async>;
+  port rst:          in Reset<Async, Low>;
   port write_enable: in Bool;
   port write_addr:   in UInt<9>;
   port read_addr_0:  in UInt<8>;

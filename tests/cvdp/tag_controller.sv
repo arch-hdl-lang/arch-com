@@ -20,8 +20,8 @@ module tag_controller (
   assign tag_addr_0 = write_enable ? write_addr[7:0] : read_addr_0;
   logic [7:0] tag_addr_1;
   assign tag_addr_1 = write_enable ? write_addr[7:0] : read_addr_1;
-  always_ff @(posedge clk or posedge rst) begin
-    if (rst) begin
+  always_ff @(posedge clk or negedge rst) begin
+    if (!rst) begin
       ram_store <= 0;
     end else begin
       if (write_enable) begin
