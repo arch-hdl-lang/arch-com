@@ -37285,6 +37285,108 @@ end module WidthUser
         html.contains("\\u003c/script\\u003e"),
         "expected script-breaking doc text to be escaped in embedded JSON:\n{html}"
     );
+
+    let manifest_path = graph.join("manifest.json");
+    let original_manifest = std::fs::read(&manifest_path).expect("read graph manifest");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&original_manifest).expect("parse graph manifest");
+    manifest["generator"] = "older compiler".into();
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let old_generator = std::process::Command::new(arch_bin)
+        .args(["graph", "query", "UseInc", "--index"])
+        .arg(&graph)
+        .output()
+        .expect("old-generator graph query");
+    assert!(!old_generator.status.success());
+    assert!(String::from_utf8_lossy(&old_generator.stderr).contains("generator changed"));
+    std::fs::write(&manifest_path, original_manifest).expect("restore graph manifest");
+
+    std::fs::write(&src, "module Changed end module Changed\n").expect("change indexed source");
+    let stale = std::process::Command::new(arch_bin)
+        .args(["graph", "query", "UseInc", "--index"])
+        .arg(&graph)
+        .output()
+        .expect("stale graph query");
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("changed since indexing"));
+}
+
+#[test]
+fn test_dev_graph_cli_query_and_stale_mapping() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let index = td.path().join("devgraph");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let built = std::process::Command::new(arch_bin)
+        .args(["graph", "dev-index", "--root"])
+        .arg(root)
+        .arg("--out")
+        .arg(&index)
+        .output()
+        .expect("developer graph index");
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let queried = std::process::Command::new(arch_bin)
+        .args(["graph", "dev-query", "pipe_reg reset", "--root"])
+        .arg(root)
+        .arg("--index")
+        .arg(&index)
+        .args(["--role", "backend", "--token-budget", "100"])
+        .output()
+        .expect("developer graph query");
+    assert!(
+        queried.status.success(),
+        "{}",
+        String::from_utf8_lossy(&queried.stderr)
+    );
+    let output = String::from_utf8_lossy(&queried.stdout);
+    assert!(output.contains("emit_pipe_reg"), "{output}");
+    assert!(!output.contains("parse_module"), "{output}");
+    assert!(output.len() <= 400, "{output}");
+}
+
+#[test]
+fn test_graph_context_prefers_source_construct_to_generated_artifact() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let index = td.path().join("graph");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let source = root.join("examples/sync_fifo.arch");
+    let indexed = std::process::Command::new(arch_bin)
+        .args(["graph", "index"])
+        .arg(&source)
+        .arg("--out")
+        .arg(&index)
+        .output()
+        .expect("index FIFO source");
+    assert!(
+        indexed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&indexed.stderr)
+    );
+    let context = std::process::Command::new(arch_bin)
+        .args(["graph", "context", "fifo reset behavior", "--index"])
+        .arg(&index)
+        .args(["--token-budget", "80"])
+        .output()
+        .expect("query FIFO context");
+    assert!(
+        context.status.success(),
+        "{}",
+        String::from_utf8_lossy(&context.stderr)
+    );
+    let output = String::from_utf8_lossy(&context.stdout);
+    assert!(
+        output
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("  fifo  TxQueue")),
+        "{output}"
+    );
+    assert!(output.len() <= 320, "{output}");
 }
 
 #[test]

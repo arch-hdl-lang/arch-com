@@ -30,6 +30,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  mcp-tools:
+    name: MCP tool tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r mcp/requirements.txt
+      - run: python -m unittest discover -s mcp -p 'test_*.py'
+
   cargo-test:
     name: cargo test
     runs-on: ubuntu-latest

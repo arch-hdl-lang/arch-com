@@ -24,6 +24,42 @@ fn collect_files(dir: &Path, python_root: &Path, files: &mut Vec<String>) -> io:
     Ok(())
 }
 
+fn graph_generator_id(root: &Path) -> io::Result<String> {
+    fn collect_rust(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                collect_rust(&path, files)?;
+            } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = vec![root.join("Cargo.lock"), root.join("build.rs")];
+    collect_rust(&root.join("src"), &mut files)?;
+    files.sort();
+    let mut hash = 0xcbf29ce484222325u64;
+    for path in files {
+        let relative = path
+            .strip_prefix(root)
+            .expect("graph source inside checkout");
+        for byte in relative
+            .to_string_lossy()
+            .as_bytes()
+            .iter()
+            .copied()
+            .chain([0])
+            .chain(fs::read(&path)?.into_iter().chain([0]))
+        {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+    Ok(format!("{hash:016x}"))
+}
+
 fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=python/arch_cocotb");
     println!("cargo:rerun-if-changed=python/cocotb_shim/cocotb");
@@ -37,6 +73,13 @@ fn main() -> io::Result<()> {
     println!(
         "cargo:rustc-env=ARCH_BUILD_VERSION={}",
         build_version::version(&manifest_dir, &env::var("CARGO_PKG_VERSION").unwrap())
+    );
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=Cargo.lock");
+    println!("cargo:rerun-if-changed=build.rs");
+    println!(
+        "cargo:rustc-env=ARCH_GRAPH_GENERATOR_ID={}",
+        graph_generator_id(&manifest_dir)?
     );
     let python_root = manifest_dir.join("python");
     let mut files = Vec::new();

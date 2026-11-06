@@ -155,6 +155,8 @@ arch graph query "fifo" --index .archgraph
 arch graph callers "helper_fn" --index .archgraph
 arch graph impact "AxiWriteArb" --depth 2 --index .archgraph
 arch graph context "add coverage to the write arbiter" --index .archgraph
+arch graph dev-index --root . --out .archdevgraph
+arch graph dev-query "pipe_reg reset" --root . --index .archdevgraph --token-budget 400
 arch graph html --index .archgraph --out arch-graph.html
 ```
 
@@ -162,6 +164,12 @@ arch graph html --index .archgraph --out arch-graph.html
 machine-readable output. `graph html` renders a standalone searchable HTML
 viewer with clickable source links, node details, incoming/outgoing edges, and a
 local neighborhood view. The index directory defaults to `.archgraph/`.
+`context` accepts `--token-budget` for compact agent retrieval. Queries reject
+stale source files or a changed generator; rebuild the user index with
+`arch graph index ... --clean`. The separate `.archdevgraph/` maps reviewed
+language features to Rust symbols, tests, the specification, skill, and MCP
+guidance. Its mappings are curated ownership links, not inferred call edges;
+`dev-query` validates indexed source fingerprints and accepts `--role` filters.
 
 ## AI assistant support
 

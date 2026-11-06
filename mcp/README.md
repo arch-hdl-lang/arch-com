@@ -91,6 +91,8 @@ session loads the server and exposes the MCP resources and tools.
 | `arch_graph_query` | Query an existing `.archgraph` index for symbols, paths, or doc text |
 | `arch_graph_context` | Return a bounded graph context slice for a task description |
 | `arch_graph_impact` | Return a bounded impact neighborhood for a graph symbol |
+| `arch_dev_graph_index` | Build the reviewed compiler-development graph |
+| `arch_dev_graph_query` | Query compiler owners, tests, and docs; refresh stale indexes |
 
 ## Environment Variables
 

@@ -81,9 +81,11 @@ dependencies = [
  "insta",
  "logos",
  "miette",
+ "proc-macro2",
  "serde",
  "serde_json",
  "sha2",
+ "syn",
  "tempfile",
  "thiserror",
 ]

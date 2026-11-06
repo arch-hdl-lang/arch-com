@@ -3,6 +3,7 @@ pub mod codegen;
 pub mod comb_graph;
 pub mod construct_formal_ir;
 pub mod construct_proof_cert;
+pub mod dev_graph;
 pub mod diagnostics;
 pub mod elaborate;
 pub mod formal;

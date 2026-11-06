@@ -9,17 +9,21 @@ Use this skill to produce correct ARCH HDL and to iterate through the ARCH compi
 
 ## Workflow
 
-1. Read `references/Arch_AI_Reference_Card.md` first for compact syntax and common pitfalls.
-2. For grammar, semantics, or a construct not covered by the card, read the relevant section of `references/ARCH_HDL_Specification.md`.
-3. For project setup, CLI behavior, simulation, and formal commands, read `references/README.md`.
-4. When Python/cocotb-style simulation is involved, read `references/arch_sim_cocotb.md`.
-5. If ARCH MCP tools are available, use them before hand-writing unfamiliar syntax:
+1. Default to graph-first discovery when the target file, design relationship, or compiler owner is unknown. Make one focused, bounded query before broad source search:
+   - For ARCH code, use `arch_graph_context()` with `source_paths` for a new or stale project index. For an external workspace, pass an `index` under that workspace too. Use `arch_graph_callers()` or `arch_graph_impact()` for a named symbol after indexing.
+   - For compiler work, use `arch_dev_graph_query()` with relevant `roles`; it refreshes the reviewed developer index when stale. From the CLI, run `arch graph dev-index --root <arch-com>` then `arch graph dev-query "<feature>" --root <arch-com>`.
+   - Skip the graph when exact target files are known and no cross-file relationship needs discovery. Fall back to ordinary search when graph results are incomplete.
+2. Read `references/Arch_AI_Reference_Card.md` first for compact syntax and common pitfalls.
+3. For grammar, semantics, or a construct not covered by the card, read the relevant section of `references/ARCH_HDL_Specification.md`.
+4. For project setup, CLI behavior, simulation, and formal commands, read `references/README.md`.
+5. When Python/cocotb-style simulation is involved, read `references/arch_sim_cocotb.md`.
+6. If ARCH MCP tools are available, use them before hand-writing unfamiliar syntax:
    - Call `get_construct_syntax()` for each construct to be used.
    - Write and type-check with `write_and_check()`.
    - Build and lint generated SystemVerilog with `arch_build_and_lint()`.
    - On compiler errors, call `arch_advise()` with the error keywords before attempting a fix.
-6. If `tool_search` is available but ARCH MCP tools are not loaded, search for `arch-hdl`. If MCP tools are still unavailable, read `references/mcp_README.md` for setup or fall back to the local CLI.
-7. If MCP tools are not available, validate with the local CLI:
+7. If `tool_search` is available but ARCH MCP tools are not loaded, search for `arch-hdl`. If MCP tools are still unavailable, read `references/mcp_README.md` for setup or fall back to the local CLI.
+8. If MCP tools are not available, validate with the local CLI:
 
 ```sh
 arch check <file.arch>

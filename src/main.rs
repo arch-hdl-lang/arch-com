@@ -456,6 +456,32 @@ enum Command {
 
 #[derive(Subcommand)]
 enum GraphCommand {
+    /// Build the compiler-development feature graph
+    DevIndex {
+        /// Compiler repository root
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Reviewed feature ownership map
+        #[arg(long)]
+        map: Option<PathBuf>,
+        /// Output developer graph directory
+        #[arg(long, default_value = ".archdevgraph")]
+        out: PathBuf,
+    },
+    /// Locate compiler owners, tests, and docs for a feature
+    DevQuery {
+        query: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = ".archdevgraph")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+        #[arg(long, default_value_t = 400)]
+        token_budget: usize,
+        #[arg(long = "role")]
+        roles: Vec<String>,
+    },
     /// Index ARCH source files into JSONL graph records
     Index {
         /// Input .arch files or directories to index
@@ -529,6 +555,9 @@ enum GraphCommand {
         /// Maximum result count
         #[arg(long, default_value_t = 30)]
         limit: usize,
+        /// Approximate output budget for compact text (four characters per token)
+        #[arg(long, default_value_t = 400)]
+        token_budget: usize,
     },
     /// Render an indexed graph as a standalone clickable HTML file
     Html {
@@ -1134,6 +1163,30 @@ fn main() -> miette::Result<()> {
         }
         Command::LearnBootstrap { path } => run_learn_bootstrap(&path),
         Command::Graph { command } => match command {
+            GraphCommand::DevIndex { root, map, out } => {
+                let map = map.unwrap_or_else(|| root.join("doc/codegraph_feature_map.json"));
+                let stats = arch::dev_graph::index(&root, &map, &out).into_diagnostic()?;
+                println!(
+                    "{} features, {} nodes, {} edges",
+                    stats.features, stats.nodes, stats.edges
+                );
+                Ok(())
+            }
+            GraphCommand::DevQuery {
+                query,
+                root,
+                index,
+                limit,
+                token_budget,
+                roles,
+            } => {
+                println!(
+                    "{}",
+                    arch::dev_graph::query(&root, &index, &query, limit, token_budget, &roles)
+                        .into_diagnostic()?
+                );
+                Ok(())
+            }
             GraphCommand::Index {
                 inputs,
                 root,
@@ -1164,7 +1217,8 @@ fn main() -> miette::Result<()> {
                 index,
                 json,
                 limit,
-            } => run_graph_context(&task, &index, json, limit),
+                token_budget,
+            } => run_graph_context(&task, &index, json, limit, token_budget),
             GraphCommand::Html { index, out, title } => {
                 run_graph_html(&index, &out, title.as_deref())
             }
@@ -3600,6 +3654,7 @@ fn run_graph_context(
     index: &std::path::Path,
     json: bool,
     limit: usize,
+    token_budget: usize,
 ) -> miette::Result<()> {
     if task.trim().is_empty() {
         return Err(miette::miette!(
@@ -3609,12 +3664,23 @@ fn run_graph_context(
     if limit == 0 {
         return Err(miette::miette!("--limit must be greater than 0"));
     }
+    if token_budget == 0 {
+        return Err(miette::miette!("--token-budget must be greater than 0"));
+    }
     let graph = arch::graph::load_index(index).into_diagnostic()?;
     let hits = arch::graph::context(&graph, task, limit);
     if json {
         println!("{}", serde_json::to_string_pretty(&hits).into_diagnostic()?);
     } else {
-        println!("{}", arch::graph::format_query_hits(&hits));
+        let output = arch::graph::format_query_hits(&hits);
+        let mut remaining = token_budget.saturating_mul(4);
+        for line in output.lines() {
+            if line.len() + 1 > remaining {
+                break;
+            }
+            println!("{line}");
+            remaining -= line.len() + 1;
+        }
     }
     Ok(())
 }
