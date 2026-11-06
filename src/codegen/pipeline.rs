@@ -268,6 +268,14 @@ impl<'a> Codegen<'a> {
                             &stage_regs,
                             &stage_names,
                         )
+                        // arch#1115: an arithmetic RHS (`w = a +% b`) is not a
+                        // bare reg / cross-stage ref, so `resolve_comb_wire_type`
+                        // returns `None` and the wire would default to a 1-bit
+                        // `logic` — truncating the (now correctly cast) value.
+                        // Fall back to the consumer register's width, mirroring
+                        // the sim emitter's `consumer_ty`, so native sim and SV
+                        // declare this wire at the same width.
+                        .or_else(|| self.resolve_comb_wire_type_from_consumer(&target, stage))
                         .unwrap_or_else(|| "logic".to_string());
                         if !wires.iter().any(|(n, _)| n == &target) {
                             wires.push((target, ty));
@@ -1635,6 +1643,46 @@ impl<'a> Codegen<'a> {
 
     /// Resolve the type of a comb wire by inspecting assignment sources.
     /// Looks for known registers (local or cross-stage) in assignment RHS.
+    /// arch#1115: declared SV `logic` type of an implicit stage comb wire,
+    /// inferred from the *consumer* register that reads it in a `seq` block
+    /// (`reg_lhs <= target`). Used as a fallback when
+    /// `resolve_comb_wire_type` can't type the wire from its RHS (e.g. an
+    /// arithmetic RHS). Mirrors the sim emitter's `consumer_ty`
+    /// (`src/sim_codegen/pipeline.rs`), so native sim and SV size the wire
+    /// identically — the whole point, since the two previously diverged
+    /// (sim sized via the consumer, SV fell back to a 1-bit `logic`).
+    fn resolve_comb_wire_type_from_consumer(
+        &self,
+        target: &str,
+        stage: &StageDecl,
+    ) -> Option<String> {
+        for item in &stage.body {
+            let ModuleBodyItem::RegBlock(rb) = item else {
+                continue;
+            };
+            for stmt in &rb.stmts {
+                let Stmt::Assign(a) = stmt else { continue };
+                let ExprKind::Ident(rhs) = &a.value.kind else {
+                    continue;
+                };
+                if rhs != target {
+                    continue;
+                }
+                let ExprKind::Ident(reg_lhs) = &a.target.kind else {
+                    continue;
+                };
+                for item2 in &stage.body {
+                    if let ModuleBodyItem::RegDecl(r) = item2 {
+                        if r.name.name == *reg_lhs {
+                            return Some(self.emit_logic_type_str(&r.ty));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn resolve_comb_wire_type(
         target: &str,
         stmts: &[Stmt],
@@ -2212,8 +2260,27 @@ impl<'a> Codegen<'a> {
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
-                    let lw = self.infer_sv_width_str(lhs);
-                    let rw = self.infer_sv_width_str(rhs);
+                    // arch#1115: the result-width cast's `$bits(...)` fallback
+                    // must render its operands in *this stage's* scope — a bare
+                    // `$bits(ra)` names a signal that does not exist (only the
+                    // `<stage>_ra` rewrite does), so the emitted SV fails to
+                    // elaborate. Route the width operands through the same
+                    // stage-prefix-applying emitter the value operands use, and
+                    // consult the stage's declared widths first (arch#845).
+                    let emit = |e: &Expr| {
+                        self.emit_pipeline_stage_expr_str(
+                            e,
+                            current_prefix,
+                            current_stage_idx,
+                            stage_names,
+                            stage_regs,
+                            port_names,
+                        )
+                    };
+                    let signal_width =
+                        |e: &Expr| self.pipeline_signal_width_str(e, Some(current_stage_idx));
+                    let lw = self.infer_sv_width_str_in(lhs, &emit, &signal_width);
+                    let rw = self.infer_sv_width_str_in(rhs, &emit, &signal_width);
                     let w = if lw == rw {
                         lw
                     } else {
@@ -2600,8 +2667,16 @@ impl<'a> Codegen<'a> {
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
-                    let lw = self.infer_sv_width_str(lhs);
-                    let rw = self.infer_sv_width_str(rhs);
+                    // arch#1115: same stage-scope fix as the stage emitter, for
+                    // the stage-agnostic path (top-level pipeline exprs). The
+                    // `$bits(...)` width fallback must render operands via this
+                    // emitter's stage-name rewriting, not the bare source name.
+                    let emit = |e: &Expr| {
+                        self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names)
+                    };
+                    let signal_width = |e: &Expr| self.pipeline_signal_width_str(e, None);
+                    let lw = self.infer_sv_width_str_in(lhs, &emit, &signal_width);
+                    let rw = self.infer_sv_width_str_in(rhs, &emit, &signal_width);
                     let w = if lw == rw {
                         lw
                     } else {
