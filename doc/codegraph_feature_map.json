@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "common_links": [
+    {"role": "spec", "path": "doc/ARCH_HDL_Specification.md"},
+    {"role": "skill", "path": "skills/arch-programming/SKILL.md"},
+    {"role": "mcp_guidance", "path": "mcp/instructions.md"}
+  ],
+  "features": [
+    {"name": "module", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ModuleDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_module"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check"},
+      {"role": "backend", "path": "src/codegen/module.rs"},
+      {"role": "fixture", "path": "examples/pipe_reg_test.arch"}
+    ]},
+    {"name": "bus", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "BusDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_bus"},
+      {"role": "backend", "path": "src/codegen/mod.rs"},
+      {"role": "fixture", "path": "tests/native_param_bus_wire/Probe.arch"}
+    ]},
+    {"name": "fifo", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "FifoDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_fifo"},
+      {"role": "backend", "path": "src/codegen/fifo.rs", "symbol": "emit_fifo_sync_body"},
+      {"role": "fixture", "path": "examples/sync_fifo.arch"}
+    ]},
+    {"name": "thread", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ThreadBlock"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_thread_block"},
+      {"role": "lowerer", "path": "src/thread_map.rs"},
+      {"role": "backend", "path": "src/codegen/module.rs"},
+      {"role": "fixture", "path": "tests/thread/basic_thread.arch"}
+    ]},
+    {"name": "fsm", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "FsmDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_fsm"},
+      {"role": "backend", "path": "src/codegen/fsm.rs", "symbol": "emit_fsm"},
+      {"role": "fixture", "path": "examples/fsm_counter.arch"}
+    ]},
+    {"name": "pipeline", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "PipelineDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_pipeline"},
+      {"role": "backend", "path": "src/codegen/pipeline.rs", "symbol": "emit_pipeline_inst"},
+      {"role": "fixture", "path": "examples/simple_pipeline.arch"}
+    ]},
+    {"name": "pipe_reg reset", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "PipeRegDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_module"},
+      {"role": "backend", "path": "src/codegen/module.rs", "symbol": "emit_pipe_reg"},
+      {"role": "fixture", "path": "examples/pipe_reg_test.arch"}
+    ]},
+    {"name": "tlm_method", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "TlmMethodMeta"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_tlm_method_decl"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_tlm_method_asserts"},
+      {"role": "fixture", "path": "tests/axi_dma_tlm/TlmOneToOne.arch"}
+    ]},
+    {"name": "arbiter", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ArbiterDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_arbiter"},
+      {"role": "backend", "path": "src/codegen/arbiter.rs", "symbol": "emit_arbiter_round_robin"},
+      {"role": "fixture", "path": "examples/bus_arbiter.arch"}
+    ]}
+  ]
+}

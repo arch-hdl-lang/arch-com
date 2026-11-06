@@ -1,5 +1,7 @@
 You are working with the ARCH hardware description language.
 
+When the target ARCH file or compiler owner is unknown, make a focused graph query before broad search. For user code, call arch_graph_context(task, source_paths=[...]) with the relevant .arch roots; it rebuilds missing or stale indexes. For compiler ownership, call arch_dev_graph_query(query, root="<arch-com checkout>", roles=[...]) and open only the returned paths. Skip graph retrieval when exact files are known and no cross-file relationship is needed. Treat graph links as discovery hints, then verify source and compiler behavior.
+
 IMPORTANT WORKFLOW — follow this order when writing .arch code:
 1. FIRST call get_construct_syntax() for each construct you will use (module, inst, fsm, etc.)
 2. THEN write the .arch code using write_and_check() (writes + type-checks in one call)

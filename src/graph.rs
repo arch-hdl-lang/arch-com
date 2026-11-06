@@ -206,7 +206,11 @@ pub fn write_index(index: &GraphIndex, out_dir: &Path, clean: bool) -> std::io::
     write_jsonl(&tmp_dir.join("edges.jsonl"), &index.edges)?;
     let manifest = ManifestRecord {
         schema_version: 1,
-        generator: format!("arch {}", env!("CARGO_PKG_VERSION")),
+        generator: format!(
+            "arch {} graph {}",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("ARCH_GRAPH_GENERATOR_ID").unwrap_or("unavailable")
+        ),
         index_root: index.index_root.clone(),
         files: vec![
             "files.jsonl".to_string(),
@@ -245,29 +249,50 @@ pub fn write_index(index: &GraphIndex, out_dir: &Path, clean: bool) -> std::io::
 
 pub fn load_index(index_dir: &Path) -> std::io::Result<GraphIndex> {
     let manifest_path = index_dir.join("manifest.json");
-    let mut index_root = String::new();
-    if manifest_path.exists() {
-        let manifest: ManifestRecord = serde_json::from_str(&fs::read_to_string(&manifest_path)?)
-            .map_err(|err| {
+    let manifest: ManifestRecord = serde_json::from_str(&fs::read_to_string(&manifest_path)?)
+        .map_err(|err| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("{}: {err}", manifest_path.display()),
             )
         })?;
-        if manifest.schema_version != 1 {
+    if manifest.schema_version != 1
+        || manifest.generator
+            != format!(
+                "arch {} graph {}",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("ARCH_GRAPH_GENERATOR_ID").unwrap_or("unavailable")
+            )
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "graph schema or generator changed; rebuild with arch graph index",
+        ));
+    }
+    let files: Vec<FileRecord> = read_jsonl_with_path(&index_dir.join("files.jsonl"))?;
+    for file in &files {
+        let bytes = fs::read(&file.abs_path).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "{} is unavailable ({err}); rebuild with arch graph index",
+                    file.abs_path
+                ),
+            )
+        })?;
+        if hex_sha256(&bytes) != file.sha256 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "unsupported graph schema version {}",
-                    manifest.schema_version
+                    "{} changed since indexing; rebuild with arch graph index",
+                    file.abs_path
                 ),
             ));
         }
-        index_root = manifest.index_root;
     }
     Ok(GraphIndex {
-        index_root,
-        files: read_jsonl_with_path(&index_dir.join("files.jsonl"))?,
+        index_root: manifest.index_root,
+        files,
         nodes: read_jsonl_with_path(&index_dir.join("nodes.jsonl"))?,
         edges: read_jsonl_with_path(&index_dir.join("edges.jsonl"))?,
     })
@@ -458,7 +483,22 @@ pub fn impact(index: &GraphIndex, symbol: &str, depth: usize, limit: usize) -> V
 }
 
 pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
-    let mut direct = query(index, task, limit.max(8));
+    let terms = tokenize(task);
+    let mut direct = query(index, task, index.nodes.len());
+    if direct.iter().any(|hit| is_construct_like(&hit.node.kind)) {
+        direct.retain(|hit| !matches!(hit.node.kind.as_str(), "generated_sv" | "interface_stub"));
+    }
+    for hit in &mut direct {
+        if terms.iter().any(|term| term == &hit.node.kind) {
+            hit.score += 80;
+        }
+    }
+    direct.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| a.node.id.cmp(&b.node.id))
+    });
+    direct.truncate(limit.max(8));
     let node_by_id = node_map(index);
     let mut ids: BTreeSet<String> = direct.iter().map(|h| h.node.id.clone()).collect();
     let mut extras = Vec::new();

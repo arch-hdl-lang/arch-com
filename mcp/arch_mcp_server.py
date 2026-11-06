@@ -6,6 +6,7 @@ MCP instructions are in instructions.md.
 Construct syntax snippets are in construct_syntax.md.
 """
 
+import json
 import os
 import subprocess
 import pathlib
@@ -244,6 +245,26 @@ def _display_path(path: pathlib.Path) -> str:
     return str(path)
 
 
+def _validate_graph_sources(index: pathlib.Path) -> None:
+    """Never let an MCP query read sources outside configured workspaces."""
+    files = index / "files.jsonl"
+    if not files.exists():
+        return
+    for line in files.read_text().splitlines():
+        source = pathlib.Path(json.loads(line)["abs_path"]).resolve()
+        if not any(source.is_relative_to(root) for root in WORKSPACE_ROOTS):
+            raise ValueError(f"Graph source outside allowed roots: {source}")
+
+
+def _needs_graph_refresh(result: str) -> bool:
+    return not result.startswith("[OK]") and (
+        "changed since indexing" in result
+        or "schema or generator changed" in result
+        or "No such file or directory" in result
+        or "is unavailable" in result
+    )
+
+
 def _run(args: list[str], timeout: int = 30, cwd: str | None = None) -> str:
     """Run a subprocess and return combined stdout + stderr."""
     try:
@@ -471,10 +492,11 @@ def arch_graph_query(query: str, index: str = ".archgraph", limit: int = 20) -> 
     Build the index first with `arch graph index <paths> --out .archgraph`.
     Returns compact file/line/symbol summaries, not raw graph dumps.
     """
-    index_path = str(_resolve_safe(index))
+    index_path = _resolve_safe(index)
+    _validate_graph_sources(index_path)
     capped = max(1, min(limit, 100))
     return _run(
-        [ARCH_BIN, "graph", "query", query, "--index", index_path, "--limit", str(capped)],
+        [ARCH_BIN, "graph", "query", query, "--index", str(index_path), "--limit", str(capped)],
         timeout=20,
     )
 
@@ -503,20 +525,34 @@ def arch_graph_index(
 
 
 @mcp.tool()
-def arch_graph_context(task: str, index: str = ".archgraph", limit: int = 30) -> str:
-    """Return a bounded graph context slice for a task description."""
-    index_path = str(_resolve_safe(index))
+def arch_graph_context(task: str, index: str = ".archgraph", limit: int = 30,
+                       token_budget: int = 400, source_paths: list[str] | None = None,
+                       root: str | None = None) -> str:
+    """Return bounded context; rebuild a missing or stale index from source_paths."""
+    index_path = _resolve_safe(index)
+    _validate_graph_sources(index_path)
     capped = max(1, min(limit, 100))
-    return _run(
-        [ARCH_BIN, "graph", "context", task, "--index", index_path, "--limit", str(capped)],
-        timeout=20,
-    )
+    query_cmd = [ARCH_BIN, "graph", "context", task, "--index", str(index_path),
+                 "--limit", str(capped), "--token-budget", str(max(1, min(token_budget, 2000)))]
+    result = _run(query_cmd, timeout=20)
+    if not _needs_graph_refresh(result) or not source_paths:
+        return result
+    inputs = [str(_resolve_safe(path)) for path in source_paths]
+    build_cmd = [ARCH_BIN, "graph", "index", *inputs, "--out", str(index_path), "--clean"]
+    if root:
+        build_cmd += ["--root", str(_resolve_safe(root))]
+    built = _run(build_cmd, timeout=60)
+    if not built.startswith("[OK]"):
+        return built
+    _validate_graph_sources(index_path)
+    return _run(query_cmd, timeout=20)
 
 
 @mcp.tool()
 def arch_graph_impact(symbol: str, depth: int = 2, index: str = ".archgraph", limit: int = 40) -> str:
     """Return a bounded impact neighborhood for a symbol in an ARCH graph."""
     index_path = str(_resolve_safe(index))
+    _validate_graph_sources(pathlib.Path(index_path))
     capped_depth = max(0, min(depth, 6))
     capped_limit = max(1, min(limit, 100))
     return _run(
@@ -540,6 +576,7 @@ def arch_graph_impact(symbol: str, depth: int = 2, index: str = ".archgraph", li
 def arch_graph_callers(target: str, index: str = ".archgraph", limit: int = 20, json: bool = False) -> str:
     """Show indexed callers for a function or method name."""
     index_path = str(_resolve_safe(index))
+    _validate_graph_sources(pathlib.Path(index_path))
     capped = max(1, min(limit, 100))
     cmd = [ARCH_BIN, "graph", "callers", target, "--index", index_path, "--limit", str(capped)]
     if json:
@@ -551,11 +588,44 @@ def arch_graph_callers(target: str, index: str = ".archgraph", limit: int = 20, 
 def arch_graph_html(index: str = ".archgraph", out: str = "arch-graph.html", title: str | None = None) -> str:
     """Render an ARCH graph index as a standalone clickable HTML file."""
     index_path = str(_resolve_safe(index))
+    _validate_graph_sources(pathlib.Path(index_path))
     out_path = str(_resolve_safe(out))
     cmd = [ARCH_BIN, "graph", "html", "--index", index_path, "--out", out_path]
     if title:
         cmd += ["--title", title]
     return _run(cmd, timeout=30)
+
+
+@mcp.tool()
+def arch_dev_graph_index(root: str = ".", out: str = ".archdevgraph") -> str:
+    """Build the reviewed compiler-development graph for an ARCH checkout."""
+    root_path = _resolve_safe(root)
+    out_path = _resolve_safe(str(root_path / out)) if not pathlib.Path(out).is_absolute() else _resolve_safe(out)
+    return _run([ARCH_BIN, "graph", "dev-index", "--root", str(root_path), "--out", str(out_path)], timeout=60)
+
+
+@mcp.tool()
+def arch_dev_graph_query(query: str, root: str = ".", index: str = ".archdevgraph",
+                         limit: int = 30, token_budget: int = 400,
+                         roles: list[str] | None = None) -> str:
+    """Return bounded compiler owner/test context; refresh stale indexes."""
+    root_path = _resolve_safe(root)
+    index_path = _resolve_safe(str(root_path / index)) if not pathlib.Path(index).is_absolute() else _resolve_safe(index)
+    command = [ARCH_BIN, "graph", "dev-query", query, "--root", str(root_path),
+               "--index", str(index_path), "--limit", str(max(1, min(limit, 100))),
+               "--token-budget", str(max(1, min(token_budget, 2000)))]
+    for role in roles or []:
+        command += ["--role", role]
+    result = _run(command, timeout=20)
+    if not _needs_graph_refresh(result):
+        return result
+    if not (root_path / "doc/codegraph_feature_map.json").is_file():
+        return result
+    built = _run([ARCH_BIN, "graph", "dev-index", "--root", str(root_path),
+                  "--out", str(index_path)], timeout=60)
+    if not built.startswith("[OK]"):
+        return built
+    return _run(command, timeout=20)
 
 
 @mcp.tool()

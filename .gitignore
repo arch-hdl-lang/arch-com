@@ -1,5 +1,7 @@
 # Rust build artifacts
 /target/
+/.archgraph/
+/.archdevgraph/
 
 # Verilator simulation build artifacts
 obj_dir/
