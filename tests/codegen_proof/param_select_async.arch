@@ -1,0 +1,25 @@
+// A parameter compared in an `if` (a signed 32-bit constant comparison in the
+// SV) and an asynchronous reset to a cast constant.
+module ParamSelectAsync
+  param SEL: const = 0;
+  param START: const = 9;
+  port clk: in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port go: in Bool;
+  port q: out pipe_reg<UInt<8>, 1> reset rst_n => 0;
+  reg cnt: UInt<12> reset rst_n => START.zext<12>();
+  seq on clk rising
+    if go
+      if SEL == 0
+        q <= a;
+      else
+        q <= b;
+      end if
+      cnt <= cnt +% 1;
+    else
+      cnt <= START.zext<12>();
+    end if
+  end seq
+end module ParamSelectAsync
