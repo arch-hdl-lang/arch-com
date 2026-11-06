@@ -1221,8 +1221,16 @@ impl<'a> SimCodegen<'a> {
                 let val = self.pipeline_sim_expr(
                     &a.value, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
                 );
+                // An output-port target is emitted bare and keyed bare in the
+                // width map, so drop the stage prefix for a port (mirrors the
+                // comb arm and the #1114 residual note). Stage-local idents
+                // keep the `{prefix}_{n}` key unchanged.
                 let tgt_key = if let ExprKind::Ident(n) = &a.target.kind {
-                    format!("{}_{}", prefix, n)
+                    if pn.contains(n) {
+                        n.clone()
+                    } else {
+                        format!("{}_{}", prefix, n)
+                    }
                 } else {
                     String::new()
                 };
@@ -1364,8 +1372,19 @@ impl<'a> SimCodegen<'a> {
                 // arms (implicit wires/lets/regs are stored under that key);
                 // non-ident targets build an empty key and stay unmasked, as
                 // in the seq arm.
+                //
+                // Output ports live in the width map under their *bare* name
+                // (see "Add port widths"), and the emitted target above is bare
+                // for a port too, so the key must drop the stage prefix for a
+                // port — otherwise `result = a +% b;` to a `UInt<W>` output
+                // port misses the width map and stays unmasked while SV
+                // truncates it (#1114 residual).
                 let tgt_key = if let ExprKind::Ident(n) = &a.target.kind {
-                    format!("{}_{}", prefix, n)
+                    if pn.contains(n) {
+                        n.clone()
+                    } else {
+                        format!("{}_{}", prefix, n)
+                    }
                 } else {
                     String::new()
                 };
