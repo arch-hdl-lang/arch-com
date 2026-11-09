@@ -65,6 +65,24 @@
       ]
     },
     {
+      "name": "pipeline_match_seq",
+      "arch_files": [
+        "tests/pipeline_match_seq.arch"
+      ],
+      "tb_files": [
+        "tests/pipeline_match_seq_tb.cpp"
+      ]
+    },
+    {
+      "name": "pipeline_match_comb",
+      "arch_files": [
+        "tests/pipeline_match_comb.arch"
+      ],
+      "tb_files": [
+        "tests/pipeline_match_comb_tb.cpp"
+      ]
+    },
+    {
       "name": "pipeline_wait_stage",
       "arch_files": [
         "tests/pipeline_wait_stage.arch"

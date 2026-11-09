@@ -1529,8 +1529,20 @@ impl<'a> SimCodegen<'a> {
         comb: bool,
     ) {
         let pad = " ".repeat(indent);
-        let scrut =
-            self.pipeline_sim_expr(&m.scrutinee, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+        let scrut = self.pipeline_sim_expr(
+            &m.scrutinee,
+            prefix,
+            si,
+            sn,
+            sp,
+            srn,
+            pn,
+            rn,
+            ln,
+            w,
+            em,
+            params,
+        );
         cpp.push_str(&format!("{pad}switch ({scrut}) {{\n"));
         for arm in &m.arms {
             let case_str = match &arm.pattern {
