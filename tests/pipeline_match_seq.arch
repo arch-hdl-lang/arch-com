@@ -1,0 +1,31 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// Regression for #1112: a `match` statement in a pipeline stage `seq` block
+// was silently dropped by both backends (codegen MVP stub + sim `_ => {}`),
+// leaving the stage register stuck at its reset value. The `case`/`switch`
+// must drive `acc` so `data_out` tracks the selected arm.
+pipeline PipelineMatchSeq
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port sel: in UInt<2>;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+
+  stage S0
+    reg acc: UInt<8> reset rst => 0;
+
+    seq on clk rising
+      match sel
+        0 => acc <= data_in;
+        1 => acc <= (data_in + 1).trunc<8>();
+        _ => acc <= 99;
+      end match
+    end seq
+
+    comb
+      data_out = acc;
+    end comb
+  end stage S0
+end pipeline PipelineMatchSeq

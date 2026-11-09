@@ -1399,8 +1399,15 @@ impl<'a> Codegen<'a> {
                     false,
                 );
             }
-            Stmt::Match(_) => {
-                // MVP: basic pipeline doesn't need match in seq blocks
+            Stmt::Match(m) => {
+                self.emit_pipeline_reg_match(
+                    m,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
             }
             Stmt::Log(l) => {
                 self.emit_log_stmt(l);
@@ -1846,6 +1853,58 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             for s in &arm.body {
                 self.emit_pipeline_comb_stmt(
+                    s,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
+            }
+            self.indent -= 1;
+            self.line("end");
+        }
+        self.indent -= 1;
+        self.line("endcase");
+    }
+
+    /// Emit a `match` statement inside a pipeline stage `seq` block (inside an
+    /// `always_ff`). Structurally identical to `emit_pipeline_comb_match`,
+    /// except the arm bodies recurse through `emit_pipeline_reg_stmt` so each
+    /// assignment uses `<=` (non-blocking) rather than `=`. Mirrors the
+    /// `emit_pipeline_comb_if_else` / `emit_pipeline_reg_if_else` split.
+    ///
+    /// Before #1112 this arm of `emit_pipeline_reg_stmt` was an MVP stub that
+    /// silently dropped the match — the stage register stayed stuck at its
+    /// reset value and the sim/SV output diverged from intent. The comb/seq
+    /// pipeline-stage emitters are near-duplicates; consolidating them is
+    /// tracked by #1125.
+    fn emit_pipeline_reg_match(
+        &mut self,
+        m: &MatchStmt,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) {
+        let scrut = self.emit_pipeline_stage_expr_str(
+            &m.scrutinee,
+            current_prefix,
+            current_stage_idx,
+            stage_names,
+            stage_regs,
+            port_names,
+        );
+        let u = if m.unique { "unique " } else { "" };
+        self.line(&format!("{}case ({})", u, scrut));
+        self.indent += 1;
+        for arm in &m.arms {
+            let pat = self.emit_pattern(&arm.pattern);
+            self.line(&format!("{}: begin", pat));
+            self.indent += 1;
+            for s in &arm.body {
+                self.emit_pipeline_reg_stmt(
                     s,
                     current_prefix,
                     current_stage_idx,

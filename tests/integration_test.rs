@@ -5144,6 +5144,79 @@ fn test_pipeline_init_reset_native_behavior() {
 }
 
 #[test]
+fn test_pipeline_match_in_seq_emits_case() {
+    // Regression for #1112: a `match` in a pipeline stage `seq` block used to
+    // be dropped by the SV codegen MVP stub, leaving the stage register stuck
+    // at reset. It must now lower to a real `case` that drives the register.
+    let source = include_str!("pipeline_match_seq.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("case (sel)"), "expected match -> case:\n{sv}");
+    assert!(
+        sv.contains("s0_acc <= data_in;"),
+        "arm 0 must drive the register:\n{sv}"
+    );
+    assert!(
+        sv.contains("s0_acc <= 99;"),
+        "default arm must drive the register:\n{sv}"
+    );
+}
+
+#[test]
+fn test_pipeline_match_seq_native_behavior() {
+    // #1112: both backends dropped the match. Prove the native sim now runs
+    // the arms (register tracks the selected value, not the reset value).
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg("tests/pipeline_match_seq.arch")
+        .arg("--tb")
+        .arg("tests/pipeline_match_seq_tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run pipeline match-in-seq behavior probe");
+    assert!(
+        out.status.success(),
+        "pipeline match-in-seq sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS pipeline match-in-seq behavior"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_pipeline_match_comb_native_behavior() {
+    // #1112 comb-side sibling: SV emitted the match but the native sim comb
+    // emitter dropped it (sim != SV). Prove the native sim now evaluates the
+    // combinational `case`.
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg("tests/pipeline_match_comb.arch")
+        .arg("--tb")
+        .arg("tests/pipeline_match_comb_tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run pipeline match-in-comb behavior probe");
+    assert!(
+        out.status.success(),
+        "pipeline match-in-comb sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS pipeline match-in-comb behavior"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn test_pipeline_comb_only_stage_error() {
     let source = r#"
 domain SysDomain

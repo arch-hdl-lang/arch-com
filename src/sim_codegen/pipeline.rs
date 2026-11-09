@@ -1325,6 +1325,11 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("{pad}}}\n"));
                 }
             }
+            Stmt::Match(m) => {
+                self.emit_pipeline_sim_match(
+                    cpp, m, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent, false,
+                );
+            }
             _ => {}
         }
     }
@@ -1479,8 +1484,119 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("{pad}}}\n"));
                 }
             }
+            Stmt::Match(m) => {
+                self.emit_pipeline_sim_match(
+                    cpp, m, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent, true,
+                );
+            }
             _ => {}
         }
+    }
+
+    /// Emit a `match` statement in a pipeline stage `seq`/`comb` block as a C++
+    /// `switch`, mirroring the non-pipeline `Stmt::Match` lowering in
+    /// `stmt_codegen.rs`. The scrutinee and literal patterns lower through
+    /// `pipeline_sim_expr` (stage prefixing / width-aware); enum-variant
+    /// patterns resolve to their integer value via the enum map `em`; bare
+    /// `Pattern::Ident` falls back to `default` exactly as the main emitter
+    /// does (the pipeline sim carries no let-value map, so a let-folded
+    /// constant ident can't be distinguished here — same inherited
+    /// "multiple default labels" edge as `stmt_codegen.rs`, see #1082). Arm
+    /// bodies recurse through the seq or comb pipeline emitter per `comb`.
+    ///
+    /// Before #1112 both pipeline sim emitters dropped `Stmt::Match` via a
+    /// catch-all `_ => {}`, so a stage register driven only inside a `match`
+    /// stayed stuck at its reset value while SV emitted a real `case` — a
+    /// sim≠SV miscompile. The two emitters are near-duplicates; #1125 tracks
+    /// consolidating them.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_sim_match(
+        &self,
+        cpp: &mut String,
+        m: &MatchStmt,
+        prefix: &str,
+        si: usize,
+        sn: &[String],
+        sp: &[String],
+        srn: &[HashSet<String>],
+        pn: &HashSet<String>,
+        rn: &HashSet<String>,
+        ln: &HashSet<String>,
+        w: &HashMap<String, u32>,
+        em: &HashMap<String, Vec<(String, u64)>>,
+        params: &[ParamDecl],
+        indent: usize,
+        comb: bool,
+    ) {
+        let pad = " ".repeat(indent);
+        let scrut =
+            self.pipeline_sim_expr(&m.scrutinee, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+        cpp.push_str(&format!("{pad}switch ({scrut}) {{\n"));
+        for arm in &m.arms {
+            let case_str = match &arm.pattern {
+                Pattern::Wildcard => "default".to_string(),
+                // No let-value map in pipeline sim; mirror stmt_codegen.rs's
+                // fallback for a non-constant-folded ident (#1082).
+                Pattern::Ident(_) => "default".to_string(),
+                Pattern::Literal(e) => format!(
+                    "case {}",
+                    self.pipeline_sim_expr(e, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params)
+                ),
+                Pattern::EnumVariant(en, vr) => {
+                    let idx = em
+                        .get(&en.name)
+                        .and_then(|variants| {
+                            variants
+                                .iter()
+                                .find(|(n, _)| *n == vr.name)
+                                .map(|(_, v)| *v)
+                        })
+                        .unwrap_or(0);
+                    format!("case {idx}")
+                }
+            };
+            cpp.push_str(&format!("{}{case_str}: {{\n", " ".repeat(indent + 2)));
+            for s in &arm.body {
+                if comb {
+                    self.emit_pipeline_sim_comb_stmt(
+                        cpp,
+                        s,
+                        prefix,
+                        si,
+                        sn,
+                        sp,
+                        srn,
+                        pn,
+                        rn,
+                        ln,
+                        w,
+                        em,
+                        params,
+                        indent + 4,
+                    );
+                } else {
+                    self.emit_pipeline_sim_stmt(
+                        cpp,
+                        s,
+                        prefix,
+                        si,
+                        sn,
+                        sp,
+                        srn,
+                        pn,
+                        rn,
+                        ln,
+                        w,
+                        em,
+                        params,
+                        indent + 4,
+                    );
+                }
+            }
+            cpp.push_str(&format!("{}  break;\n", " ".repeat(indent + 2)));
+            cpp.push_str(&format!("{}}}\n", " ".repeat(indent + 2)));
+        }
+        cpp.push_str(&format!("{pad}}}\n"));
     }
 
     /// Float format of a pipeline-scope expression (idents, `Stage.reg`
