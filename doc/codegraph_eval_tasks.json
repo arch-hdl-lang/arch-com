@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "tasks": [
+    {
+      "id": "user_fifo_lookup",
+      "cohort": "user",
+      "kind": "discovery",
+      "prompt": "In the ARCH examples, find the FIFO named TxQueue. Report its declaration path and line.",
+      "answer_any": [["examples/sync_fifo.arch:17"]]
+    },
+    {
+      "id": "user_bus_relationship",
+      "cohort": "user",
+      "kind": "discovery",
+      "prompt": "Find the standard-library BusAxiLite declaration and one separate test copy of that bus. Return both source paths.",
+      "answer_any": [["stdlib/BusAxiLite.arch"], ["tests/axi_dma/BusAxiLite.arch", "tests/axi_dma_multi/BusAxiLite.arch", "tests/axi_dma_thread/BusAxiLite.arch"]]
+    },
+    {
+      "id": "user_known_file",
+      "cohort": "user",
+      "kind": "known_file",
+      "prompt": "In examples/fsm_counter.arch, report the declaration line of FsmCounter as path:line.",
+      "answer_any": [["examples/fsm_counter.arch:16"]]
+    },
+    {
+      "id": "user_missing_symbol",
+      "cohort": "user",
+      "kind": "coverage_miss",
+      "prompt": "Is there a FIFO declaration named NoSuchQueue in examples/ or stdlib/? Answer yes or no.",
+      "answer_any": [["no", "not found", "does not exist", "none"]]
+    },
+    {
+      "id": "compiler_arbiter_owners",
+      "cohort": "compiler",
+      "kind": "discovery",
+      "prompt": "For ARCH round-robin arbitration, identify the AST type, parser function, and SystemVerilog backend function with their source paths.",
+      "answer_any": [["ArbiterDecl"], ["parse_arbiter"], ["emit_arbiter_round_robin"], ["src/ast.rs"], ["src/parser.rs"], ["src/codegen/arbiter.rs"]]
+    },
+    {
+      "id": "compiler_pipe_reg_owners",
+      "cohort": "compiler",
+      "kind": "discovery",
+      "prompt": "For ARCH pipe_reg reset handling, identify its AST type, parser function, and SystemVerilog emitter with source paths.",
+      "answer_any": [["PipeRegDecl", "RegReset"], ["parse_pipe_reg_decl", "parse_module"], ["emit_pipe_reg"], ["src/ast.rs"], ["src/parser.rs"], ["src/codegen/module.rs"]]
+    },
+    {
+      "id": "compiler_known_file",
+      "cohort": "compiler",
+      "kind": "known_file",
+      "prompt": "In src/codegen/fifo.rs, name the function that emits the synchronous FIFO body.",
+      "answer_any": [["emit_fifo_sync_body"]]
+    },
+    {
+      "id": "compiler_unmapped_feature",
+      "cohort": "compiler",
+      "kind": "coverage_miss",
+      "prompt": "Locate the ARCH synchronizer declaration parser function and one shipped ARCH synchronizer example. Return the function and source paths.",
+      "answer_any": [["parse_synchronizer"], ["src/parser.rs"], ["examples/synchronizer_basic.arch", "examples/synchronizer_pulse.arch", "examples/synchronizer_handshake.arch", "examples/synchronizer_gray.arch", "examples/synchronizer_wide.arch", "examples/synchronizer_reset.arch"]]
+    },
+    {
+      "id": "user_fifo_comment_edit",
+      "cohort": "user",
+      "kind": "edit",
+      "prompt": "Find the shipped ARCH FIFO named TxQueue and add the one-line doc comment `/// Synchronous transaction queue.` immediately before its declaration. Do not change its behavior. Validate the edited ARCH file.",
+      "allowed_changes": ["examples/sync_fifo.arch"],
+      "file_contains": {"examples/sync_fifo.arch": ["/// Synchronous transaction queue.\nfifo TxQueue"]},
+      "only_comments": true,
+      "verify": ["arch", "check", "examples/sync_fifo.arch"]
+    },
+    {
+      "id": "compiler_arbiter_comment_edit",
+      "cohort": "compiler",
+      "kind": "edit",
+      "prompt": "Find the ARCH SystemVerilog emitter for round-robin arbitration and add a concise comment directly above the function explaining that the pointer advances from the actual grantee. Do not change executable code.",
+      "allowed_changes": ["src/codegen/arbiter.rs"],
+      "added_line_contains": ["actual grantee"],
+      "only_comments": true,
+      "verify": ["cargo", "check", "--offline", "--lib"]
+    }
+  ]
+}
