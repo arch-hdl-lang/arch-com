@@ -52,7 +52,10 @@ python3 tools/codegraph_eval.py analyze /tmp/arch-codegraph-eval/records.jsonl
 
 The runner refuses a dirty repository or an existing records file. It builds
 fresh user and developer indexes and records build time separately from agent
-latency. `metadata.json` pins the repository SHA, CLI/compiler versions, model,
+latency. It sets `ARCH_STDLIB_PATH` to the benchmark checkout's `stdlib/` for
+indexing and agent attempts, so a binary built in another worktree cannot
+silently pull dependencies from that build checkout. `metadata.json` pins the
+repository SHA, CLI/compiler versions, model,
 seed, task-file digest, and selected task IDs. JSONL traces, stderr, edit diffs,
 validation notes, and `summary.json` are retained. The per-attempt `graph_calls` field measures
 actual graph CLI or MCP use. A correct default answer with zero graph calls is

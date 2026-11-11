@@ -1,15 +1,23 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from codegraph_eval import answer_passes, load_tasks, parse_events, prompt_for, summarize, trace_result, verified_success
+from codegraph_eval import answer_passes, load_tasks, parse_events, prompt_for, summarize, trace_result, verified_success, workspace_env
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class CodegraphEvalTests(unittest.TestCase):
+    def test_workspace_env_uses_local_stdlib(self):
+        with patch.dict(os.environ, {"ARCH_STDLIB_PATH": "/other/checkout/stdlib", "EVAL_TEST": "kept"}):
+            env = workspace_env(Path("/trial/repo"))
+        self.assertEqual(env["ARCH_STDLIB_PATH"], "/trial/repo/stdlib")
+        self.assertEqual(env["EVAL_TEST"], "kept")
+
     def test_task_manifest_has_controls_and_edits(self):
         tasks = load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
         self.assertEqual(len(tasks), 10)
