@@ -704,6 +704,15 @@
       "tb_files": [
         "tests/sim_enum_let_type_tb.cpp"
       ]
+    },
+    {
+      "name": "module_reg_log",
+      "arch_files": [
+        "tests/module_reg_log.arch"
+      ],
+      "tb_files": [
+        "tests/module_reg_log_tb.cpp"
+      ]
     }
   ]
 }

@@ -1,0 +1,47 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// Regression for #1130: a `log` statement in a module `seq` block whose
+// registers carry a `reset` was silently dropped from the emitted SV, while
+// `arch sim` printed it — a sim != SV divergence on the documented `log(...)`
+// feature. `emit_reg_block` partitions a reset-bearing seq block into a
+// reset-sensitive (guarded) always_ff and a clock-only (unguarded) one, routing
+// each statement by the register roots it assigns; a `log` assigns none, so it
+// landed in neither block.
+//
+// `acc`/`cnt` carry a reset (forcing the reset-partition path); `shadow` is
+// `reset none` (forcing the unguarded companion block to exist). Both logs must
+// appear exactly once, in the non-reset (`else`) branch — the same `!rst`
+// gating arch sim applies — and the both-reg-kinds `if` statement (writing the
+// reset reg `cnt` and the reset-none reg `shadow`) must emit its nested log
+// once, not duplicated across the guarded/unguarded split.
+module ModuleRegLog
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port acc_out: out UInt<8>;
+  port shadow_out: out UInt<8>;
+
+  reg acc: UInt<8> reset rst => 0;
+  reg cnt: UInt<8> reset rst => 0;
+  reg shadow: UInt<8> reset none;
+
+  seq on clk rising
+    // bare log at top level: assigns no register, so the partition dropped it
+    log(Always, "REGLOG", "tick %0d", data_in);
+    acc <= data_in;
+    // one statement writing BOTH a reset reg (cnt) and a reset-none reg
+    // (shadow), with a nested log that must be emitted once, not duplicated
+    if data_in[0] == 1
+      cnt <= data_in;
+      shadow <= data_in;
+      log(Always, "REGLOG", "both %0d", data_in);
+    end if
+  end seq
+
+  comb
+    acc_out = acc;
+    shadow_out = shadow;
+  end comb
+end module ModuleRegLog
