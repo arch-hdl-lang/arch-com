@@ -167,8 +167,8 @@ def trace_result(events: list[dict]) -> dict:
         "successful_graph_commands": successful_graph_commands,
         "successful_graph_index_reads": successful_graph_index_reads,
         "successful_graph_mcp_calls": successful_graph_mcp_calls,
-        "failed_mcp_calls": sum(item.get("status") != "completed" or item.get("error") or
-                                (item in graph_mcp_calls and not mcp_succeeded(item))
+        "failed_mcp_calls": sum(bool(item.get("status") != "completed" or item.get("error") or
+                                (item in graph_mcp_calls and not mcp_succeeded(item)))
                                 for item in mcp_calls),
         "input_tokens": sum(item["input_tokens"] for item in usage),
         "cached_input_tokens": sum(item.get("cached_input_tokens", 0) for item in usage),
@@ -181,10 +181,13 @@ def trace_result(events: list[dict]) -> dict:
 
 def answer_passes(task: dict, answer: str) -> bool:
     haystack = answer.casefold()
+    if task["id"] == "user_missing_symbol" and (
+        re.search(r"\byes\b", haystack) or
+        not re.match(r"\s*(?:no\b|none\b|not found\b|nosuchqueue\b.*\b(?:not found|does not exist)\b)", haystack)
+    ):
+        return False
     def matches(choice: str) -> bool:
-        if choice in ("no", "none"):
-            return bool(re.search(rf"\b{choice}\b", haystack))
-        return choice.casefold() in haystack
+        return bool(re.search(rf"(?<!\w){re.escape(choice.casefold())}(?!\w)", haystack))
     return all(any(matches(choice) for choice in group) for group in task.get("answer_any", []))
 
 

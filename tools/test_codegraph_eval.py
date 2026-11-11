@@ -95,6 +95,16 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertEqual(result["successful_graph_calls"], 1)
         self.assertEqual(result["failed_mcp_calls"], 1)
 
+    def test_string_mcp_error_does_not_abort_trace(self):
+        events = [{"type": "item.completed", "item": {"type": "mcp_tool_call",
+                   "tool": "arch_graph_query", "status": "completed", "error": "boom"}}]
+        self.assertEqual(trace_result(events)["failed_mcp_calls"], 1)
+
+    def test_cargo_release_graph_command_counts(self):
+        events = [{"type": "item.completed", "item": {"type": "command_execution",
+                   "command": "cargo run --release -- graph query TxQueue", "exit_code": 0}}]
+        self.assertEqual(trace_result(events)["graph_calls"], 1)
+
     def test_answer_rubric_accepts_alternative_owners(self):
         task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
                     if task["id"] == "compiler_pipe_reg_owners")
@@ -107,6 +117,12 @@ class CodegraphEvalTests(unittest.TestCase):
                     if task["id"] == "user_missing_symbol")
         self.assertFalse(answer_passes(task, "NoSuchQueue is declared in examples/x.arch"))
         self.assertTrue(answer_passes(task, "No, NoSuchQueue was not found."))
+        self.assertFalse(answer_passes(task, "Yes - NoSuchQueue is in examples/q.arch (no other copies)."))
+
+    def test_answer_keys_require_token_boundaries(self):
+        tasks = {task["id"]: task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")}
+        self.assertFalse(answer_passes(tasks["user_fifo_lookup"], "examples/sync_fifo.arch:170"))
+        self.assertFalse(answer_passes(tasks["compiler_known_file"], "emit_fifo_sync_body_general"))
 
     def test_unverified_answer_is_not_a_success(self):
         self.assertFalse(verified_success({"success": True, "kind": "coverage_miss", "tool_calls": 0}))

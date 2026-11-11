@@ -1,5 +1,8 @@
 # Unguided ARCH code-graph evaluation: first live result
 
+The raw provider traces are retained locally, not committed to this repository;
+the headline token numbers cannot be independently recomputed from the repo alone.
+
 ## Frozen run
 
 Repository `f71697ae6e54be1024dc78e6aad1d7a692aa7e55`, task manifest
