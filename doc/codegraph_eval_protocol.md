@@ -1,5 +1,22 @@
 # Unguided ARCH code-graph evaluation
 
+## Direct retrieval gate
+
+`tools/codegraph_direct_eval.py` runs in cargo-test CI against the built
+compiler. It indexes `examples/`, `stdlib/`, and `tests/` as separate graph
+roots, builds the developer graph, and queries four frozen discovery prompts
+without launching Codex. Each required path and symbol must appear near the
+top of a 100-token-budget response; its reported line must still contain that
+symbol in the current source. The script prints index time, query time, output
+length, and ranks as JSON and fails on a coverage or bound regression. It does
+not estimate provider tokens or test whether an agent chooses the graph.
+
+The direct gate is deliberately cheaper than the live agent evaluation below.
+Run the latter only after a retrieval change passes the direct gate, including
+known-file controls and answer quality before claiming token savings.
+
+## Agent selection and tokens
+
 `tools/codegraph_eval.py` compares ordinary-search-only attempts with the
 current default ARCH workflow. Neither arm receives a graph command or index
 path in the task prompt. The default arm may choose graph retrieval, direct

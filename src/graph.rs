@@ -489,6 +489,12 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
         direct.retain(|hit| !matches!(hit.node.kind.as_str(), "generated_sv" | "interface_stub"));
     }
     for hit in &mut direct {
+        if terms
+            .iter()
+            .any(|term| term.len() >= 4 && term == &hit.node.name.to_ascii_lowercase())
+        {
+            hit.score += 220;
+        }
         if terms.iter().any(|term| term == &hit.node.kind) {
             hit.score += 80;
         }

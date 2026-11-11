@@ -352,6 +352,7 @@ pub fn query(
     if words.is_empty() {
         return Err(invalid("developer graph query requires a search term"));
     }
+    let lowered_query = query.to_lowercase();
     let mut hits = Vec::new();
     for feature in nodes.iter().filter(|node| node.kind == "feature") {
         let mut related: Vec<_> = edges
@@ -378,8 +379,15 @@ pub fn query(
         if matched == 0 {
             continue;
         }
+        let feature_name = feature.name.to_lowercase();
+        let feature_terms = terms(&feature.name);
+        let exact_feature_mention = !feature_terms.is_empty()
+            && words
+                .windows(feature_terms.len())
+                .any(|window| window == feature_terms.as_slice());
         let score = matched * 10
-            + usize::from(feature.name.to_lowercase().contains(&query.to_lowercase())) * 100
+            + usize::from(feature_name.contains(&lowered_query)) * 100
+            + usize::from(exact_feature_mention) * 100
             + usize::from(matched == words.len()) * 30;
         related.retain(|edge| roles.is_empty() || roles.iter().any(|role| role == &edge.role));
         if related.is_empty() {
