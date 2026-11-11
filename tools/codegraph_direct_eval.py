@@ -45,6 +45,7 @@ CASES = (
 )
 TOKEN_BUDGET = 100
 SOURCE_TOKEN_BUDGET = 200
+CROSS_TOKEN_BUDGET = 100
 CROSS_RELATIONS = {
     "user_axi_dma_instance_targets": (
         ("tests/axi_dma/AxiDmaTop.arch", 131, "mm2s_fsm", "tests/axi_dma/FsmMm2s.arch", 3, "FsmMm2s"),
@@ -148,10 +149,10 @@ def main() -> None:
         for task_id, relations in CROSS_RELATIONS.items():
             output, seconds = run([str(arch_bin), "graph", "context",
                                    cross_tasks[task_id]["prompt"], "--index", str(user_index),
-                                   "--token-budget", str(SOURCE_TOKEN_BUDGET),
+                                   "--token-budget", str(CROSS_TOKEN_BUDGET),
                                    "--include-source"], root)
             passed = grade_relations(output, relations, root, RELATION_MAX_RANK[task_id])
-            bounded = len(output) <= SOURCE_TOKEN_BUDGET * 4
+            bounded = len(output) <= CROSS_TOKEN_BUDGET * 4
             records.append({"id": task_id, "include_source": True,
                             "pass": passed and bounded, "seconds": seconds,
                             "output_chars": len(output), "bounded": bounded})

@@ -15,6 +15,8 @@ freshness-checked source and, for `use` or instance nodes, the indexed target
 declaration. The direct gate also checks this mode at 200 tokens against the
 frozen discovery prompts and the separate
 `doc/codegraph_eval_cross_file_tasks.json` relationship cases.
+The cross-file user relationship gate uses 100 tokens; the owner excerpt
+checks use 200 tokens to retain the AST/parser/backend triple.
 
 The direct gate is deliberately cheaper than the live agent evaluation below.
 Run the latter only after a retrieval change passes the direct gate, including
