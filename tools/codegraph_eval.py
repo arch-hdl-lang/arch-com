@@ -17,6 +17,7 @@ from pathlib import Path
 
 GRAPH_COMMAND = re.compile(r"(?:^|[\s/])(?:arch|cargo\s+run\s+--|target/(?:debug|release)/arch)\s+graph\b")
 NO_GRAPH = "Graph commands and graph MCP tools are unavailable for this task. Use ordinary repository search."
+VERIFY = "Verify the result with repository tools and complete the task; do not stop after describing a plan."
 
 
 def load_tasks(path: Path) -> list[dict]:
@@ -129,6 +130,15 @@ def make_mcp_config(workspace: Path, arch_bin: Path, mcp_python: Path) -> str:
     )
 
 
+def prompt_for(task: dict, condition: str) -> str:
+    prompt = task["prompt"] + " " + VERIFY
+    if condition == "no_graph":
+        prompt += " " + NO_GRAPH
+    if task["kind"] == "edit":
+        prompt += " Work only inside this checkout."
+    return prompt
+
+
 def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Path,
                 arch_bin: Path, mcp_python: Path, model: str, timeout: int,
                 ignore_user_config: bool) -> dict:
@@ -143,11 +153,7 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         workspace = repo
         index_seconds = 0.0
     try:
-        prompt = task["prompt"]
-        if condition == "no_graph":
-            prompt += " " + NO_GRAPH
-        if task["kind"] == "edit":
-            prompt += " Work only inside this checkout."
+        prompt = prompt_for(task, condition)
         command = [
             "codex", "exec", "--json", "-m", model,
             "-c", 'model_reasoning_effort="low"', "-c", make_mcp_config(workspace, arch_bin, mcp_python),

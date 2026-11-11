@@ -6,7 +6,9 @@ path in the task prompt. The default arm may choose graph retrieval, direct
 file reads, or search. The search-only arm receives only a tool-availability
 restriction. Both arms see the same repository and session-local ARCH MCP
 server; the installed Codex skill is available unless `--ignore-user-config`
-is selected. This measures actual graph selection as well as token use.
+is selected. Both arms are equally told to verify with repository tools and
+finish the task, so a planning message alone cannot masquerade as an answer.
+This measures actual graph selection as well as token use.
 
 The frozen task set is `doc/codegraph_eval_tasks.json`: user and compiler
 discovery, known-file controls, coverage misses, and two comment-only edits.

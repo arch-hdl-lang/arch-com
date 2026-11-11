@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codegraph_eval import answer_passes, load_tasks, parse_events, summarize, trace_result, verified_success
+from codegraph_eval import answer_passes, load_tasks, parse_events, prompt_for, summarize, trace_result, verified_success
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +46,16 @@ class CodegraphEvalTests(unittest.TestCase):
     def test_unverified_answer_is_not_a_success(self):
         self.assertFalse(verified_success({"success": True, "kind": "coverage_miss", "tool_calls": 0}))
         self.assertTrue(verified_success({"success": True, "kind": "coverage_miss", "tool_calls": 1}))
+
+    def test_both_arms_receive_same_completion_instruction(self):
+        task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
+                    if task["id"] == "compiler_arbiter_owners")
+        default = prompt_for(task, "default")
+        baseline = prompt_for(task, "no_graph")
+        self.assertIn("Verify the result with repository tools", default)
+        self.assertIn("Verify the result with repository tools", baseline)
+        self.assertNotIn("arch graph", default)
+        self.assertIn("Graph commands", baseline)
 
     def test_summary_uses_only_successful_pairs(self):
         def record(condition, success, tokens, graph_calls=0):
