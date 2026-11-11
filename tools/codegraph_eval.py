@@ -237,7 +237,7 @@ def main() -> None:
     if args.action == "analyze":
         print(json.dumps(summarize([json.loads(line) for line in args.records.read_text().splitlines()]), indent=2))
         return
-    repo, arch_bin, mcp_python = args.repo.resolve(), args.arch_bin.resolve(), args.mcp_python.resolve()
+    repo, arch_bin, mcp_python = args.repo.resolve(), args.arch_bin.resolve(), args.mcp_python.absolute()
     if not arch_bin.is_file() or not mcp_python.is_file():
         p.error("--arch-bin and --mcp-python must be existing files")
     tasks = load_tasks(args.tasks)
