@@ -40,7 +40,14 @@ def load_tasks(path: Path) -> list[dict]:
 
 
 def parse_events(raw: str) -> list[dict]:
-    return [json.loads(line) for line in raw.splitlines() if line.startswith("{")]
+    events = []
+    for line in raw.splitlines():
+        if line.startswith("{"):
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return events
 
 
 def trace_result(events: list[dict]) -> dict:
@@ -151,8 +158,12 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
     if task["kind"] == "edit":
         temp = tempfile.TemporaryDirectory(prefix="arch-graph-eval-", dir=output)
         workspace = Path(temp.name) / "repo"
-        subprocess.run(["git", "clone", "--shared", "--quiet", str(repo), str(workspace)], check=True)
-        index_seconds = prepare_indexes(workspace, arch_bin, task["cohort"], output, label)
+        try:
+            subprocess.run(["git", "clone", "--shared", "--quiet", str(repo), str(workspace)], check=True)
+            index_seconds = prepare_indexes(workspace, arch_bin, task["cohort"], output, label)
+        except Exception:
+            temp.cleanup()
+            raise
     else:
         temp = None
         workspace = repo
@@ -178,11 +189,17 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
             raw, stderr = process.communicate(timeout=max(timeout, 180) if task["kind"] == "edit" else timeout)
             exit_code = process.returncode
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 raw, stderr = process.communicate(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 raw, stderr = process.communicate()
             exit_code = 124
             stderr += "\nattempt timed out"

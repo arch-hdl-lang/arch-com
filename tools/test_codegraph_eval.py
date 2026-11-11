@@ -31,6 +31,10 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertEqual(result["input_tokens"] - result["cached_input_tokens"] + result["output_tokens"], 50)
         self.assertEqual(result["answer"], "src/ast.rs")
 
+    def test_partial_last_event_is_ignored(self):
+        events = parse_events('{"type":"turn.started"}\n{"type":"item.completed","item":')
+        self.assertEqual(events, [{"type": "turn.started"}])
+
     def test_answer_rubric_accepts_alternative_owners(self):
         task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
                     if task["id"] == "compiler_pipe_reg_owners")
