@@ -517,7 +517,7 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
         if matches!(hit.node.kind.as_str(), "instance" | "use")
             && task_lower.contains(&hit.node.file.to_ascii_lowercase())
         {
-            hit.score += 160;
+            hit.score += if hit.node.kind == "use" { 320 } else { 160 };
         }
     }
     direct.sort_by(|a, b| {
@@ -620,6 +620,24 @@ mod context_ranking_tests {
             3,
         );
         assert_eq!(hits[0].node.name, "round_robin_arbiter");
+    }
+
+    #[test]
+    fn named_import_file_promotes_use_node() {
+        let mut use_node = node("import", "use", "TestPkg");
+        use_node.file = "examples/pkg_user.arch".into();
+        let index = GraphIndex {
+            index_root: String::new(),
+            files: Vec::new(),
+            edges: Vec::new(),
+            nodes: vec![
+                use_node,
+                node("package", "package", "TestPkg"),
+                node("path", "module", "OtherDatapath"),
+            ],
+        };
+        let hits = context(&index, "Find TestPkg import in examples/pkg_user.arch", 3);
+        assert_eq!(hits[0].node.kind, "use");
     }
 }
 

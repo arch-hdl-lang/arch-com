@@ -21,8 +21,12 @@ The opt-in `--include-source` response appends a short line from the
 freshness-checked source. For `use` and instance hits, it also reports the
 indexed target declaration path and line. The excerpt format is opt-in; compact
 format remains the default.
-The deterministic gate passes 12/12 frozen compact, excerpt, and cross-file
-cases. Both named instance targets fit within a 100-token output bound.
+This branch also changes default compact `context` ranking: graph-neighbor
+scores use a 100-point rather than 25-point penalty. Construct-only exact and
+multi-term name boosts keep the round-robin arbiter ahead of generic reset
+ports; a `use` node is promoted when the query names its importer file. The
+deterministic audit covers those queries in both compact and excerpt modes,
+as well as the named-instance targets. All 14 cases pass after the review fixes.
 
 ## Paired findings
 
@@ -38,6 +42,17 @@ one successful graph call and no follow-up retrieval in each graph attempt.
 The simple package-import task was roughly break-even in total tokens and
 regressed in uncached tokens. Thus the evidence favors opt-in graph retrieval
 for named cross-file instance targets, not a general graph-first default.
+The committed analyzer now reports `cli_vs_search` for all verified pairs and
+`cli_vs_search_by_task` for each task; the subset totals are the DMA and Nic400
+task rows combined. Recompute from the retained local records with:
+
+```sh
+python3 tools/codegraph_eval.py analyze /private/tmp/arch-codegraph-cross-three-user-20261111/records.jsonl
+```
+
+Those raw traces are local artifacts, not committed reproducibility inputs.
+The token numbers are snapshot-bound and were not rerun after the ranking
+review fixes.
 
 A one-repeat compiler ownership trial used 52,928 total / 18,880 uncached
 tokens with the compact 100-token graph, versus 118,295 / 25,495 for search.

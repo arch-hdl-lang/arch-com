@@ -170,7 +170,8 @@ def main() -> None:
             bounded = len(output) <= CROSS_TOKEN_BUDGET * 4
             records.append({"id": task_id, "include_source": True,
                             "pass": passed and bounded, "seconds": seconds,
-                            "output_chars": len(output), "bounded": bounded})
+                            "output_chars": len(output), "bounded": bounded,
+                            **({"output": output} if not passed else {})})
         compiler_task = cross_tasks["compiler_pipe_reg_change_map"]
         output, seconds = run([str(arch_bin), "graph", "dev-query", compiler_task["prompt"],
                                "--root", str(root), "--index", str(dev_index),

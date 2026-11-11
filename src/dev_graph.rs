@@ -494,6 +494,8 @@ mod tests {
         assert!(result.contains("pipe_reg_test.arch"));
         let sourced = query(root, &out, "pipe_reg reset", 30, 800, &[], true).unwrap();
         assert!(sourced.contains("| fn emit_pipe_reg("));
+        assert!(!sourced.contains(" | **ARCH**"));
+        assert!(!sourced.contains(" | ---"));
         let parser_only = query(
             root,
             &out,
