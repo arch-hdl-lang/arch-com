@@ -63,15 +63,24 @@ def trace_result(events: list[dict]) -> dict:
     graph_mcp_calls = [item for item in mcp_calls if re.search(r"arch_(?:dev_)?graph_", item.get("tool", ""))]
     graph_calls = len(graph_commands) + len(graph_mcp_calls)
     successful_graph_calls = sum(item.get("exit_code") == 0 for item in graph_commands)
-    successful_graph_calls += sum(item.get("status") == "completed" and not item.get("error")
-                                  for item in graph_mcp_calls)
+    def mcp_succeeded(item: dict) -> bool:
+        if item.get("status") != "completed" or item.get("error"):
+            return False
+        result = item.get("result") or {}
+        content = result.get("content") or []
+        return any(part.get("type") == "text" and part.get("text", "").startswith("[OK]")
+                   for part in content)
+
+    successful_graph_calls += sum(mcp_succeeded(item) for item in graph_mcp_calls)
     return {
         "answer": answers[-1] if answers else "",
         "commands": commands,
         "tool_calls": len(commands) + len(mcp_calls),
         "graph_calls": graph_calls,
         "successful_graph_calls": successful_graph_calls,
-        "failed_mcp_calls": sum(item.get("status") != "completed" for item in mcp_calls),
+        "failed_mcp_calls": sum(item.get("status") != "completed" or item.get("error") or
+                                (item in graph_mcp_calls and not mcp_succeeded(item))
+                                for item in mcp_calls),
         "input_tokens": sum(item["input_tokens"] for item in usage),
         "cached_input_tokens": sum(item.get("cached_input_tokens", 0) for item in usage),
         "output_tokens": sum(item["output_tokens"] for item in usage),

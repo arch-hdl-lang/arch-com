@@ -56,3 +56,38 @@ surface selective graph-first discovery in repository agent instructions),
 then rerun the same frozen tasks and include the known-file controls. Do not
 make graph calls unconditional: known files should remain direct reads, and
 unmapped or empty graph results should fall back to ordinary search.
+
+## Exploratory guidance follow-up
+
+Three local, unmerged `AGENTS.md` variants were tested with the same frozen
+manifest hash, `gpt-6-luna` at low reasoning, seed 53, and two repeats. These
+are separate repository snapshots, not an A/B test of only one text change;
+provider output varied across repetitions. The live runs were not CI jobs.
+
+| Variant | Scope | Default accuracy | Search-only accuracy | Default graph use | Paired total-token change |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Broad graph-first (`9679a6ea`) | 4 discovery tasks | 8/8 | 8/8 | 5/8 attempts | +81.6% (8 pairs) |
+| Exact-symbol search preferred (`eba300d9`) | 4 discovery tasks | 6/8 | 8/8 | 1/8 attempts | +24.7% (6 correct pairs) |
+| Compiler ownership graph required (`f4bdd254`) | 2 compiler tasks | 4/4 | 3/4 | 3/4 attempts | +81.8% (3 correct pairs) |
+
+For the broad variant, default used 1,383,120 total / 231,760 uncached tokens
+versus search-only's 761,662 total / 204,606 uncached tokens. Three of its
+eight graph MCP calls returned `[ERROR (exit 1)]` for unsupported role names
+(`sv_codegen`, `codegen`, or uppercase `AST`), then the agent retried without
+roles. All five graph-using attempts eventually had an `[OK]` result. The evaluator now counts
+the three errors as failures rather than successful graph calls. The refined
+variant reduced token use but lost two compiler-owner answers: one omitted
+`emit_pipe_reg`, and one confused a resource-policy parser with the arbiter
+declaration parser. In the final compiler-only variant, one search-only
+attempt said no repository-reading tool was available; it is excluded from
+the three correct pairs.
+
+None of these variants establishes token savings from autonomous graph use.
+The broad variant increased uncached tokens by 13.3% as well as total tokens;
+the refined variant's lower cost coincided with lower accuracy. Keep these
+guidance changes unmerged. The next graph optimization should target costly
+follow-on retrieval after a successful graph query, then pass the same frozen
+correctness and token checks plus the known-file controls before changing the
+default workflow. Raw traces and summaries are retained in the local
+`arch-codegraph-*-eval-20261110-approved` artifact directories beside the
+checkout.

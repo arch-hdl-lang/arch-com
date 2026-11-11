@@ -41,6 +41,18 @@ class CodegraphEvalTests(unittest.TestCase):
                    "command": "head .archdevgraph/nodes.jsonl", "exit_code": 0}}]
         self.assertEqual(trace_result(events)["graph_calls"], 1)
 
+    def test_completed_mcp_error_is_not_a_successful_graph_call(self):
+        events = [
+            {"type": "item.completed", "item": {"type": "mcp_tool_call", "tool": "arch_dev_graph_query",
+             "status": "completed", "result": {"content": [{"type": "text", "text": "[ERROR (exit 1)] unknown role"}]}}},
+            {"type": "item.completed", "item": {"type": "mcp_tool_call", "tool": "arch_dev_graph_query",
+             "status": "completed", "result": {"content": [{"type": "text", "text": "[OK]\nfeature arbiter"}]}}},
+        ]
+        result = trace_result(events)
+        self.assertEqual(result["graph_calls"], 2)
+        self.assertEqual(result["successful_graph_calls"], 1)
+        self.assertEqual(result["failed_mcp_calls"], 1)
+
     def test_answer_rubric_accepts_alternative_owners(self):
         task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
                     if task["id"] == "compiler_pipe_reg_owners")
