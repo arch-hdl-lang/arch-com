@@ -313,6 +313,7 @@ def main() -> None:
         "repo_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
         "repo_status": subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip(),
         "tasks_sha256": hashlib.sha256(args.tasks.read_bytes()).hexdigest(),
+        "selected_task_ids": [task["id"] for task in tasks],
         "model": args.model, "seed": args.seed, "repeats": args.repeats,
         "ignore_user_config": args.ignore_user_config, "approval_mode": "approve-for-me",
         "codex_version": subprocess.check_output(["codex", "--version"], text=True).strip(),

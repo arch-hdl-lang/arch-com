@@ -3,9 +3,10 @@
 `tools/codegraph_eval.py` compares ordinary-search-only attempts with the
 current default ARCH workflow. Neither arm receives a graph command or index
 path in the task prompt. The default arm may choose graph retrieval, direct
-file reads, or search. The search-only arm receives only a tool-availability
-restriction. Both arms see the same repository and session-local ARCH MCP
-server; the installed Codex skill is available unless `--ignore-user-config`
+file reads, or search. The search-only arm receives a graph prohibition and
+an instruction to use ordinary repository search. Both arms see the same
+repository and session-local ARCH MCP server; the installed Codex skill is
+available unless `--ignore-user-config`
 is selected. Both arms are equally told to make bounded retrieval calls and
 finish the task, so a planning message alone cannot masquerade as an answer.
 This measures actual graph selection as well as token use.
@@ -35,8 +36,8 @@ python3 tools/codegraph_eval.py analyze /tmp/arch-codegraph-eval/records.jsonl
 The runner refuses a dirty repository or an existing records file. It builds
 fresh user and developer indexes and records build time separately from agent
 latency. `metadata.json` pins the repository SHA, CLI/compiler versions, model,
-seed, and task-file digest. JSONL traces, stderr, edit diffs, validation notes,
-and `summary.json` are retained. The per-attempt `graph_calls` field measures
+seed, task-file digest, and selected task IDs. JSONL traces, stderr, edit diffs,
+validation notes, and `summary.json` are retained. The per-attempt `graph_calls` field measures
 actual graph CLI or MCP use. A correct default answer with zero graph calls is
 *not* evidence of graph savings. Known-file controls should normally avoid
 graph calls. Read-only answers with no tool call are unverified and do not

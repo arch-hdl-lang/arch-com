@@ -6,6 +6,10 @@ Repository `f71697ae6e54be1024dc78e6aad1d7a692aa7e55`, task manifest
 SHA-256 `c0351fda8436941f58c63738c8fffc3a568f318faebb4b6b80e79a3ccaf0f8f5`.
 Codex CLI `0.159.2`, `gpt-6-luna` at low reasoning, seed 53. Four discovery
 tasks (two user-code, two compiler-owner), two repeats, randomized arm order.
+Selected IDs: `user_fifo_lookup`, `user_bus_relationship`,
+`compiler_arbiter_owners`, and `compiler_pipe_reg_owners`.
+The `arch` binary was built from `e7010156`, which differs from the benchmark
+HEAD only in harness code and documentation, not compiler graph implementation.
 The installed Codex configuration was loaded. A session-local ARCH MCP server
 override avoided a stale local script path; an explicit preflight call to
 `arch_graph_query("TxQueue")` completed successfully with automatic approval
