@@ -35,7 +35,7 @@ costs are outside agent time and token totals. The raw `metadata.json`,
 `records.jsonl`, `summary.json`, and per-attempt JSONL traces are retained in
 the local benchmark artifact directory
 `arch-codegraph-unguided-eval-20261110-mcp-approved` beside this checkout.
-The deterministic runner and grader are in `tools/codegraph_eval.py`; eight
+The deterministic runner and grader are in `tools/codegraph_eval.py`; nine
 offline harness tests run in CI.
 
 ## Interpretation

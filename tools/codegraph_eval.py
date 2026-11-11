@@ -254,9 +254,15 @@ def summarize(records: list[dict]) -> dict:
                  and verified_success(base) and verified_success(r)]
         baseline_tokens = sum(a["input_tokens"] + a["output_tokens"] for a, _ in pairs)
         default_tokens = sum(b["input_tokens"] + b["output_tokens"] for _, b in pairs)
+        graph_pairs = [(a, b) for a, b in pairs if b["graph_calls"] > 0]
+        graph_baseline_tokens = sum(a["input_tokens"] + a["output_tokens"] for a, _ in graph_pairs)
+        graph_default_tokens = sum(b["input_tokens"] + b["output_tokens"] for _, b in graph_pairs)
         groups[cohort] = {
             "arms": arms, "successful_pairs": len(pairs),
-            "paired_token_saving_pct": round(100 * (1 - default_tokens / baseline_tokens), 2) if baseline_tokens else None,
+            "paired_default_vs_search_pct": round(100 * (1 - default_tokens / baseline_tokens), 2) if baseline_tokens else None,
+            "graph_used_successful_pairs": len(graph_pairs),
+            "graph_used_pair_saving_pct": round(100 * (1 - graph_default_tokens / graph_baseline_tokens), 2)
+            if graph_baseline_tokens else None,
             "default_discovery_graph_uses": sum(r["graph_calls"] > 0 for r in subset
                                                 if r["condition"] == "default" and r["kind"] == "discovery"),
             "default_discovery_attempts": sum(r["condition"] == "default" and r["kind"] == "discovery"

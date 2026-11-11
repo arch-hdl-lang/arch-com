@@ -70,9 +70,11 @@ class CodegraphEvalTests(unittest.TestCase):
                     "tool_calls": 1, "agent_seconds": 1, "index_seconds": 0}
         summary = summarize([record("no_graph", True, 100), record("default", True, 70, 1)])
         self.assertEqual(summary["user"]["successful_pairs"], 1)
-        self.assertEqual(summary["user"]["paired_token_saving_pct"], 30)
+        self.assertEqual(summary["user"]["paired_default_vs_search_pct"], 30)
+        self.assertEqual(summary["user"]["graph_used_pair_saving_pct"], 30)
         failed = summarize([record("no_graph", True, 100), record("default", False, 70)])
-        self.assertIsNone(failed["user"]["paired_token_saving_pct"])
+        self.assertIsNone(failed["user"]["paired_default_vs_search_pct"])
+        self.assertIsNone(failed["user"]["graph_used_pair_saving_pct"])
 
     def test_duplicate_ids_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

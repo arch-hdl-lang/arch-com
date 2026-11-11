@@ -53,3 +53,6 @@ input plus output tokens, uncached tokens, answer/edit success, graph selection,
 tool calls, latency, and index overhead. Report per-task values; do not treat
 shorter but incorrect attempts as savings. Human review is still required for
 alternative correct answers and edit quality beyond the deterministic rubric.
+The summary distinguishes the default-vs-search delta from savings on pairs
+where the default arm actually used the graph. If no such pair exists, the
+graph-saving metric is null.
