@@ -34,7 +34,7 @@
       "cohort": "compiler",
       "kind": "discovery",
       "prompt": "For ARCH round-robin arbitration, identify the AST type, parser function, and SystemVerilog backend function with their source paths.",
-      "answer_any": [["ArbiterDecl"], ["parse_arbiter"], ["emit_arbiter_round_robin"], ["src/ast.rs"], ["src/parser.rs"], ["src/codegen/arbiter.rs"]]
+      "answer_any": [["ArbiterDecl", "ArbiterPolicy"], ["parse_arbiter"], ["emit_arbiter_round_robin"], ["src/ast.rs"], ["src/parser.rs"], ["src/codegen/arbiter.rs"]]
     },
     {
       "id": "compiler_pipe_reg_owners",
