@@ -10,6 +10,12 @@ explicitly told to make a bounded graph query; these runs do **not** measure
 autonomous graph selection. Index build time (~30 seconds user, ~1.3 seconds
 developer) is separate from agent time and tokens. Tool-category counts and
 output characters are retrieval-work proxies, not per-tool provider tokens.
+The expanded three-task run used commit `bf3a1b9811847e841ff00fab2191272d73a34587`,
+task-manifest SHA-256 `a908728c244ccf082aded952e19b7453a739c80029996a97c4e19dc2e24e853d`,
+Codex CLI `0.159.2`, seed 55, and two repeats with the installed user
+configuration. The earlier two-task run used commit
+`d52050d74f784cde0333bd7aec50e1b3b6c1786a` and manifest SHA-256
+`7f5821998886d69ab3f25209af174136afa24e3f87b1bdeb304945fcfee848fa`.
 
 The opt-in `--include-source` response appends a short line from the
 freshness-checked source. For `use` and instance hits, it also reports the
