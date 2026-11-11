@@ -490,11 +490,19 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
         direct.retain(|hit| !matches!(hit.node.kind.as_str(), "generated_sv" | "interface_stub"));
     }
     for hit in &mut direct {
-        if terms
-            .iter()
-            .any(|term| term.len() >= 4 && term == &hit.node.name.to_ascii_lowercase())
+        let name = hit.node.name.to_ascii_lowercase();
+        if is_construct_like(&hit.node.kind)
+            && terms.iter().any(|term| term.len() >= 4 && term == &name)
         {
             hit.score += 220;
+        } else if is_construct_like(&hit.node.kind)
+            && terms
+                .iter()
+                .filter(|term| term.len() >= 4 && name.contains(term.as_str()))
+                .count()
+                >= 2
+        {
+            hit.score += 180;
         }
         if terms.iter().any(|term| term == &hit.node.kind) {
             hit.score += 80;
@@ -551,6 +559,68 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
     });
     direct.truncate(limit);
     direct
+}
+
+#[cfg(test)]
+mod context_ranking_tests {
+    use super::*;
+
+    fn node(id: &str, kind: &str, name: &str) -> NodeRecord {
+        NodeRecord {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            file: format!("{id}.arch"),
+            span: None,
+            scope: None,
+            doc: None,
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn common_port_name_does_not_get_construct_boost() {
+        let index = GraphIndex {
+            index_root: String::new(),
+            files: Vec::new(),
+            edges: Vec::new(),
+            nodes: vec![
+                node("arb", "module", "round_robin_arbiter"),
+                node("reset", "port", "reset"),
+                node("other", "module", "other_design"),
+            ],
+        };
+        let hits = context(&index, "Which round_robin_arbiter grants on reset?", 3);
+        assert_eq!(hits[0].node.name, "round_robin_arbiter");
+        assert!(
+            hits[0].score
+                > hits
+                    .iter()
+                    .find(|hit| hit.node.id == "reset")
+                    .unwrap()
+                    .score
+        );
+    }
+
+    #[test]
+    fn multi_term_construct_beats_unrelated_arbiter() {
+        let index = GraphIndex {
+            index_root: String::new(),
+            files: Vec::new(),
+            edges: Vec::new(),
+            nodes: vec![
+                node("round", "module", "round_robin_arbiter"),
+                node("handshake", "arbiter", "NativeIndexedHandshakeArb"),
+                node("reset", "port", "reset"),
+            ],
+        };
+        let hits = context(
+            &index,
+            "Which arbiter grants in round-robin order on reset?",
+            3,
+        );
+        assert_eq!(hits[0].node.name, "round_robin_arbiter");
+    }
 }
 
 pub fn format_query_hits(hits: &[QueryHit]) -> String {

@@ -29,6 +29,13 @@ CASES = (
         "max_rank": 4,
     },
     {
+        "id": "user_arbiter_reset",
+        "query": "Which arbiter grants requests in round-robin order and what happens to the grant on reset?",
+        "kind": "context",
+        "expected": (("tests/cvdp/round_robin_arbiter.arch", "round_robin_arbiter"),),
+        "max_rank": 2,
+    },
+    {
         "id": "compiler_arbiter_owners",
         "kind": "dev-query",
         "expected": (("src/ast.rs", "ArbiterDecl"), ("src/parser.rs", "parse_arbiter"),
@@ -121,7 +128,7 @@ def main() -> None:
     tasks = {task["id"]: task for task in load_tasks(root / "doc/codegraph_eval_tasks.json")}
     cross_tasks = {task["id"]: task for task in load_tasks(
         root / "doc/codegraph_eval_cross_file_tasks.json")}
-    missing = {case["id"] for case in CASES} - tasks.keys()
+    missing = {case["id"] for case in CASES if "query" not in case} - tasks.keys()
     if missing:
         parser.error(f"missing discovery tasks: {sorted(missing)}")
     with tempfile.TemporaryDirectory(prefix="arch-graph-direct-") as directory:
@@ -134,7 +141,7 @@ def main() -> None:
         records = []
         for case in CASES:
             for include_source in (False, True):
-                query = tasks[case["id"]]["prompt"]
+                query = case.get("query") or tasks[case["id"]]["prompt"]
                 budget = SOURCE_TOKEN_BUDGET if include_source else TOKEN_BUDGET
                 if case["kind"] == "context":
                     command = [str(arch_bin), "graph", "context", query,
@@ -152,7 +159,8 @@ def main() -> None:
                 records.append({"id": case["id"], "include_source": include_source,
                                 "pass": passed and bounded, "ranks": ranks,
                                 "seconds": seconds, "output_chars": len(output),
-                                "bounded": bounded})
+                                "bounded": bounded,
+                                **({"output": output} if not passed else {})})
         for task_id, relations in CROSS_RELATIONS.items():
             output, seconds = run([str(arch_bin), "graph", "context",
                                    cross_tasks[task_id]["prompt"], "--index", str(user_index),
