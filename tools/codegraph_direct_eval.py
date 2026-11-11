@@ -29,6 +29,13 @@ CASES = (
         "max_rank": 4,
     },
     {
+        "id": "user_arbiter_reset",
+        "query": "Which arbiter grants requests in round-robin order and what happens to the grant on reset?",
+        "kind": "context",
+        "expected": (("tests/cvdp/round_robin_arbiter.arch", "round_robin_arbiter"),),
+        "max_rank": 2,
+    },
+    {
         "id": "compiler_arbiter_owners",
         "kind": "dev-query",
         "expected": (("src/ast.rs", "ArbiterDecl"), ("src/parser.rs", "parse_arbiter"),
@@ -81,7 +88,7 @@ def main() -> None:
     if not arch_bin.is_file():
         parser.error(f"compiler binary not found: {arch_bin}")
     tasks = {task["id"]: task for task in load_tasks(root / "doc/codegraph_eval_tasks.json")}
-    missing = {case["id"] for case in CASES} - tasks.keys()
+    missing = {case["id"] for case in CASES if "query" not in case} - tasks.keys()
     if missing:
         parser.error(f"missing discovery tasks: {sorted(missing)}")
     with tempfile.TemporaryDirectory(prefix="arch-graph-direct-") as directory:
@@ -93,7 +100,7 @@ def main() -> None:
                                     "--out", str(dev_index)], root)
         records = []
         for case in CASES:
-            query = tasks[case["id"]]["prompt"]
+            query = case.get("query") or tasks[case["id"]]["prompt"]
             if case["kind"] == "context":
                 command = [str(arch_bin), "graph", "context", query,
                            "--index", str(user_index), "--token-budget", str(TOKEN_BUDGET)]
@@ -105,7 +112,8 @@ def main() -> None:
             passed, ranks = grade(output, case["expected"], case["max_rank"], root)
             bounded = len(output) <= TOKEN_BUDGET * 4
             records.append({"id": case["id"], "pass": passed and bounded, "ranks": ranks,
-                            "seconds": seconds, "output_chars": len(output), "bounded": bounded})
+                            "seconds": seconds, "output_chars": len(output), "bounded": bounded,
+                            **({"output": output} if not passed else {})})
         print(json.dumps({"index_seconds": {"user": user_index_seconds,
                                             "developer": dev_index_seconds},
                           "cases": records}, indent=2))
