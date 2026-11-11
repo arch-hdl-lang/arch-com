@@ -558,6 +558,65 @@ pub fn format_query_hits(hits: &[QueryHit]) -> String {
         .join("\n")
 }
 
+pub fn format_query_hits_with_source(
+    index: &GraphIndex,
+    hits: &[QueryHit],
+) -> std::io::Result<String> {
+    let mut lines = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let mut line = format!(
+            "{}  {}  {}  score={}",
+            location_label(&hit.node),
+            hit.node.kind,
+            hit.node.name,
+            hit.score
+        );
+        if let (Some(file), Some(span)) = (
+            index
+                .files
+                .iter()
+                .find(|file| file.rel_path == hit.node.file),
+            &hit.node.span,
+        ) {
+            if span.line_start == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} has no source line", hit.node.file),
+                ));
+            }
+            let source = fs::read_to_string(&file.abs_path)?;
+            let excerpt = source
+                .lines()
+                .nth(span.line_start.saturating_sub(1))
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("{}:{} is unavailable", hit.node.file, span.line_start),
+                    )
+                })?;
+            let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+            let excerpt: String = excerpt.chars().take(120).collect();
+            line.push_str(&format!(" | {excerpt}"));
+        }
+        if let Some(target) = index
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.src == hit.node.id && matches!(edge.kind.as_str(), "instantiates" | "imports")
+            })
+            .and_then(|edge| index.nodes.iter().find(|node| node.id == edge.dst))
+        {
+            line.push_str(&format!(" -> {} {}", location_label(target), target.name));
+        }
+        lines.push(line);
+    }
+    Ok(if lines.is_empty() {
+        "No graph matches.".to_string()
+    } else {
+        lines.join("\n")
+    })
+}
+
 pub fn format_callers(hits: &[(EdgeRecord, NodeRecord)]) -> String {
     if hits.is_empty() {
         return "No indexed call edges matched.".to_string();

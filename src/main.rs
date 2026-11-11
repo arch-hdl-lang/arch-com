@@ -481,6 +481,9 @@ enum GraphCommand {
         token_budget: usize,
         #[arg(long = "role")]
         roles: Vec<String>,
+        /// Append a short verified source line to each result
+        #[arg(long)]
+        include_source: bool,
     },
     /// Index ARCH source files into JSONL graph records
     Index {
@@ -558,6 +561,9 @@ enum GraphCommand {
         /// Approximate output budget for compact text (four characters per token)
         #[arg(long, default_value_t = 400)]
         token_budget: usize,
+        /// Append a short verified source line to each result
+        #[arg(long)]
+        include_source: bool,
     },
     /// Render an indexed graph as a standalone clickable HTML file
     Html {
@@ -1179,11 +1185,20 @@ fn main() -> miette::Result<()> {
                 limit,
                 token_budget,
                 roles,
+                include_source,
             } => {
                 println!(
                     "{}",
-                    arch::dev_graph::query(&root, &index, &query, limit, token_budget, &roles)
-                        .into_diagnostic()?
+                    arch::dev_graph::query(
+                        &root,
+                        &index,
+                        &query,
+                        limit,
+                        token_budget,
+                        &roles,
+                        include_source
+                    )
+                    .into_diagnostic()?
                 );
                 Ok(())
             }
@@ -1218,7 +1233,8 @@ fn main() -> miette::Result<()> {
                 json,
                 limit,
                 token_budget,
-            } => run_graph_context(&task, &index, json, limit, token_budget),
+                include_source,
+            } => run_graph_context(&task, &index, json, limit, token_budget, include_source),
             GraphCommand::Html { index, out, title } => {
                 run_graph_html(&index, &out, title.as_deref())
             }
@@ -3655,6 +3671,7 @@ fn run_graph_context(
     json: bool,
     limit: usize,
     token_budget: usize,
+    include_source: bool,
 ) -> miette::Result<()> {
     if task.trim().is_empty() {
         return Err(miette::miette!(
@@ -3667,12 +3684,21 @@ fn run_graph_context(
     if token_budget == 0 {
         return Err(miette::miette!("--token-budget must be greater than 0"));
     }
+    if json && include_source {
+        return Err(miette::miette!(
+            "--include-source is only supported for compact text"
+        ));
+    }
     let graph = arch::graph::load_index(index).into_diagnostic()?;
     let hits = arch::graph::context(&graph, task, limit);
     if json {
         println!("{}", serde_json::to_string_pretty(&hits).into_diagnostic()?);
     } else {
-        let output = arch::graph::format_query_hits(&hits);
+        let output = if include_source {
+            arch::graph::format_query_hits_with_source(&graph, &hits).into_diagnostic()?
+        } else {
+            arch::graph::format_query_hits(&hits)
+        };
         let mut remaining = token_budget.saturating_mul(4);
         for line in output.lines() {
             if line.len() + 1 > remaining {

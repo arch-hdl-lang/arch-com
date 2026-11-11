@@ -527,13 +527,15 @@ def arch_graph_index(
 @mcp.tool()
 def arch_graph_context(task: str, index: str = ".archgraph", limit: int = 30,
                        token_budget: int = 400, source_paths: list[str] | None = None,
-                       root: str | None = None) -> str:
+                       root: str | None = None, include_source: bool = False) -> str:
     """Return bounded context; rebuild a missing or stale index from source_paths."""
     index_path = _resolve_safe(index)
     _validate_graph_sources(index_path)
     capped = max(1, min(limit, 100))
     query_cmd = [ARCH_BIN, "graph", "context", task, "--index", str(index_path),
                  "--limit", str(capped), "--token-budget", str(max(1, min(token_budget, 2000)))]
+    if include_source:
+        query_cmd.append("--include-source")
     result = _run(query_cmd, timeout=20)
     if not _needs_graph_refresh(result) or not source_paths:
         return result
@@ -607,7 +609,7 @@ def arch_dev_graph_index(root: str = ".", out: str = ".archdevgraph") -> str:
 @mcp.tool()
 def arch_dev_graph_query(query: str, root: str = ".", index: str = ".archdevgraph",
                          limit: int = 30, token_budget: int = 400,
-                         roles: list[str] | None = None) -> str:
+                         roles: list[str] | None = None, include_source: bool = False) -> str:
     """Return bounded compiler owner/test context; refresh stale indexes."""
     root_path = _resolve_safe(root)
     index_path = _resolve_safe(str(root_path / index)) if not pathlib.Path(index).is_absolute() else _resolve_safe(index)
@@ -616,6 +618,8 @@ def arch_dev_graph_query(query: str, root: str = ".", index: str = ".archdevgrap
                "--token-budget", str(max(1, min(token_budget, 2000)))]
     for role in roles or []:
         command += ["--role", role]
+    if include_source:
+        command.append("--include-source")
     result = _run(command, timeout=20)
     if not _needs_graph_refresh(result):
         return result

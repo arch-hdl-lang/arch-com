@@ -11,7 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from codegraph_eval import load_tasks
+from codegraph_eval import answer_passes, load_tasks
 
 
 CASES = (
@@ -44,6 +44,18 @@ CASES = (
     },
 )
 TOKEN_BUDGET = 100
+SOURCE_TOKEN_BUDGET = 200
+CROSS_RELATIONS = {
+    "user_axi_dma_instance_targets": (
+        ("tests/axi_dma/AxiDmaTop.arch", 131, "mm2s_fsm", "tests/axi_dma/FsmMm2s.arch", 3, "FsmMm2s"),
+        ("tests/axi_dma/AxiDmaTop.arch", 139, "mm2s_fifo", "tests/axi_dma/Mm2sFifo.arch", 2, "Mm2sFifo"),
+    ),
+    "user_package_import_target": (
+        ("examples/pkg_user.arch", 1, "TestPkg", "examples/TestPkg.arch", 1, "TestPkg"),
+    ),
+}
+RELATION_MAX_RANK = {"user_axi_dma_instance_targets": 2,
+                     "user_package_import_target": 4}
 
 
 def run(command: list[str], root: Path, timeout: int = 120) -> tuple[str, float]:
@@ -56,7 +68,7 @@ def run(command: list[str], root: Path, timeout: int = 120) -> tuple[str, float]
 
 
 def grade(output: str, expected: tuple[tuple[str, str], ...], max_rank: int,
-          root: Path) -> tuple[bool, list[int | None]]:
+          root: Path, include_source: bool = False) -> tuple[bool, list[int | None]]:
     lines = output.splitlines()
     ranks = []
     for path, symbol in expected:
@@ -65,11 +77,29 @@ def grade(output: str, expected: tuple[tuple[str, str], ...], max_rank: int,
         rank = None
         for position, line in enumerate(lines, 1):
             match = pattern.search(line)
-            if match and 0 < int(match.group(1)) <= len(source) and symbol in source[int(match.group(1)) - 1]:
+            if not match or not 0 < int(match.group(1)) <= len(source):
+                continue
+            source_line = source[int(match.group(1)) - 1]
+            excerpt = " ".join(source_line.split())[:120]
+            if symbol in source_line and (not include_source or line.endswith(" | " + excerpt)):
                 rank = position
                 break
         ranks.append(rank)
     return all(rank is not None and rank <= max_rank for rank in ranks), ranks
+
+
+def grade_relations(output: str, relations: tuple[tuple[str, int, str, str, int, str], ...],
+                    root: Path, max_rank: int = 4) -> bool:
+    for parent, parent_line, instance, child, child_line, target in relations:
+        source_line = (root / parent).read_text().splitlines()[parent_line - 1]
+        target_line = (root / child).read_text().splitlines()[child_line - 1]
+        if instance not in source_line or target not in target_line:
+            return False
+        if not any(line.startswith(f"{parent}:{parent_line} ") and instance in line and
+                   f"-> {child}:{child_line} {target}" in line
+                   for line in output.splitlines()[:max_rank]):
+            return False
+    return True
 
 
 def main() -> None:
@@ -81,6 +111,8 @@ def main() -> None:
     if not arch_bin.is_file():
         parser.error(f"compiler binary not found: {arch_bin}")
     tasks = {task["id"]: task for task in load_tasks(root / "doc/codegraph_eval_tasks.json")}
+    cross_tasks = {task["id"]: task for task in load_tasks(
+        root / "doc/codegraph_eval_cross_file_tasks.json")}
     missing = {case["id"] for case in CASES} - tasks.keys()
     if missing:
         parser.error(f"missing discovery tasks: {sorted(missing)}")
@@ -93,19 +125,45 @@ def main() -> None:
                                     "--out", str(dev_index)], root)
         records = []
         for case in CASES:
-            query = tasks[case["id"]]["prompt"]
-            if case["kind"] == "context":
-                command = [str(arch_bin), "graph", "context", query,
-                           "--index", str(user_index), "--token-budget", str(TOKEN_BUDGET)]
-            else:
-                command = [str(arch_bin), "graph", "dev-query", query,
-                           "--root", str(root), "--index", str(dev_index),
-                           "--token-budget", str(TOKEN_BUDGET)]
-            output, seconds = run(command, root)
-            passed, ranks = grade(output, case["expected"], case["max_rank"], root)
-            bounded = len(output) <= TOKEN_BUDGET * 4
-            records.append({"id": case["id"], "pass": passed and bounded, "ranks": ranks,
-                            "seconds": seconds, "output_chars": len(output), "bounded": bounded})
+            for include_source in (False, True):
+                query = tasks[case["id"]]["prompt"]
+                budget = SOURCE_TOKEN_BUDGET if include_source else TOKEN_BUDGET
+                if case["kind"] == "context":
+                    command = [str(arch_bin), "graph", "context", query,
+                               "--index", str(user_index), "--token-budget", str(budget)]
+                else:
+                    command = [str(arch_bin), "graph", "dev-query", query,
+                               "--root", str(root), "--index", str(dev_index),
+                               "--token-budget", str(budget)]
+                if include_source:
+                    command.append("--include-source")
+                output, seconds = run(command, root)
+                passed, ranks = grade(output, case["expected"], case["max_rank"],
+                                      root, include_source)
+                bounded = len(output) <= budget * 4
+                records.append({"id": case["id"], "include_source": include_source,
+                                "pass": passed and bounded, "ranks": ranks,
+                                "seconds": seconds, "output_chars": len(output),
+                                "bounded": bounded})
+        for task_id, relations in CROSS_RELATIONS.items():
+            output, seconds = run([str(arch_bin), "graph", "context",
+                                   cross_tasks[task_id]["prompt"], "--index", str(user_index),
+                                   "--token-budget", str(SOURCE_TOKEN_BUDGET),
+                                   "--include-source"], root)
+            passed = grade_relations(output, relations, root, RELATION_MAX_RANK[task_id])
+            bounded = len(output) <= SOURCE_TOKEN_BUDGET * 4
+            records.append({"id": task_id, "include_source": True,
+                            "pass": passed and bounded, "seconds": seconds,
+                            "output_chars": len(output), "bounded": bounded})
+        compiler_task = cross_tasks["compiler_pipe_reg_change_map"]
+        output, seconds = run([str(arch_bin), "graph", "dev-query", compiler_task["prompt"],
+                               "--root", str(root), "--index", str(dev_index),
+                               "--token-budget", str(SOURCE_TOKEN_BUDGET),
+                               "--include-source"], root)
+        bounded = len(output) <= SOURCE_TOKEN_BUDGET * 4
+        records.append({"id": compiler_task["id"], "include_source": True,
+                        "pass": answer_passes(compiler_task, output) and bounded,
+                        "seconds": seconds, "output_chars": len(output), "bounded": bounded})
         print(json.dumps({"index_seconds": {"user": user_index_seconds,
                                             "developer": dev_index_seconds},
                           "cases": records}, indent=2))

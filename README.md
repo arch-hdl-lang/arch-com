@@ -155,8 +155,10 @@ arch graph query "fifo" --index .archgraph
 arch graph callers "helper_fn" --index .archgraph
 arch graph impact "AxiWriteArb" --depth 2 --index .archgraph
 arch graph context "add coverage to the write arbiter" --index .archgraph
+arch graph context "which module does this instance use?" --index .archgraph --token-budget 200 --include-source
 arch graph dev-index --root . --out .archdevgraph
 arch graph dev-query "pipe_reg reset" --root . --index .archdevgraph --token-budget 400
+arch graph dev-query "pipe_reg reset" --root . --index .archdevgraph --token-budget 200 --include-source
 arch graph html --index .archgraph --out arch-graph.html
 ```
 
@@ -170,6 +172,9 @@ stale source files or a changed generator; rebuild the user index with
 language features to Rust symbols, tests, the specification, skill, and MCP
 guidance. Its mappings are curated ownership links, not inferred call edges;
 `dev-query` validates indexed source fingerprints and accepts `--role` filters.
+For text responses, `context` and `dev-query` accept `--include-source` to
+append a short, freshness-checked source line. Context hits for imports and
+instances also show the indexed target declaration.
 
 ## AI assistant support
 

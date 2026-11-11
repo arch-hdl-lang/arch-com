@@ -324,6 +324,7 @@ pub fn query(
     limit: usize,
     token_budget: usize,
     roles: &[String],
+    include_source: bool,
 ) -> io::Result<String> {
     let manifest: Manifest = serde_json::from_slice(&fs::read(index_dir.join("manifest.json"))?)?;
     if manifest.schema_version != SCHEMA_VERSION || manifest.generator != generator_id() {
@@ -412,10 +413,27 @@ pub fn query(
                 break;
             }
             if let Some(node) = by_id.get(edge.to.as_str()) {
-                lines.push(format!(
+                let mut line = format!(
                     "  {} {}:{} {} [{}]",
                     edge.role, node.path, node.line, node.name, edge.provenance
-                ));
+                );
+                if include_source {
+                    if node.line == 0 {
+                        return Err(invalid(format!("{} has no source line", node.path)));
+                    }
+                    let source = fs::read_to_string(source_path(root, &node.path)?)?;
+                    let excerpt =
+                        source
+                            .lines()
+                            .nth(node.line.saturating_sub(1))
+                            .ok_or_else(|| {
+                                invalid(format!("{}:{} is unavailable", node.path, node.line))
+                            })?;
+                    let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let excerpt: String = excerpt.chars().take(120).collect();
+                    line.push_str(&format!(" | {excerpt}"));
+                }
+                lines.push(line);
                 remaining -= 1;
             }
         }
@@ -464,22 +482,41 @@ mod tests {
         let out = std::env::temp_dir().join(format!("arch-dev-graph-test-{}", std::process::id()));
         let stats = index(root, &root.join("doc/codegraph_feature_map.json"), &out).unwrap();
         assert!(stats.features >= 8);
-        let result = query(root, &out, "pipe_reg reset", 30, 600, &[]).unwrap();
+        let result = query(root, &out, "pipe_reg reset", 30, 600, &[], false).unwrap();
         assert!(result.contains("emit_pipe_reg"));
         assert!(result.contains("pipe_reg_test.arch"));
-        let parser_only =
-            query(root, &out, "pipeline parser", 20, 100, &["parser".into()]).unwrap();
+        let sourced = query(root, &out, "pipe_reg reset", 30, 800, &[], true).unwrap();
+        assert!(sourced.contains("| fn emit_pipe_reg("));
+        let parser_only = query(
+            root,
+            &out,
+            "pipeline parser",
+            20,
+            100,
+            &["parser".into()],
+            false,
+        )
+        .unwrap();
         assert!(parser_only.contains("parse_pipeline"));
         assert!(!parser_only.contains("parse_fifo"));
         assert!(!parser_only.contains("emit_pipeline_inst"));
         assert!(!parser_only.contains("mcp_guidance"));
-        assert!(query(root, &out, "pipeline", 20, 100, &["not_a_role".into()]).is_err());
+        assert!(query(
+            root,
+            &out,
+            "pipeline",
+            20,
+            100,
+            &["not_a_role".into()],
+            false
+        )
+        .is_err());
         let manifest_path = out.join("manifest.json");
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         manifest["generator"] = "older compiler".into();
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        assert!(query(root, &out, "pipeline", 20, 100, &[])
+        assert!(query(root, &out, "pipeline", 20, 100, &[], false)
             .unwrap_err()
             .to_string()
             .contains("generator changed"));
@@ -497,11 +534,11 @@ mod tests {
         fs::write(&map, r#"{"schema_version":1,"features":[{"name":"feature","links":[{"role":"ast","path":"feature.rs","symbol":"Feature"}]}]}"#).unwrap();
         let out = root.join("index");
         index(&root, &map, &out).unwrap();
-        assert!(query(&root, &out, "feature", 10, 100, &[])
+        assert!(query(&root, &out, "feature", 10, 100, &[], false)
             .unwrap()
             .contains("feature.rs:1"));
         fs::write(&source, "pub struct Renamed;\n").unwrap();
-        assert!(query(&root, &out, "feature", 10, 100, &[])
+        assert!(query(&root, &out, "feature", 10, 100, &[], false)
             .unwrap_err()
             .to_string()
             .contains("rebuild"));

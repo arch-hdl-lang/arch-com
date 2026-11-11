@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codegraph_eval import answer_passes, graph_command_kind, is_graph_command, load_tasks, parse_events, prompt_for, summarize, trace_result, verified_success, workspace_env
+from codegraph_direct_eval import CROSS_RELATIONS, grade_relations
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,15 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertEqual({task["cohort"] for task in tasks}, {"user", "compiler"})
         self.assertEqual({task["kind"] for task in tasks},
                          {"discovery", "known_file", "coverage_miss", "edit"})
+
+    def test_cross_file_manifest_has_relationships_and_controls(self):
+        tasks = load_tasks(ROOT / "doc/codegraph_eval_cross_file_tasks.json")
+        self.assertEqual(len(tasks), 5)
+        self.assertEqual(sum(task["kind"] == "known_file" for task in tasks), 2)
+        relation = CROSS_RELATIONS["user_package_import_target"]
+        good = "examples/pkg_user.arch:1 use TestPkg -> examples/TestPkg.arch:1 TestPkg"
+        self.assertTrue(grade_relations(good, relation, ROOT))
+        self.assertFalse(grade_relations(good.replace("TestPkg.arch:1", "Other.arch:1"), relation, ROOT))
 
     def test_trace_parses_usage_and_graph_calls(self):
         raw = "\n".join(json.dumps(event) for event in [
@@ -121,6 +131,9 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertIn("100", mcp)
         self.assertIn("at most three targeted retrieval calls", cli)
         self.assertIn("at most three targeted retrieval calls", mcp)
+        sourced = prompt_for(task, "graph_cli", "/tmp/arch", 200, True)
+        self.assertIn("/tmp/arch graph dev-query", sourced)
+        self.assertIn("--token-budget 200 --include-source", sourced)
 
     def test_summary_uses_only_successful_pairs(self):
         def record(condition, success, tokens, graph_calls=0):

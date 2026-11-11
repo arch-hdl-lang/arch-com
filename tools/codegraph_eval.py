@@ -246,7 +246,8 @@ def make_mcp_config(workspace: Path, arch_bin: Path, mcp_python: Path) -> str:
     )
 
 
-def prompt_for(task: dict, condition: str, arch_command: str = "arch") -> str:
+def prompt_for(task: dict, condition: str, arch_command: str = "arch",
+               graph_token_budget: int = 100, include_source: bool = False) -> str:
     prompt = task["prompt"] + " " + VERIFY
     if condition == "no_graph":
         prompt += " " + NO_GRAPH
@@ -254,12 +255,15 @@ def prompt_for(task: dict, condition: str, arch_command: str = "arch") -> str:
         command = (f"{arch_command} graph context" if task["cohort"] == "user"
                    else f"{arch_command} graph dev-query")
         index = ".archgraph" if task["cohort"] == "user" else ".archdevgraph"
+        source_flag = " --include-source" if include_source else ""
         prompt += (f" For the first retrieval, use `{command}` with the task wording, "
-                   f"`--index {index} --token-budget 100`. "
+                   f"`--index {index} --token-budget {graph_token_budget}{source_flag}`. "
                    "Do not call graph MCP tools. Verify only missing details from source.")
     elif condition == "graph_mcp":
-        tool = ("arch_graph_context(task=..., token_budget=100)" if task["cohort"] == "user"
-                else "arch_dev_graph_query(query=..., token_budget=100)")
+        name = "arch_graph_context" if task["cohort"] == "user" else "arch_dev_graph_query"
+        arg = "task" if task["cohort"] == "user" else "query"
+        source_arg = ", include_source=True" if include_source else ""
+        tool = f"{name}({arg}=..., token_budget={graph_token_budget}{source_arg})"
         prompt += (f" For the first retrieval, call `{tool}` against the prebuilt index. "
                    "Do not run graph CLI commands. Verify only missing details from source.")
     if task["kind"] == "edit":
@@ -269,7 +273,8 @@ def prompt_for(task: dict, condition: str, arch_command: str = "arch") -> str:
 
 def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Path,
                 arch_bin: Path, mcp_python: Path, model: str, timeout: int,
-                ignore_user_config: bool) -> dict:
+                ignore_user_config: bool, graph_token_budget: int = 100,
+                include_source: bool = False) -> dict:
     label = f"{task['id']}-r{repeat}-{condition}"
     if task["kind"] == "edit":
         temp = tempfile.TemporaryDirectory(prefix="arch-graph-eval-", dir=output)
@@ -285,7 +290,7 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         workspace = repo
         index_seconds = 0.0
     try:
-        prompt = prompt_for(task, condition, str(arch_bin))
+        prompt = prompt_for(task, condition, str(arch_bin), graph_token_budget, include_source)
         command = [
             "codex", "exec", "--json", "--approve-for-me", "-m", model,
             "-c", 'model_reasoning_effort="low"',
@@ -441,6 +446,8 @@ def main() -> None:
     run.add_argument("--task", action="append")
     run.add_argument("--condition", action="append",
                      choices=("no_graph", "default", "graph_cli", "graph_mcp"))
+    run.add_argument("--graph-token-budget", type=int, default=100)
+    run.add_argument("--include-source", action="store_true")
     run.add_argument("--ignore-user-config", action="store_true")
     analyze = sub.add_parser("analyze")
     analyze.add_argument("records", type=Path)
@@ -459,6 +466,8 @@ def main() -> None:
         tasks = [task for task in tasks if task["id"] in args.task]
     if args.repeats < 1 or not tasks:
         p.error("at least one task and repeat are required")
+    if args.graph_token_budget < 1:
+        p.error("--graph-token-budget must be positive")
     args.output.mkdir(parents=True, exist_ok=True)
     records_path = args.output / "records.jsonl"
     if records_path.exists():
@@ -471,6 +480,8 @@ def main() -> None:
         "model": args.model, "seed": args.seed, "repeats": args.repeats,
         "ignore_user_config": args.ignore_user_config, "approval_mode": "approve-for-me",
         "conditions": args.condition or ["no_graph", "default"],
+        "graph_token_budget": args.graph_token_budget,
+        "include_source": args.include_source,
         "codex_version": subprocess.check_output(["codex", "--version"], text=True).strip(),
         "arch_version": subprocess.check_output([str(arch_bin), "--version"], text=True).strip(),
         "arch_stdlib_path": str(repo / "stdlib"),
@@ -489,7 +500,8 @@ def main() -> None:
     with records_path.open("w") as records:
         for task, repeat, condition in schedule:
             record = run_attempt(task, condition, repeat, repo, args.output, arch_bin, mcp_python,
-                                 args.model, args.timeout, args.ignore_user_config)
+                                 args.model, args.timeout, args.ignore_user_config,
+                                 args.graph_token_budget, args.include_source)
             records.write(json.dumps(record) + "\n")
             records.flush()
             print(f"{task['id']} r{repeat} {condition}: correct={record['success']} "
