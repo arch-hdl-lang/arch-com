@@ -576,6 +576,25 @@ pub fn format_query_hits_with_source(
     hits: &[QueryHit],
 ) -> std::io::Result<String> {
     let mut lines = Vec::with_capacity(hits.len());
+    let files: BTreeMap<_, _> = index
+        .files
+        .iter()
+        .map(|file| (file.rel_path.as_str(), file))
+        .collect();
+    let nodes: BTreeMap<_, _> = index
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let mut targets = BTreeMap::new();
+    for edge in &index.edges {
+        if matches!(edge.kind.as_str(), "instantiates" | "imports") {
+            if let Some(target) = nodes.get(edge.dst.as_str()) {
+                targets.entry(edge.src.as_str()).or_insert(*target);
+            }
+        }
+    }
+    let mut source_lines: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for hit in hits {
         let mut line = format!(
             "{}  {}  {}  score={}",
@@ -584,23 +603,24 @@ pub fn format_query_hits_with_source(
             hit.node.name,
             hit.score
         );
-        if let (Some(file), Some(span)) = (
-            index
-                .files
-                .iter()
-                .find(|file| file.rel_path == hit.node.file),
-            &hit.node.span,
-        ) {
+        if let (Some(file), Some(span)) = (files.get(hit.node.file.as_str()), &hit.node.span) {
             if span.line_start == 0 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("{} has no source line", hit.node.file),
                 ));
             }
-            let source = fs::read_to_string(&file.abs_path)?;
-            let excerpt = source
-                .lines()
-                .nth(span.line_start.saturating_sub(1))
+            if !source_lines.contains_key(hit.node.file.as_str()) {
+                source_lines.insert(
+                    hit.node.file.as_str(),
+                    fs::read_to_string(&file.abs_path)?
+                        .lines()
+                        .map(str::to_string)
+                        .collect(),
+                );
+            }
+            let excerpt = source_lines[hit.node.file.as_str()]
+                .get(span.line_start.saturating_sub(1))
                 .ok_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -611,14 +631,7 @@ pub fn format_query_hits_with_source(
             let excerpt: String = excerpt.chars().take(120).collect();
             line.push_str(&format!(" | {excerpt}"));
         }
-        if let Some(target) = index
-            .edges
-            .iter()
-            .find(|edge| {
-                edge.src == hit.node.id && matches!(edge.kind.as_str(), "instantiates" | "imports")
-            })
-            .and_then(|edge| index.nodes.iter().find(|node| node.id == edge.dst))
-        {
+        if let Some(target) = targets.get(hit.node.id.as_str()) {
             line.push_str(&format!(" -> {} {}", location_label(target), target.name));
         }
         lines.push(line);

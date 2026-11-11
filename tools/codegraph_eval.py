@@ -89,9 +89,7 @@ def graph_command_kind(command: str) -> str | None:
             segment = []
         else:
             segment.append(word)
-    if any(word.startswith((".archgraph/", ".archdevgraph/")) or
-           "/.archgraph/" in word or "/.archdevgraph/" in word
-           for word in words):
+    if any(re.search(r"(?:^|/)\.arch(?:dev)?graph(?:/|$)", word) for word in words):
         return "index_read"
     return None
 
@@ -439,6 +437,29 @@ def summarize(records: list[dict]) -> dict:
         groups[cohort]["guided_pairs"] = len(guided_pairs)
         groups[cohort]["cli_vs_mcp_saving_pct"] = (
             round(100 * (1 - cli_tokens / mcp_tokens), 2) if mcp_tokens else None)
+        search = {(r["task_id"], r["repeat"]): r for r in subset
+                  if r["condition"] == "no_graph" and verified_success(r)}
+        search_pairs = [(search[(r["task_id"], r["repeat"])], r) for r in subset
+                        if r["condition"] == "graph_cli" and verified_success(r)
+                        and (r["task_id"], r["repeat"]) in search]
+        def pair_totals(pairs: list[tuple[dict, dict]]) -> dict:
+            def totals(side: int) -> tuple[int, int]:
+                return (sum(pair[side]["input_tokens"] + pair[side]["output_tokens"] for pair in pairs),
+                        sum(pair[side]["input_tokens"] - pair[side]["cached_input_tokens"]
+                            + pair[side]["output_tokens"] for pair in pairs))
+            baseline, baseline_uncached = totals(0)
+            graph, graph_uncached = totals(1)
+            return {"pairs": len(pairs), "search_tokens": baseline, "graph_tokens": graph,
+                    "search_uncached_tokens": baseline_uncached,
+                    "graph_uncached_tokens": graph_uncached,
+                    "total_saving_pct": round(100 * (1 - graph / baseline), 2) if baseline else None,
+                    "uncached_saving_pct": round(100 * (1 - graph_uncached / baseline_uncached), 2)
+                    if baseline_uncached else None}
+        groups[cohort]["cli_vs_search"] = pair_totals(search_pairs)
+        groups[cohort]["cli_vs_search_by_task"] = {
+            task_id: pair_totals([pair for pair in search_pairs if pair[0]["task_id"] == task_id])
+            for task_id in sorted({pair[0]["task_id"] for pair in search_pairs})
+        }
     return groups
 
 

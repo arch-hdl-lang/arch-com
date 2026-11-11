@@ -83,6 +83,14 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertFalse(is_graph_command("arch graph context --help"))
         self.assertEqual(graph_command_kind("arch graph dev-index --root ."), "cli_setup")
 
+    def test_index_directory_reads_count_as_graph_use(self):
+        for command in ("rg TxQueue .archgraph",
+                        'bash -lc "rg -n TxQueue .archdevgraph"',
+                        "cd .archgraph && head nodes.jsonl"):
+            with self.subTest(command=command):
+                self.assertEqual(graph_command_kind(command), "index_read")
+        self.assertIsNone(graph_command_kind("rg TxQueue src"))
+
     def test_completed_mcp_error_is_not_a_successful_graph_call(self):
         events = [
             {"type": "item.completed", "item": {"type": "mcp_tool_call", "tool": "arch_dev_graph_query",
@@ -178,6 +186,22 @@ class CodegraphEvalTests(unittest.TestCase):
         result = summarize([record("graph_mcp", True, 100), record("graph_cli", True, 70)])
         self.assertEqual(result["compiler"]["guided_pairs"], 1)
         self.assertEqual(result["compiler"]["cli_vs_mcp_saving_pct"], 30)
+
+    def test_guided_cli_vs_search_reports_full_and_task_totals(self):
+        def record(task, condition, total, cached):
+            return {"task_id": task, "repeat": 1, "cohort": "user", "kind": "discovery",
+                    "condition": condition, "success": True, "input_tokens": total,
+                    "cached_input_tokens": cached, "output_tokens": 0, "graph_calls": 1,
+                    "successful_graph_calls": 1, "tool_calls": 1, "agent_seconds": 1,
+                    "index_seconds": 0}
+        rows = [record("instance", "no_graph", 100, 60),
+                record("instance", "graph_cli", 50, 30),
+                record("import", "no_graph", 100, 60),
+                record("import", "graph_cli", 110, 30)]
+        result = summarize(rows)["user"]
+        self.assertEqual(result["cli_vs_search"]["total_saving_pct"], 20)
+        self.assertEqual(result["cli_vs_search"]["uncached_saving_pct"], -25)
+        self.assertEqual(result["cli_vs_search_by_task"]["instance"]["total_saving_pct"], 50)
 
     def test_duplicate_ids_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

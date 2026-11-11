@@ -401,6 +401,7 @@ pub fn query(
     }
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.name.cmp(&b.2.name)));
     let mut lines = Vec::new();
+    let mut source_lines: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut remaining = limit.max(1);
     for (_, _, feature, related) in hits {
         if remaining == 0 {
@@ -417,18 +418,24 @@ pub fn query(
                     "  {} {}:{} {} [{}]",
                     edge.role, node.path, node.line, node.name, edge.provenance
                 );
-                if include_source {
+                if include_source && node.kind == "rust_symbol" {
                     if node.line == 0 {
                         return Err(invalid(format!("{} has no source line", node.path)));
                     }
-                    let source = fs::read_to_string(source_path(root, &node.path)?)?;
-                    let excerpt =
-                        source
-                            .lines()
-                            .nth(node.line.saturating_sub(1))
-                            .ok_or_else(|| {
-                                invalid(format!("{}:{} is unavailable", node.path, node.line))
-                            })?;
+                    if !source_lines.contains_key(node.path.as_str()) {
+                        source_lines.insert(
+                            node.path.as_str(),
+                            fs::read_to_string(source_path(root, &node.path)?)?
+                                .lines()
+                                .map(str::to_string)
+                                .collect(),
+                        );
+                    }
+                    let excerpt = source_lines[node.path.as_str()]
+                        .get(node.line.saturating_sub(1))
+                        .ok_or_else(|| {
+                            invalid(format!("{}:{} is unavailable", node.path, node.line))
+                        })?;
                     let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
                     let excerpt: String = excerpt.chars().take(120).collect();
                     line.push_str(&format!(" | {excerpt}"));
