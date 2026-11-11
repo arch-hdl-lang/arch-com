@@ -1517,9 +1517,22 @@ impl<'a> Codegen<'a> {
                 Self::collect_assigned_roots(std::slice::from_ref(stmt), &mut stmt_roots);
                 let touches_reset = stmt_roots.iter().any(|n| reset_reg_names.contains(n));
                 let touches_nonreset = stmt_roots.iter().any(|n| !reset_reg_names.contains(n));
-                if touches_reset {
+                // A `log` statement assigns no register, so it `touches` neither
+                // reg-kind and the two gates below would skip it entirely — the
+                // SV silently loses it while `arch sim` prints it (issue #1130,
+                // an instance of the #1113 fall-through class). Route every log
+                // into the guarded (reset-sensitive) always_ff, whose non-reset
+                // `else` branch is the one block guaranteed to exist here and
+                // the branch that matches arch sim's `!rst` gating. The
+                // keeping-logs filter preserves bare and nested logs in that
+                // copy; the unguarded copy keeps dropping them (ordinary
+                // assignment filter) so a statement that writes both reg kinds
+                // emits its log exactly once. For log-free statements the two
+                // filters are identical, so partitioning is byte-unchanged.
+                let has_log = Self::stmt_has_log(stmt);
+                if touches_reset || has_log {
                     if let Some(filtered) =
-                        Self::filter_stmt_by_assigned_set(stmt, &reset_reg_names, true)
+                        Self::filter_stmt_by_assigned_set_keeping_logs(stmt, &reset_reg_names, true)
                     {
                         guarded_stmts.push(filtered);
                     }

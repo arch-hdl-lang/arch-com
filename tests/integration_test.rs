@@ -5217,6 +5217,76 @@ fn test_pipeline_match_comb_native_behavior() {
 }
 
 #[test]
+fn test_module_reg_log_emits_display_in_else_branch() {
+    // Regression for #1130: a `log` in a module `seq` block whose registers
+    // carry a `reset` was dropped from the emitted SV (emit_reg_block routes
+    // statements by assigned-register roots, and a `log` assigns none), while
+    // arch sim printed it. Both logs must now appear, each exactly once, in the
+    // non-reset (`else`) branch — matching arch sim's `!rst` gating.
+    let source = include_str!("module_reg_log.arch");
+    let sv = compile_to_sv(source);
+    // Exactly two `$display` statements — the bare `tick` log and the nested
+    // `both` log. A third would mean the both-reg-kinds statement duplicated
+    // its log across the guarded/unguarded partition split.
+    assert_eq!(
+        sv.matches("$display(").count(),
+        2,
+        "expected exactly 2 $display (no duplication):\n{sv}"
+    );
+    assert!(
+        sv.contains("[ALWAYS][REGLOG] tick") && sv.contains("[ALWAYS][REGLOG] both"),
+        "both logs must be emitted:\n{sv}"
+    );
+    // Neither log may sit in the reset branch: the text between `if (rst) begin`
+    // and the matching `end else begin` must contain no `$display`.
+    let rst_begin = sv.find("if (rst) begin").expect("reset branch present");
+    let else_begin = sv[rst_begin..]
+        .find("end else begin")
+        .map(|o| rst_begin + o)
+        .expect("else branch present");
+    assert!(
+        !sv[rst_begin..else_begin].contains("$display("),
+        "no $display may be emitted in the reset branch:\n{}",
+        &sv[rst_begin..else_begin]
+    );
+}
+
+#[test]
+fn test_module_reg_log_native_behavior() {
+    // #1130: arch sim already printed the module-reg log; prove it still does
+    // (6 lines across a reset edge + 4 data edges, none during reset) and that
+    // functional register state is unchanged. The SV now emits the same logs
+    // (verified against Verilator in the PR), so the backends agree.
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg("tests/module_reg_log.arch")
+        .arg("--tb")
+        .arg("tests/module_reg_log_tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run module-reg-log behavior probe");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "module-reg-log sim should pass\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("PASS module-reg-log behavior"),
+        "expected PASS marker in stdout:\n{stdout}"
+    );
+    // Bare `tick` log every non-reset edge (4) + nested `both` log on the two
+    // edges where data_in[0]==1 (0x11, 0x33) = 6; none during reset.
+    assert_eq!(
+        stdout.matches("[REGLOG]").count(),
+        6,
+        "expected 6 log lines (none during reset):\n{stdout}"
+    );
+}
+
+#[test]
 fn test_pipeline_comb_only_stage_error() {
     let source = r#"
 domain SysDomain
