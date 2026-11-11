@@ -6,9 +6,15 @@ path in the task prompt. The default arm may choose graph retrieval, direct
 file reads, or search. The search-only arm receives only a tool-availability
 restriction. Both arms see the same repository and session-local ARCH MCP
 server; the installed Codex skill is available unless `--ignore-user-config`
-is selected. Both arms are equally told to verify with repository tools and
+is selected. Both arms are equally told to make bounded retrieval calls and
 finish the task, so a planning message alone cannot masquerade as an answer.
 This measures actual graph selection as well as token use.
+
+The runner uses `--approve-for-me` with a session-local read-only sandbox for
+lookup tasks. Without that approval mode, noninteractive Codex rejects ARCH
+MCP calls before the server runs. Edit tasks use an automatically reviewed
+workspace-write sandbox inside disposable clones. Failed MCP calls are counted
+separately from attempted graph calls.
 
 The frozen task set is `doc/codegraph_eval_tasks.json`: user and compiler
 discovery, known-file controls, coverage misses, and two comment-only edits.
@@ -36,6 +42,9 @@ actual graph CLI or MCP use. A correct default answer with zero graph calls is
 graph calls. Read-only answers with no tool call are unverified and do not
 count as successes, even if the final text matches the rubric. Empty or stale
 graph results must fall back to source search.
+Location attempts time out after 90 seconds by default; edit attempts get at
+least 180 seconds. Timed-out subprocess groups are terminated and scored as
+failures, never as token savings.
 
 The deterministic harness tests run in CI without model credentials. Live
 provider-token trials are opt-in because they require an authenticated Codex

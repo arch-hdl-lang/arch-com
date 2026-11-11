@@ -9,6 +9,7 @@ import json
 import os
 import random
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -17,7 +18,10 @@ from pathlib import Path
 
 GRAPH_COMMAND = re.compile(r"(?:^|[\s/])(?:arch|cargo\s+run\s+--|target/(?:debug|release)/arch)\s+graph\b")
 NO_GRAPH = "Graph commands and graph MCP tools are unavailable for this task. Use ordinary repository search."
-VERIFY = "Verify the result with repository tools and complete the task; do not stop after describing a plan."
+VERIFY = (
+    "Verify with at most three targeted retrieval calls and bounded output, then answer. "
+    "For source-location questions, do not run builds or tests. Complete the task rather than only describing a plan."
+)
 
 
 def load_tasks(path: Path) -> list[dict]:
@@ -54,6 +58,7 @@ def trace_result(events: list[dict]) -> dict:
         "commands": commands,
         "tool_calls": len(commands) + len(mcp_calls),
         "graph_calls": graph_calls,
+        "failed_mcp_calls": sum(item.get("status") != "completed" for item in mcp_calls),
         "input_tokens": sum(item["input_tokens"] for item in usage),
         "cached_input_tokens": sum(item.get("cached_input_tokens", 0) for item in usage),
         "output_tokens": sum(item["output_tokens"] for item in usage),
@@ -155,22 +160,32 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
     try:
         prompt = prompt_for(task, condition)
         command = [
-            "codex", "exec", "--json", "-m", model,
-            "-c", 'model_reasoning_effort="low"', "-c", make_mcp_config(workspace, arch_bin, mcp_python),
-            "-s", "workspace-write" if task["kind"] == "edit" else "read-only",
+            "codex", "exec", "--json", "--approve-for-me", "-m", model,
+            "-c", 'model_reasoning_effort="low"',
+            "-c", 'sandbox_mode="workspace-write"' if task["kind"] == "edit" else 'sandbox_mode="read-only"',
+            "-c", make_mcp_config(workspace, arch_bin, mcp_python),
             "-C", str(workspace), "--ephemeral", prompt,
         ]
         if ignore_user_config:
-            command.insert(3, "--ignore-user-config")
+            command.insert(4, "--ignore-user-config")
         env = os.environ.copy()
         env["PATH"] = str(arch_bin.parent) + os.pathsep + env.get("PATH", "")
         env["CARGO_TARGET_DIR"] = str(repo / "target")
         start = time.monotonic()
+        process = subprocess.Popen(command, cwd=workspace, env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
         try:
-            result = subprocess.run(command, cwd=workspace, env=env, capture_output=True, text=True, timeout=timeout)
-            exit_code, raw, stderr = result.returncode, result.stdout, result.stderr
-        except subprocess.TimeoutExpired as exc:
-            exit_code, raw, stderr = 124, (exc.stdout or b"").decode(errors="replace"), "attempt timed out"
+            raw, stderr = process.communicate(timeout=max(timeout, 180) if task["kind"] == "edit" else timeout)
+            exit_code = process.returncode
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                raw, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                raw, stderr = process.communicate()
+            exit_code = 124
+            stderr += "\nattempt timed out"
         elapsed = round(time.monotonic() - start, 3)
         (output / f"{label}.jsonl").write_text(raw)
         (output / f"{label}.stderr.txt").write_text(stderr)
@@ -192,6 +207,7 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
             "input_tokens": trace["input_tokens"], "cached_input_tokens": trace["cached_input_tokens"],
             "output_tokens": trace["output_tokens"], "tool_calls": trace["tool_calls"],
             "graph_calls": trace["graph_calls"], "agent_seconds": elapsed,
+            "failed_mcp_calls": trace["failed_mcp_calls"],
             "index_seconds": index_seconds, "answer": trace["answer"],
         }
     finally:
@@ -211,6 +227,7 @@ def summarize(records: list[dict]) -> dict:
                 "tokens": sum(r["input_tokens"] + r["output_tokens"] for r in arm),
                 "uncached_tokens": sum(r["input_tokens"] - r["cached_input_tokens"] + r["output_tokens"] for r in arm),
                 "graph_calls": sum(r["graph_calls"] for r in arm),
+                "failed_mcp_calls": sum(r.get("failed_mcp_calls", 0) for r in arm),
                 "agent_seconds": round(sum(r["agent_seconds"] for r in arm), 3),
                 "index_seconds": round(sum(r["index_seconds"] for r in arm), 3),
             }
@@ -245,7 +262,7 @@ def main() -> None:
     run.add_argument("--model", default="gpt-6-luna")
     run.add_argument("--repeats", type=int, default=1)
     run.add_argument("--seed", type=int, default=7)
-    run.add_argument("--timeout", type=int, default=300)
+    run.add_argument("--timeout", type=int, default=90)
     run.add_argument("--task", action="append")
     run.add_argument("--ignore-user-config", action="store_true")
     analyze = sub.add_parser("analyze")
@@ -274,7 +291,7 @@ def main() -> None:
         "repo_status": subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip(),
         "tasks_sha256": hashlib.sha256(args.tasks.read_bytes()).hexdigest(),
         "model": args.model, "seed": args.seed, "repeats": args.repeats,
-        "ignore_user_config": args.ignore_user_config,
+        "ignore_user_config": args.ignore_user_config, "approval_mode": "approve-for-me",
         "codex_version": subprocess.check_output(["codex", "--version"], text=True).strip(),
         "arch_version": subprocess.check_output([str(arch_bin), "--version"], text=True).strip(),
     }

@@ -26,6 +26,7 @@ class CodegraphEvalTests(unittest.TestCase):
         ])
         result = trace_result(parse_events(raw))
         self.assertEqual(result["graph_calls"], 2)
+        self.assertEqual(result["failed_mcp_calls"], 1)
         self.assertEqual(result["tool_calls"], 2)
         self.assertEqual(result["input_tokens"] - result["cached_input_tokens"] + result["output_tokens"], 50)
         self.assertEqual(result["answer"], "src/ast.rs")
@@ -52,8 +53,8 @@ class CodegraphEvalTests(unittest.TestCase):
                     if task["id"] == "compiler_arbiter_owners")
         default = prompt_for(task, "default")
         baseline = prompt_for(task, "no_graph")
-        self.assertIn("Verify the result with repository tools", default)
-        self.assertIn("Verify the result with repository tools", baseline)
+        self.assertIn("at most three targeted retrieval calls", default)
+        self.assertIn("at most three targeted retrieval calls", baseline)
         self.assertNotIn("arch graph", default)
         self.assertIn("Graph commands", baseline)
 
