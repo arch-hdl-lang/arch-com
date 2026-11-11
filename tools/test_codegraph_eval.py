@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codegraph_eval import answer_passes, load_tasks, parse_events, summarize, trace_result
+from codegraph_eval import answer_passes, load_tasks, parse_events, summarize, trace_result, verified_success
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,12 +43,16 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertFalse(answer_passes(task, "NoSuchQueue is declared in examples/x.arch"))
         self.assertTrue(answer_passes(task, "No, NoSuchQueue was not found."))
 
+    def test_unverified_answer_is_not_a_success(self):
+        self.assertFalse(verified_success({"success": True, "kind": "coverage_miss", "tool_calls": 0}))
+        self.assertTrue(verified_success({"success": True, "kind": "coverage_miss", "tool_calls": 1}))
+
     def test_summary_uses_only_successful_pairs(self):
         def record(condition, success, tokens, graph_calls=0):
             return {"task_id": "x", "repeat": 1, "cohort": "user", "kind": "discovery",
                     "condition": condition, "success": success, "input_tokens": tokens,
                     "cached_input_tokens": 0, "output_tokens": 0, "graph_calls": graph_calls,
-                    "agent_seconds": 1, "index_seconds": 0}
+                    "tool_calls": 1, "agent_seconds": 1, "index_seconds": 0}
         summary = summarize([record("no_graph", True, 100), record("default", True, 70, 1)])
         self.assertEqual(summary["user"]["successful_pairs"], 1)
         self.assertEqual(summary["user"]["paired_token_saving_pct"], 30)

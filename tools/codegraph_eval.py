@@ -69,6 +69,10 @@ def answer_passes(task: dict, answer: str) -> bool:
     return all(any(matches(choice) for choice in group) for group in task.get("answer_any", []))
 
 
+def verified_success(record: dict) -> bool:
+    return bool(record["success"] and (record["kind"] == "edit" or record.get("tool_calls", 0) > 0))
+
+
 def edit_passes(task: dict, workspace: Path, env: dict[str, str]) -> tuple[bool, str]:
     changed = subprocess.check_output(
         ["git", "diff", "--name-only"], cwd=workspace, text=True
@@ -176,7 +180,8 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         return {
             "task_id": task["id"], "cohort": task["cohort"], "kind": task["kind"],
             "condition": condition, "repeat": repeat, "exit_code": exit_code,
-            "success": exit_code == 0 and trace["usage_present"] and valid_method and outcome,
+            "success": exit_code == 0 and trace["usage_present"] and valid_method and outcome
+            and (task["kind"] == "edit" or trace["tool_calls"] > 0),
             "valid_method": valid_method, "grader_note": note,
             "input_tokens": trace["input_tokens"], "cached_input_tokens": trace["cached_input_tokens"],
             "output_tokens": trace["output_tokens"], "tool_calls": trace["tool_calls"],
@@ -196,7 +201,7 @@ def summarize(records: list[dict]) -> dict:
         for condition in ("no_graph", "default"):
             arm = [r for r in subset if r["condition"] == condition]
             arms[condition] = {
-                "attempts": len(arm), "successes": sum(r["success"] for r in arm),
+                "attempts": len(arm), "successes": sum(verified_success(r) for r in arm),
                 "tokens": sum(r["input_tokens"] + r["output_tokens"] for r in arm),
                 "uncached_tokens": sum(r["input_tokens"] - r["cached_input_tokens"] + r["output_tokens"] for r in arm),
                 "graph_calls": sum(r["graph_calls"] for r in arm),
@@ -206,12 +211,18 @@ def summarize(records: list[dict]) -> dict:
         paired = {(r["task_id"], r["repeat"]): r for r in subset if r["condition"] == "no_graph"}
         pairs = [(base, r) for r in subset if r["condition"] == "default"
                  if (base := paired.get((r["task_id"], r["repeat"]))) is not None
-                 and base["success"] and r["success"]]
+                 and verified_success(base) and verified_success(r)]
         baseline_tokens = sum(a["input_tokens"] + a["output_tokens"] for a, _ in pairs)
         default_tokens = sum(b["input_tokens"] + b["output_tokens"] for _, b in pairs)
         groups[cohort] = {
             "arms": arms, "successful_pairs": len(pairs),
             "paired_token_saving_pct": round(100 * (1 - default_tokens / baseline_tokens), 2) if baseline_tokens else None,
+            "default_discovery_graph_uses": sum(r["graph_calls"] > 0 for r in subset
+                                                if r["condition"] == "default" and r["kind"] == "discovery"),
+            "default_discovery_attempts": sum(r["condition"] == "default" and r["kind"] == "discovery"
+                                              for r in subset),
+            "known_file_graph_uses": sum(r["graph_calls"] > 0 for r in subset
+                                         if r["condition"] == "default" and r["kind"] == "known_file"),
         }
     return groups
 

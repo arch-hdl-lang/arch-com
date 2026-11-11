@@ -31,7 +31,9 @@ seed, and task-file digest. JSONL traces, stderr, edit diffs, validation notes,
 and `summary.json` are retained. The per-attempt `graph_calls` field measures
 actual graph CLI or MCP use. A correct default answer with zero graph calls is
 *not* evidence of graph savings. Known-file controls should normally avoid
-graph calls. Empty or stale graph results must fall back to source search.
+graph calls. Read-only answers with no tool call are unverified and do not
+count as successes, even if the final text matches the rubric. Empty or stale
+graph results must fall back to source search.
 
 The deterministic harness tests run in CI without model credentials. Live
 provider-token trials are opt-in because they require an authenticated Codex

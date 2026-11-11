@@ -55,7 +55,7 @@
       "cohort": "compiler",
       "kind": "coverage_miss",
       "prompt": "Locate the ARCH synchronizer declaration parser function and one shipped ARCH synchronizer example. Return the function and source paths.",
-      "answer_any": [["parse_synchronizer"], ["src/parser.rs"], ["examples/synchronizer_basic.arch", "examples/synchronizer_pulse.arch", "examples/synchronizer_handshake.arch", "examples/synchronizer_gray.arch", "examples/synchronizer_wide.arch", "examples/synchronizer_reset.arch"]]
+      "answer_any": [["parse_synchronizer"], ["src/parser.rs"], ["examples/synchronizer_basic.arch", "examples/synchronizer_pulse.arch", "examples/synchronizer_handshake.arch", "examples/synchronizer_gray.arch", "examples/synchronizer_wide.arch", "examples/synchronizer_reset.arch", "tests/cvdp/cdc_pulse_synchronizer.arch"]]
     },
     {
       "id": "user_fifo_comment_edit",
