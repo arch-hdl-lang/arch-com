@@ -43,6 +43,7 @@ actual graph CLI or MCP use. A correct default answer with zero graph calls is
 graph calls. Read-only answers with no tool call are unverified and do not
 count as successes, even if the final text matches the rubric. Empty or stale
 graph results must fall back to source search.
+Direct reads of `.archgraph` or `.archdevgraph` also count as graph use.
 Location attempts time out after 90 seconds by default; edit attempts get at
 least 180 seconds. Timed-out subprocess groups are terminated and scored as
 failures, never as token savings.

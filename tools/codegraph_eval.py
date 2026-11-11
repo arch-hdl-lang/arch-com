@@ -17,7 +17,8 @@ from pathlib import Path
 
 
 GRAPH_COMMAND = re.compile(r"(?:^|[\s/])(?:arch|cargo\s+run\s+--|target/(?:debug|release)/arch)\s+graph\b")
-NO_GRAPH = "Graph commands and graph MCP tools are unavailable for this task. Use ordinary repository search."
+GRAPH_INDEX = re.compile(r"\.arch(?:dev)?graph(?:/|\b)")
+NO_GRAPH = "Graph commands, graph MCP tools, and graph index files are unavailable for this task. Use ordinary repository search."
 VERIFY = (
     "Verify with at most three targeted retrieval calls and bounded output, then answer. "
     "For source-location questions, do not run builds or tests. Complete the task rather than only describing a plan."
@@ -54,17 +55,22 @@ def trace_result(events: list[dict]) -> dict:
     usage = [event["usage"] for event in events if event.get("type") == "turn.completed"]
     completed = [event["item"] for event in events if event.get("type") == "item.completed"]
     answers = [item.get("text", "") for item in completed if item.get("type") == "agent_message"]
-    commands = [item.get("command", "") for item in completed if item.get("type") == "command_execution"]
+    command_items = [item for item in completed if item.get("type") == "command_execution"]
+    commands = [item.get("command", "") for item in command_items]
     mcp_calls = [item for item in completed if item.get("type") == "mcp_tool_call"]
-    graph_calls = sum(bool(GRAPH_COMMAND.search(command)) for command in commands)
-    graph_calls += sum(
-        bool(re.search(r"arch_(?:dev_)?graph_", json.dumps(item))) for item in mcp_calls
-    )
+    graph_commands = [item for item in command_items if
+                      GRAPH_COMMAND.search(item.get("command", "")) or GRAPH_INDEX.search(item.get("command", ""))]
+    graph_mcp_calls = [item for item in mcp_calls if re.search(r"arch_(?:dev_)?graph_", item.get("tool", ""))]
+    graph_calls = len(graph_commands) + len(graph_mcp_calls)
+    successful_graph_calls = sum(item.get("exit_code") == 0 for item in graph_commands)
+    successful_graph_calls += sum(item.get("status") == "completed" and not item.get("error")
+                                  for item in graph_mcp_calls)
     return {
         "answer": answers[-1] if answers else "",
         "commands": commands,
         "tool_calls": len(commands) + len(mcp_calls),
         "graph_calls": graph_calls,
+        "successful_graph_calls": successful_graph_calls,
         "failed_mcp_calls": sum(item.get("status") != "completed" for item in mcp_calls),
         "input_tokens": sum(item["input_tokens"] for item in usage),
         "cached_input_tokens": sum(item.get("cached_input_tokens", 0) for item in usage),
@@ -224,6 +230,7 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
             "input_tokens": trace["input_tokens"], "cached_input_tokens": trace["cached_input_tokens"],
             "output_tokens": trace["output_tokens"], "tool_calls": trace["tool_calls"],
             "graph_calls": trace["graph_calls"], "agent_seconds": elapsed,
+            "successful_graph_calls": trace["successful_graph_calls"],
             "failed_mcp_calls": trace["failed_mcp_calls"],
             "index_seconds": index_seconds, "answer": trace["answer"],
         }
@@ -244,6 +251,7 @@ def summarize(records: list[dict]) -> dict:
                 "tokens": sum(r["input_tokens"] + r["output_tokens"] for r in arm),
                 "uncached_tokens": sum(r["input_tokens"] - r["cached_input_tokens"] + r["output_tokens"] for r in arm),
                 "graph_calls": sum(r["graph_calls"] for r in arm),
+                "successful_graph_calls": sum(r.get("successful_graph_calls", 0) for r in arm),
                 "failed_mcp_calls": sum(r.get("failed_mcp_calls", 0) for r in arm),
                 "agent_seconds": round(sum(r["agent_seconds"] for r in arm), 3),
                 "index_seconds": round(sum(r["index_seconds"] for r in arm), 3),
@@ -254,7 +262,7 @@ def summarize(records: list[dict]) -> dict:
                  and verified_success(base) and verified_success(r)]
         baseline_tokens = sum(a["input_tokens"] + a["output_tokens"] for a, _ in pairs)
         default_tokens = sum(b["input_tokens"] + b["output_tokens"] for _, b in pairs)
-        graph_pairs = [(a, b) for a, b in pairs if b["graph_calls"] > 0]
+        graph_pairs = [(a, b) for a, b in pairs if b.get("successful_graph_calls", 0) > 0]
         graph_baseline_tokens = sum(a["input_tokens"] + a["output_tokens"] for a, _ in graph_pairs)
         graph_default_tokens = sum(b["input_tokens"] + b["output_tokens"] for _, b in graph_pairs)
         groups[cohort] = {

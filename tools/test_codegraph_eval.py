@@ -19,13 +19,14 @@ class CodegraphEvalTests(unittest.TestCase):
 
     def test_trace_parses_usage_and_graph_calls(self):
         raw = "\n".join(json.dumps(event) for event in [
-            {"type": "item.completed", "item": {"type": "command_execution", "command": "arch graph dev-query fifo"}},
-            {"type": "item.completed", "item": {"type": "mcp_tool_call", "tool": "arch_graph_context"}},
+            {"type": "item.completed", "item": {"type": "command_execution", "command": "arch graph dev-query fifo", "exit_code": 0}},
+            {"type": "item.completed", "item": {"type": "mcp_tool_call", "tool": "arch_graph_context", "status": "failed"}},
             {"type": "item.completed", "item": {"type": "agent_message", "text": "src/ast.rs"}},
             {"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 60, "output_tokens": 10}},
         ])
         result = trace_result(parse_events(raw))
         self.assertEqual(result["graph_calls"], 2)
+        self.assertEqual(result["successful_graph_calls"], 1)
         self.assertEqual(result["failed_mcp_calls"], 1)
         self.assertEqual(result["tool_calls"], 2)
         self.assertEqual(result["input_tokens"] - result["cached_input_tokens"] + result["output_tokens"], 50)
@@ -34,6 +35,11 @@ class CodegraphEvalTests(unittest.TestCase):
     def test_partial_last_event_is_ignored(self):
         events = parse_events('{"type":"turn.started"}\n{"type":"item.completed","item":')
         self.assertEqual(events, [{"type": "turn.started"}])
+
+    def test_direct_index_read_counts_as_graph_use(self):
+        events = [{"type": "item.completed", "item": {"type": "command_execution",
+                   "command": "head .archdevgraph/nodes.jsonl", "exit_code": 0}}]
+        self.assertEqual(trace_result(events)["graph_calls"], 1)
 
     def test_answer_rubric_accepts_alternative_owners(self):
         task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
@@ -67,6 +73,7 @@ class CodegraphEvalTests(unittest.TestCase):
             return {"task_id": "x", "repeat": 1, "cohort": "user", "kind": "discovery",
                     "condition": condition, "success": success, "input_tokens": tokens,
                     "cached_input_tokens": 0, "output_tokens": 0, "graph_calls": graph_calls,
+                    "successful_graph_calls": graph_calls,
                     "tool_calls": 1, "agent_seconds": 1, "index_seconds": 0}
         summary = summarize([record("no_graph", True, 100), record("default", True, 70, 1)])
         self.assertEqual(summary["user"]["successful_pairs"], 1)
