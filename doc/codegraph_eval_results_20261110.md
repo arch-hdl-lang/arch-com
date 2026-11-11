@@ -10,6 +10,10 @@ Selected IDs: `user_fifo_lookup`, `user_bus_relationship`,
 `compiler_arbiter_owners`, and `compiler_pipe_reg_owners`.
 The `arch` binary was built from `e7010156`, which differs from the benchmark
 HEAD only in harness code and documentation, not compiler graph implementation.
+This result predates the PR branch's rebase onto `767d3f6a`; the two newer
+upstream commits changed pipeline emission and module logging, not graph
+retrieval. Re-run the live eval before treating the result as a current-main
+performance claim.
 The installed Codex configuration was loaded. A session-local ARCH MCP server
 override avoided a stale local script path; an explicit preflight call to
 `arch_graph_query("TxQueue")` completed successfully with automatic approval
