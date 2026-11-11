@@ -1,0 +1,38 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// Regression for #1112 (comb-side sibling): a `match` statement in a pipeline
+// stage `comb` block was emitted correctly in SystemVerilog (`emit_pipeline_
+// comb_match`) but silently dropped by the native sim comb emitter (`_ => {}`),
+// a sim != SV miscompile. The scrutinee and arm values are stage registers so
+// the combinational output is legal (a pipeline output may not come straight
+// from an input).
+pipeline PipelineMatchComb
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port sel: in UInt<2>;
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port y: out UInt<8>;
+
+  stage S0
+    reg sel_r: UInt<2> reset rst => 0;
+    reg a_r: UInt<8> reset rst => 0;
+    reg b_r: UInt<8> reset rst => 0;
+
+    seq on clk rising
+      sel_r <= sel;
+      a_r <= a;
+      b_r <= b;
+    end seq
+
+    comb
+      match sel_r
+        0 => y = a_r;
+        1 => y = b_r;
+        _ => y = (a_r ^ b_r);
+      end match
+    end comb
+  end stage S0
+end pipeline PipelineMatchComb
