@@ -44,6 +44,20 @@ class CodegraphEvalTests(unittest.TestCase):
         events = parse_events('{"type":"turn.started"}\n{"type":"item.completed","item":')
         self.assertEqual(events, [{"type": "turn.started"}])
 
+    def test_trace_breaks_down_tool_outputs_without_token_attribution(self):
+        events = [{"type": "item.completed", "item": {"type": "command_execution",
+                   "command": "rg TxQueue /home/me/.codex/memories/MEMORY.md", "aggregated_output": "memo"}},
+                  {"type": "item.completed", "item": {"type": "mcp_tool_call",
+                   "tool": "arch_graph_context", "status": "completed",
+                   "result": {"content": [{"type": "text", "text": "[OK] path:17 TxQueue"}]}}},
+                  {"type": "item.completed", "item": {"type": "command_execution",
+                   "command": "sed -n '17p' examples/sync_fifo.arch", "aggregated_output": "fifo TxQueue"}}]
+        result = trace_result(events)
+        self.assertEqual(result["tool_breakdown"]["memory"], {"calls": 1, "output_chars": 4})
+        self.assertEqual(result["tool_breakdown"]["graph"]["calls"], 1)
+        self.assertEqual(result["tool_breakdown"]["source_read"]["calls"], 1)
+        self.assertEqual(result["after_graph_calls"], 1)
+
     def test_direct_index_read_counts_as_graph_use(self):
         events = [{"type": "item.completed", "item": {"type": "command_execution",
                    "command": "head .archdevgraph/nodes.jsonl", "exit_code": 0}}]
@@ -88,6 +102,18 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertNotIn("arch graph", default)
         self.assertIn("Graph commands", baseline)
 
+    def test_guided_transport_prompts_keep_same_budget(self):
+        task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
+                    if task["id"] == "compiler_arbiter_owners")
+        cli = prompt_for(task, "graph_cli")
+        mcp = prompt_for(task, "graph_mcp")
+        self.assertIn("arch graph dev-query", cli)
+        self.assertIn("arch_dev_graph_query", mcp)
+        self.assertIn("100", cli)
+        self.assertIn("100", mcp)
+        self.assertIn("at most three targeted retrieval calls", cli)
+        self.assertIn("at most three targeted retrieval calls", mcp)
+
     def test_summary_uses_only_successful_pairs(self):
         def record(condition, success, tokens, graph_calls=0):
             return {"task_id": "x", "repeat": 1, "cohort": "user", "kind": "discovery",
@@ -102,6 +128,17 @@ class CodegraphEvalTests(unittest.TestCase):
         failed = summarize([record("no_graph", True, 100), record("default", False, 70)])
         self.assertIsNone(failed["user"]["paired_default_vs_search_pct"])
         self.assertIsNone(failed["user"]["graph_used_pair_saving_pct"])
+
+    def test_guided_summary_compares_only_verified_pairs(self):
+        def record(condition, success, tokens):
+            return {"task_id": "x", "repeat": 1, "cohort": "compiler", "kind": "discovery",
+                    "condition": condition, "success": success, "input_tokens": tokens,
+                    "cached_input_tokens": 0, "output_tokens": 0, "graph_calls": 1,
+                    "successful_graph_calls": 1, "tool_calls": 1,
+                    "agent_seconds": 1, "index_seconds": 0}
+        result = summarize([record("graph_mcp", True, 100), record("graph_cli", True, 70)])
+        self.assertEqual(result["compiler"]["guided_pairs"], 1)
+        self.assertEqual(result["compiler"]["cli_vs_mcp_saving_pct"], 30)
 
     def test_duplicate_ids_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -80,3 +80,11 @@ alternative correct answers and edit quality beyond the deterministic rubric.
 The summary distinguishes the default-vs-search delta from savings on pairs
 where the default arm actually used the graph. If no such pair exists, the
 graph-saving metric is null.
+
+For a controlled transport comparison, select `--condition graph_cli
+--condition graph_mcp`. Both guided arms request one graph lookup with a
+100-token response budget, but only the transport differs. The trace records
+memory, graph, search, source-read, and other tool call counts and output
+characters, plus non-graph calls after the first graph call. These are
+retrieval-work proxies, not provider-token attribution per tool; provider
+usage remains available only for the whole agent attempt.
