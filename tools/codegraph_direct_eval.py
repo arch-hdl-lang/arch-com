@@ -54,9 +54,16 @@ CROSS_RELATIONS = {
     "user_package_import_target": (
         ("examples/pkg_user.arch", 1, "TestPkg", "examples/TestPkg.arch", 1, "TestPkg"),
     ),
+    "user_nic400_cdc_fifo_targets": (
+        ("examples/nic400/Nic400CdcAxi4.arch", 57, "ar_fifo",
+         "examples/nic400/Nic400ArCdcFifo.arch", 17, "Nic400ArCdcFifo"),
+        ("examples/nic400/Nic400CdcAxi4.arch", 69, "r_fifo",
+         "examples/nic400/Nic400RCdcFifo.arch", 16, "Nic400RCdcFifo"),
+    ),
 }
 RELATION_MAX_RANK = {"user_axi_dma_instance_targets": 2,
-                     "user_package_import_target": 4}
+                     "user_package_import_target": 4,
+                     "user_nic400_cdc_fifo_targets": 2}
 
 
 def run(command: list[str], root: Path, timeout: int = 120) -> tuple[str, float]:

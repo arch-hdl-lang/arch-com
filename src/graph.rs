@@ -484,6 +484,7 @@ pub fn impact(index: &GraphIndex, symbol: &str, depth: usize, limit: usize) -> V
 
 pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
     let terms = tokenize(task);
+    let task_lower = task.to_ascii_lowercase();
     let mut direct = query(index, task, index.nodes.len());
     if direct.iter().any(|hit| is_construct_like(&hit.node.kind)) {
         direct.retain(|hit| !matches!(hit.node.kind.as_str(), "generated_sv" | "interface_stub"));
@@ -497,6 +498,18 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
         }
         if terms.iter().any(|term| term == &hit.node.kind) {
             hit.score += 80;
+        }
+        if hit.node.kind == "instance"
+            && terms
+                .iter()
+                .any(|term| term == &hit.node.name.to_ascii_lowercase())
+        {
+            hit.score += 100;
+        }
+        if matches!(hit.node.kind.as_str(), "instance" | "use")
+            && task_lower.contains(&hit.node.file.to_ascii_lowercase())
+        {
+            hit.score += 160;
         }
     }
     direct.sort_by(|a, b| {
@@ -522,7 +535,7 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
             if ids.insert(other.clone()) {
                 if let Some(node) = node_by_id.get(other) {
                     extras.push(QueryHit {
-                        score: hit.score.saturating_sub(25).max(1),
+                        score: hit.score.saturating_sub(100).max(1),
                         node: (*node).clone(),
                     });
                 }

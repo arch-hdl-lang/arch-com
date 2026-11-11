@@ -13,7 +13,14 @@
       "cohort": "user",
       "kind": "discovery",
       "prompt": "Which separately declared package file satisfies the TestPkg import in examples/pkg_user.arch? Give the import path and package declaration path.",
-      "answer_any": [["examples/pkg_user.arch"], ["examples/TestPkg.arch"]]
+      "answer_any": [["examples/TestPkg.arch"]]
+    },
+    {
+      "id": "user_nic400_cdc_fifo_targets",
+      "cohort": "user",
+      "kind": "discovery",
+      "prompt": "In examples/nic400/Nic400CdcAxi4.arch, which separate FIFO declarations do ar_fifo and r_fifo instantiate? Give both instance names, target names, and declaration paths.",
+      "answer_any": [["ar_fifo"], ["Nic400ArCdcFifo"], ["examples/nic400/Nic400ArCdcFifo.arch"], ["r_fifo"], ["Nic400RCdcFifo"], ["examples/nic400/Nic400RCdcFifo.arch"]]
     },
     {
       "id": "compiler_pipe_reg_change_map",

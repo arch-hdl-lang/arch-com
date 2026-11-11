@@ -28,7 +28,7 @@ class CodegraphEvalTests(unittest.TestCase):
 
     def test_cross_file_manifest_has_relationships_and_controls(self):
         tasks = load_tasks(ROOT / "doc/codegraph_eval_cross_file_tasks.json")
-        self.assertEqual(len(tasks), 5)
+        self.assertEqual(len(tasks), 6)
         self.assertEqual(sum(task["kind"] == "known_file" for task in tasks), 2)
         relation = CROSS_RELATIONS["user_package_import_target"]
         good = "examples/pkg_user.arch:1 use TestPkg -> examples/TestPkg.arch:1 TestPkg"
