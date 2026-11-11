@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from codegraph_eval import answer_passes, load_tasks, parse_events, prompt_for, summarize, trace_result, verified_success, workspace_env
+from codegraph_eval import answer_passes, graph_command_kind, is_graph_command, load_tasks, parse_events, prompt_for, summarize, trace_result, verified_success, workspace_env
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +62,14 @@ class CodegraphEvalTests(unittest.TestCase):
         events = [{"type": "item.completed", "item": {"type": "command_execution",
                    "command": "head .archdevgraph/nodes.jsonl", "exit_code": 0}}]
         self.assertEqual(trace_result(events)["graph_calls"], 1)
+        self.assertEqual(trace_result(events)["successful_graph_index_reads"], 1)
+        self.assertEqual(trace_result(events)["successful_graph_commands"], 0)
+
+    def test_search_mention_is_not_a_graph_call(self):
+        self.assertFalse(is_graph_command('/bin/zsh -lc \'rg -n "arch graph context" README.md\''))
+        self.assertTrue(is_graph_command('/bin/zsh -lc \'/tmp/bin/arch graph context fifo --index .archgraph\''))
+        self.assertTrue(is_graph_command("head .archdevgraph/nodes.jsonl"))
+        self.assertEqual(graph_command_kind("head .archdevgraph/nodes.jsonl"), "index_read")
 
     def test_completed_mcp_error_is_not_a_successful_graph_call(self):
         events = [
