@@ -80,6 +80,8 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertTrue(is_graph_command('/bin/zsh -lc \'/tmp/bin/arch graph context fifo --index .archgraph\''))
         self.assertTrue(is_graph_command("head .archdevgraph/nodes.jsonl"))
         self.assertEqual(graph_command_kind("head .archdevgraph/nodes.jsonl"), "index_read")
+        self.assertFalse(is_graph_command("arch graph context --help"))
+        self.assertEqual(graph_command_kind("arch graph dev-index --root ."), "cli_setup")
 
     def test_completed_mcp_error_is_not_a_successful_graph_call(self):
         events = [

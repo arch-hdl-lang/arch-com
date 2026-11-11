@@ -71,12 +71,21 @@ def graph_command_kind(command: str) -> str | None:
         if word in (";", "&&", "||", "|"):
             while segment and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]):
                 segment.pop(0)
-            if len(segment) >= 2 and Path(segment[0]).name == "arch" and segment[1] == "graph":
-                return "cli"
+            if len(segment) >= 3 and Path(segment[0]).name == "arch" and segment[1] == "graph":
+                if "--help" in segment or "-h" in segment:
+                    return None
+                if segment[2] in ("context", "dev-query", "query", "impact", "callers"):
+                    return "cli"
+                if segment[2] in ("index", "dev-index"):
+                    return "cli_setup"
             if segment and Path(segment[0]).name == "cargo" and "--" in segment:
                 pos = segment.index("--")
-                if segment[pos + 1:pos + 2] == ["graph"]:
-                    return "cli"
+                if segment[pos + 1:pos + 2] == ["graph"] and "--help" not in segment:
+                    if segment[pos + 2:pos + 3] in (["context"], ["dev-query"], ["query"],
+                                                    ["impact"], ["callers"]):
+                        return "cli"
+                    if segment[pos + 2:pos + 3] in (["index"], ["dev-index"]):
+                        return "cli_setup"
             segment = []
         else:
             segment.append(word)
