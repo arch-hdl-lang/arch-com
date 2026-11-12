@@ -65,5 +65,8 @@ jobs:
       - name: cargo build --release
         run: cargo build --release
 
+      - name: code graph direct retrieval audit
+        run: python3 tools/codegraph_direct_eval.py --arch-bin target/release/arch
+
       - name: cargo test --release
         run: cargo test --release

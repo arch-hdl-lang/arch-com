@@ -1,5 +1,22 @@
 # Unguided ARCH code-graph evaluation
 
+## Direct retrieval gate
+
+`tools/codegraph_direct_eval.py` runs in cargo-test CI against the built
+compiler. It indexes `examples/`, `stdlib/`, and `tests/` as separate graph
+roots, builds the developer graph, and queries four frozen discovery prompts
+without launching Codex. Each required path and symbol must appear near the
+top of a 100-token-budget response; its reported line must still contain that
+symbol in the current source. The script prints index time, query time, output
+length, and ranks as JSON and fails on a coverage or bound regression. It does
+not estimate provider tokens or test whether an agent chooses the graph.
+
+The direct gate is deliberately cheaper than the live agent evaluation below.
+Run the latter only after a retrieval change passes the direct gate, including
+known-file controls and answer quality before claiming token savings.
+
+## Agent selection and tokens
+
 `tools/codegraph_eval.py` compares ordinary-search-only attempts with the
 current default ARCH workflow. Neither arm receives a graph command or index
 path in the task prompt. The default arm may choose graph retrieval, direct
@@ -35,7 +52,10 @@ python3 tools/codegraph_eval.py analyze /tmp/arch-codegraph-eval/records.jsonl
 
 The runner refuses a dirty repository or an existing records file. It builds
 fresh user and developer indexes and records build time separately from agent
-latency. `metadata.json` pins the repository SHA, CLI/compiler versions, model,
+latency. It sets `ARCH_STDLIB_PATH` to the benchmark checkout's `stdlib/` for
+indexing and agent attempts, so a binary built in another worktree cannot
+silently pull dependencies from that build checkout. `metadata.json` pins the
+repository SHA, CLI/compiler versions, model,
 seed, task-file digest, and selected task IDs. JSONL traces, stderr, edit diffs,
 validation notes, and `summary.json` are retained. The per-attempt `graph_calls` field measures
 actual graph CLI or MCP use. A correct default answer with zero graph calls is

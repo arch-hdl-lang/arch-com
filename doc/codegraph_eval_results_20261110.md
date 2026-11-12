@@ -96,3 +96,31 @@ correctness and token checks plus the known-file controls before changing the
 default workflow. Raw traces and summaries are retained in the local
 `arch-codegraph-*-eval-20261110-approved` artifact directories beside the
 checkout.
+
+## November 11 follow-up
+
+After the exact-target ranking change, the same four discovery tasks were run
+twice on commit `c9eb0541` with a freshly rebuilt compiler binary. All eight
+default attempts again used zero graph calls. Search-only used 730,388 total /
+68,884 uncached provider tokens; default used 834,300 total / 136,572
+uncached. One default answer omitted the pipe-reg emitter. A search-only answer
+named the valid `emit_arbiter` entry point rather than the rubric's
+`emit_arbiter_round_robin` helper; human review accepts that answer. Thus the
+retrieval ranking improvement still has no measured agent-token benefit.
+Artifacts: `/private/tmp/arch-codegraph-agent-rerun-optimized-20261111`.
+
+An isolated `AGENTS.md` experiment then asked for one 100-token graph query
+when ownership or a relationship was unknown, with direct reads for known
+files. The benchmark harness was corrected to set `ARCH_STDLIB_PATH` to the
+evaluated worktree; without this, a compiler binary built elsewhere indexed
+that other worktree's standard library and the MCP rejected its paths. With
+the corrected harness, one repeat of four discovery tasks and two known-file
+controls produced five successful graph calls in the default arm, including
+one unnecessary known-file call. Search-only used 498,460 total / 74,652
+uncached tokens; default used 886,328 total / 114,488 uncached. One default
+known-file answer had no verification tool call, so only five pairs qualify
+for the success-filtered comparison; those pairs show a 93.2% total-token
+regression. The graph outputs themselves were bounded, but extra retrieval and
+model context outweighed them. The guidance experiment remains unmerged;
+only the worktree-isolation harness fix is retained. Artifacts:
+`/private/tmp/arch-codegraph-selection-localstdlib-20261111`.

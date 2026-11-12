@@ -153,9 +153,16 @@ def edit_passes(task: dict, workspace: Path, env: dict[str, str]) -> tuple[bool,
     return True, "validated"
 
 
+def workspace_env(workspace: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["ARCH_STDLIB_PATH"] = str(workspace / "stdlib")
+    return env
+
+
 def run_command(command: list[str], cwd: Path, log: Path) -> float:
     start = time.monotonic()
-    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=180)
+    result = subprocess.run(command, cwd=cwd, env=workspace_env(cwd),
+                            capture_output=True, text=True, timeout=180)
     log.write_text(result.stdout + result.stderr)
     if result.returncode:
         raise RuntimeError(f"{' '.join(command)} failed; see {log}")
@@ -217,7 +224,7 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         ]
         if ignore_user_config:
             command.insert(4, "--ignore-user-config")
-        env = os.environ.copy()
+        env = workspace_env(workspace)
         env["PATH"] = str(arch_bin.parent) + os.pathsep + env.get("PATH", "")
         env["CARGO_TARGET_DIR"] = str(repo / "target")
         start = time.monotonic()
@@ -358,6 +365,7 @@ def main() -> None:
         "ignore_user_config": args.ignore_user_config, "approval_mode": "approve-for-me",
         "codex_version": subprocess.check_output(["codex", "--version"], text=True).strip(),
         "arch_version": subprocess.check_output([str(arch_bin), "--version"], text=True).strip(),
+        "arch_stdlib_path": str(repo / "stdlib"),
     }
     if metadata["repo_status"]:
         p.error("benchmark repository must be clean before running")
