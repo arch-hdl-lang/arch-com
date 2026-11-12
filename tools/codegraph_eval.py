@@ -69,28 +69,33 @@ def graph_command_kind(command: str) -> str | None:
     except ValueError:
         return None
     segment = []
+    saw_query = False
+    saw_setup = False
     for word in words + [";"]:
         if word in (";", "&&", "||", "|"):
             while segment and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]):
                 segment.pop(0)
+            if segment and Path(segment[0]).name == "env":
+                segment.pop(0)
+                while segment and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]):
+                    segment.pop(0)
             if len(segment) >= 3 and Path(segment[0]).name == "arch" and segment[1] == "graph":
-                if "--help" in segment or "-h" in segment:
-                    return None
-                if segment[2] in ("context", "dev-query", "query", "impact", "callers"):
-                    return "cli"
-                if segment[2] in ("index", "dev-index"):
-                    return "cli_setup"
+                if "--help" not in segment and "-h" not in segment:
+                    saw_query |= segment[2] in ("context", "dev-query", "query", "impact", "callers")
+                    saw_setup |= segment[2] in ("index", "dev-index")
             if segment and Path(segment[0]).name == "cargo" and "--" in segment:
                 pos = segment.index("--")
                 if segment[pos + 1:pos + 2] == ["graph"] and "--help" not in segment:
-                    if segment[pos + 2:pos + 3] in (["context"], ["dev-query"], ["query"],
-                                                    ["impact"], ["callers"]):
-                        return "cli"
-                    if segment[pos + 2:pos + 3] in (["index"], ["dev-index"]):
-                        return "cli_setup"
+                    saw_query |= segment[pos + 2:pos + 3] in (["context"], ["dev-query"], ["query"],
+                                                               ["impact"], ["callers"])
+                    saw_setup |= segment[pos + 2:pos + 3] in (["index"], ["dev-index"])
             segment = []
         else:
             segment.append(word)
+    if saw_query:
+        return "cli"
+    if saw_setup:
+        return "cli_setup"
     if any(re.search(r"(?:^|/)\.arch(?:dev)?graph(?:/|$)", word) for word in words):
         return "index_read"
     return None

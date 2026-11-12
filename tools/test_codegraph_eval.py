@@ -91,6 +91,17 @@ class CodegraphEvalTests(unittest.TestCase):
                 self.assertEqual(graph_command_kind(command), "index_read")
         self.assertIsNone(graph_command_kind("rg TxQueue src"))
 
+    def test_wrapped_and_combined_graph_queries_are_detected(self):
+        for command in ("env ARCH_STDLIB_PATH=stdlib arch graph context TxQueue",
+                        "arch graph dev-index --root . && arch graph dev-query fifo",
+                        "arch graph context --help; arch graph context TxQueue"):
+            with self.subTest(command=command):
+                self.assertEqual(graph_command_kind(command), "cli")
+                events = [{"type": "item.completed", "item": {"type": "command_execution",
+                           "command": command, "exit_code": 0}}]
+                self.assertEqual(trace_result(events)["graph_calls"], 1)
+        self.assertEqual(graph_command_kind("arch graph dev-index --root ."), "cli_setup")
+
     def test_completed_mcp_error_is_not_a_successful_graph_call(self):
         events = [
             {"type": "item.completed", "item": {"type": "mcp_tool_call", "tool": "arch_dev_graph_query",
