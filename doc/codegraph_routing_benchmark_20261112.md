@@ -44,6 +44,7 @@ also limit any generalization from the user-token comparison.
 
 After this run, `AGENTS.md` was changed to name `./target/debug/arch` in this
 checkout and to warn about the macOS utility. That repair was **not** tested
-by these 28 attempts. Do not claim improved graph selection or token savings
-from it until a separate approved live rerun shows successful calls without
-regressing known-file controls.
+by these 28 attempts. A separate approved
+[path-fix rerun](codegraph_routing_pathfix_benchmark_20261112.md) subsequently
+showed 8/10 successful discovery graph calls and no known-file graph calls,
+but still no user-discovery provider-token savings.
