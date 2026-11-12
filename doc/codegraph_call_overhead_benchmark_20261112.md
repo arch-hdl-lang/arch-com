@@ -47,5 +47,8 @@ scores, tool breakdowns, and token counts.
 
 After this run, `AGENTS.md` and the ARCH skill were tightened to direct-read
 named files for in-file facts and to forbid using the user graph for Rust
-compiler source. That known-file boundary fix is **unmeasured** by these
-records and needs a separately approved live check before claiming success.
+compiler source. A separate approved
+[known-file check](codegraph_known_file_benchmark_20261112.md) found no graph
+calls but two wrong compiler answers produced without any source retrieval.
+The rule was therefore tightened again to require one targeted named-file
+read or search; that final correction remains unmeasured.

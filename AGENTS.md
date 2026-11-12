@@ -14,7 +14,8 @@ Just write a normal commit message with no AI attribution trailer.
 
 Choose retrieval based on what is known before searching. When the question
 names an exact file and asks for a declaration line, function, or other fact
-inside that file, read or search that file directly; do not query a graph.
+inside that file, make one targeted `rg -n` or source read of that file before
+answering, even if the answer seems familiar; do not query a graph.
 The user `.archgraph` is not for Rust compiler source. For an unknown ARCH
 instance target, import, caller, or other cross-file relationship, run one
 focused query before other retrieval:
