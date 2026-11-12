@@ -12,8 +12,10 @@ Just write a normal commit message with no AI attribution trailer.
 
 ## Source discovery
 
-Choose retrieval based on what is known before searching. Read an exact known
-file directly when no cross-file relationship is needed. For an unknown ARCH
+Choose retrieval based on what is known before searching. When the question
+names an exact file and asks for a declaration line, function, or other fact
+inside that file, read or search that file directly; do not query a graph.
+The user `.archgraph` is not for Rust compiler source. For an unknown ARCH
 instance target, import, caller, or other cross-file relationship, run one
 focused query before other retrieval:
 

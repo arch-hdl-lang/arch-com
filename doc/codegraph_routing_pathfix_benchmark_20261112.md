@@ -48,7 +48,9 @@ trace also checked graph `--help` before the query (sometimes bundled with a
 memory lookup). The next guidance change provides complete CLI commands and
 allows a fresh, unambiguous `--include-source` result to answer a location
 question without a redundant source read. That change happened **after** this
-run and has no measured token effect yet.
+run. A separate approved [call-overhead run](codegraph_call_overhead_benchmark_20261112.md)
+subsequently showed lower user-discovery token use, but also a known-file
+routing regression.
 
 Compiler discovery results remain unsuitable for a savings claim: the frozen
 rubric passed two default declaration answers, two search-only declaration
