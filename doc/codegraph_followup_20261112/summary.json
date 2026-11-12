@@ -1,0 +1,296 @@
+{
+  "user": {
+    "arms": {
+      "no_graph": {
+        "attempts": 8,
+        "successes": 8,
+        "tokens": 563498,
+        "uncached_tokens": 140458,
+        "graph_calls": 0,
+        "successful_graph_calls": 0,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 88.276,
+        "index_seconds": 0.0
+      },
+      "default": {
+        "attempts": 8,
+        "successes": 8,
+        "tokens": 709681,
+        "uncached_tokens": 133937,
+        "graph_calls": 1,
+        "successful_graph_calls": 1,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 99.057,
+        "index_seconds": 0.0
+      }
+    },
+    "successful_pairs": 8,
+    "paired_default_vs_search_pct": -25.94,
+    "graph_used_successful_pairs": 1,
+    "graph_used_pair_saving_pct": -71.91,
+    "default_discovery_graph_uses": 1,
+    "default_discovery_attempts": 6,
+    "known_file_graph_uses": 0,
+    "guided_arms": {
+      "graph_cli": {
+        "attempts": 8,
+        "successes": 8,
+        "tokens": 481537,
+        "uncached_tokens": 158721,
+        "successful_graph_calls": 8
+      },
+      "graph_mcp": {
+        "attempts": 0,
+        "successes": 0,
+        "tokens": 0,
+        "uncached_tokens": 0,
+        "successful_graph_calls": 0
+      }
+    },
+    "guided_pairs": 0,
+    "cli_vs_mcp_saving_pct": null,
+    "cli_vs_search": {
+      "pairs": 8,
+      "search_tokens": 563498,
+      "graph_tokens": 481537,
+      "search_uncached_tokens": 140458,
+      "graph_uncached_tokens": 158721,
+      "total_saving_pct": 14.55,
+      "uncached_saving_pct": -13.0
+    },
+    "cli_vs_search_by_task": {
+      "user_axi_dma_instance_targets": {
+        "pairs": 2,
+        "search_tokens": 167335,
+        "graph_tokens": 108172,
+        "search_uncached_tokens": 61479,
+        "graph_uncached_tokens": 21388,
+        "total_saving_pct": 35.36,
+        "uncached_saving_pct": 65.21
+      },
+      "user_known_file_control": {
+        "pairs": 2,
+        "search_tokens": 104818,
+        "graph_tokens": 159403,
+        "search_uncached_tokens": 14706,
+        "graph_uncached_tokens": 73003,
+        "total_saving_pct": -52.08,
+        "uncached_saving_pct": -396.42
+      },
+      "user_nic400_cdc_fifo_targets": {
+        "pairs": 2,
+        "search_tokens": 159508,
+        "graph_tokens": 108036,
+        "search_uncached_tokens": 46996,
+        "graph_uncached_tokens": 21252,
+        "total_saving_pct": 32.27,
+        "uncached_saving_pct": 54.78
+      },
+      "user_package_import_target": {
+        "pairs": 2,
+        "search_tokens": 131837,
+        "graph_tokens": 105926,
+        "search_uncached_tokens": 17277,
+        "graph_uncached_tokens": 43078,
+        "total_saving_pct": 19.65,
+        "uncached_saving_pct": -149.34
+      }
+    }
+  },
+  "compiler": {
+    "arms": {
+      "no_graph": {
+        "attempts": 6,
+        "successes": 3,
+        "tokens": 602164,
+        "uncached_tokens": 149684,
+        "graph_calls": 0,
+        "successful_graph_calls": 0,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 98.96,
+        "index_seconds": 0.0
+      },
+      "default": {
+        "attempts": 6,
+        "successes": 3,
+        "tokens": 815943,
+        "uncached_tokens": 109255,
+        "graph_calls": 0,
+        "successful_graph_calls": 0,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 130.41,
+        "index_seconds": 0.0
+      }
+    },
+    "successful_pairs": 2,
+    "paired_default_vs_search_pct": -0.71,
+    "graph_used_successful_pairs": 0,
+    "graph_used_pair_saving_pct": null,
+    "default_discovery_graph_uses": 0,
+    "default_discovery_attempts": 4,
+    "known_file_graph_uses": 0,
+    "guided_arms": {
+      "graph_cli": {
+        "attempts": 6,
+        "successes": 6,
+        "tokens": 525166,
+        "uncached_tokens": 76014,
+        "successful_graph_calls": 6
+      },
+      "graph_mcp": {
+        "attempts": 0,
+        "successes": 0,
+        "tokens": 0,
+        "uncached_tokens": 0,
+        "successful_graph_calls": 0
+      }
+    },
+    "guided_pairs": 0,
+    "cli_vs_mcp_saving_pct": null,
+    "cli_vs_search": {
+      "pairs": 3,
+      "search_tokens": 252885,
+      "graph_tokens": 158934,
+      "search_uncached_tokens": 93653,
+      "graph_uncached_tokens": 29270,
+      "total_saving_pct": 37.15,
+      "uncached_saving_pct": 68.75
+    },
+    "cli_vs_search_by_task": {
+      "compiler_known_file_control": {
+        "pairs": 2,
+        "search_tokens": 107232,
+        "graph_tokens": 105744,
+        "search_uncached_tokens": 40288,
+        "graph_uncached_tokens": 27920,
+        "total_saving_pct": 1.39,
+        "uncached_saving_pct": 30.7
+      },
+      "compiler_pipe_reg_change_map": {
+        "pairs": 1,
+        "search_tokens": 145653,
+        "graph_tokens": 53190,
+        "search_uncached_tokens": 53365,
+        "graph_uncached_tokens": 1350,
+        "total_saving_pct": 63.48,
+        "uncached_saving_pct": 97.47
+      }
+    }
+  },
+  "all": {
+    "arms": {
+      "no_graph": {
+        "attempts": 14,
+        "successes": 11,
+        "tokens": 1165662,
+        "uncached_tokens": 290142,
+        "graph_calls": 0,
+        "successful_graph_calls": 0,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 187.236,
+        "index_seconds": 0.0
+      },
+      "default": {
+        "attempts": 14,
+        "successes": 11,
+        "tokens": 1525624,
+        "uncached_tokens": 243192,
+        "graph_calls": 1,
+        "successful_graph_calls": 1,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 229.467,
+        "index_seconds": 0.0
+      }
+    },
+    "successful_pairs": 10,
+    "paired_default_vs_search_pct": -21.91,
+    "graph_used_successful_pairs": 1,
+    "graph_used_pair_saving_pct": -71.91,
+    "default_discovery_graph_uses": 1,
+    "default_discovery_attempts": 10,
+    "known_file_graph_uses": 0,
+    "guided_arms": {
+      "graph_cli": {
+        "attempts": 14,
+        "successes": 14,
+        "tokens": 1006703,
+        "uncached_tokens": 234735,
+        "successful_graph_calls": 14
+      },
+      "graph_mcp": {
+        "attempts": 0,
+        "successes": 0,
+        "tokens": 0,
+        "uncached_tokens": 0,
+        "successful_graph_calls": 0
+      }
+    },
+    "guided_pairs": 0,
+    "cli_vs_mcp_saving_pct": null,
+    "cli_vs_search": {
+      "pairs": 11,
+      "search_tokens": 816383,
+      "graph_tokens": 640471,
+      "search_uncached_tokens": 234111,
+      "graph_uncached_tokens": 187991,
+      "total_saving_pct": 21.55,
+      "uncached_saving_pct": 19.7
+    },
+    "cli_vs_search_by_task": {
+      "compiler_known_file_control": {
+        "pairs": 2,
+        "search_tokens": 107232,
+        "graph_tokens": 105744,
+        "search_uncached_tokens": 40288,
+        "graph_uncached_tokens": 27920,
+        "total_saving_pct": 1.39,
+        "uncached_saving_pct": 30.7
+      },
+      "compiler_pipe_reg_change_map": {
+        "pairs": 1,
+        "search_tokens": 145653,
+        "graph_tokens": 53190,
+        "search_uncached_tokens": 53365,
+        "graph_uncached_tokens": 1350,
+        "total_saving_pct": 63.48,
+        "uncached_saving_pct": 97.47
+      },
+      "user_axi_dma_instance_targets": {
+        "pairs": 2,
+        "search_tokens": 167335,
+        "graph_tokens": 108172,
+        "search_uncached_tokens": 61479,
+        "graph_uncached_tokens": 21388,
+        "total_saving_pct": 35.36,
+        "uncached_saving_pct": 65.21
+      },
+      "user_known_file_control": {
+        "pairs": 2,
+        "search_tokens": 104818,
+        "graph_tokens": 159403,
+        "search_uncached_tokens": 14706,
+        "graph_uncached_tokens": 73003,
+        "total_saving_pct": -52.08,
+        "uncached_saving_pct": -396.42
+      },
+      "user_nic400_cdc_fifo_targets": {
+        "pairs": 2,
+        "search_tokens": 159508,
+        "graph_tokens": 108036,
+        "search_uncached_tokens": 46996,
+        "graph_uncached_tokens": 21252,
+        "total_saving_pct": 32.27,
+        "uncached_saving_pct": 54.78
+      },
+      "user_package_import_target": {
+        "pairs": 2,
+        "search_tokens": 131837,
+        "graph_tokens": 105926,
+        "search_uncached_tokens": 17277,
+        "graph_uncached_tokens": 43078,
+        "total_saving_pct": 19.65,
+        "uncached_saving_pct": -149.34
+      }
+    }
+  }
+}
