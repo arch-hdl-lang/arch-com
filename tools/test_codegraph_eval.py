@@ -93,6 +93,7 @@ class CodegraphEvalTests(unittest.TestCase):
 
     def test_wrapped_and_combined_graph_queries_are_detected(self):
         for command in ("env ARCH_STDLIB_PATH=stdlib arch graph context TxQueue",
+                        "env -u ARCH_STDLIB_PATH arch graph context TxQueue",
                         "arch graph dev-index --root . && arch graph dev-query fifo",
                         "arch graph context --help; arch graph context TxQueue"):
             with self.subTest(command=command):

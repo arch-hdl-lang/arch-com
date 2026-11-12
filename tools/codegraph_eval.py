@@ -77,8 +77,15 @@ def graph_command_kind(command: str) -> str | None:
                 segment.pop(0)
             if segment and Path(segment[0]).name == "env":
                 segment.pop(0)
-                while segment and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]):
-                    segment.pop(0)
+                while segment:
+                    if re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]) or segment[0] in (
+                        "-i", "--ignore-environment"
+                    ) or segment[0].startswith("--unset="):
+                        segment.pop(0)
+                    elif segment[0] in ("-u", "--unset") and len(segment) > 1:
+                        segment[:2] = []
+                    else:
+                        break
             if len(segment) >= 3 and Path(segment[0]).name == "arch" and segment[1] == "graph":
                 if "--help" not in segment and "-h" not in segment:
                     saw_query |= segment[2] in ("context", "dev-query", "query", "impact", "callers")
