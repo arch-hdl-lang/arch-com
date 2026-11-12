@@ -1,0 +1,27 @@
+{
+  "repo_sha": "7b0dd478b0b8a3fbd257c82aae47420a1ffc20aa",
+  "repo_status": "",
+  "tasks_sha256": "a4638cfa6ca4bf6af7d93f443c6f78c16c837548835d149c428092f05f263c26",
+  "selected_task_ids": [
+    "user_known_file_control",
+    "compiler_known_file_control"
+  ],
+  "model": "gpt-6-luna",
+  "seed": 55,
+  "repeats": 2,
+  "ignore_user_config": false,
+  "approval_mode": "approve-for-me",
+  "conditions": [
+    "no_graph",
+    "default"
+  ],
+  "graph_token_budget": 200,
+  "include_source": true,
+  "codex_version": "codex-cli 0.159.2",
+  "arch_version": "arch 0.74.2 (git 7b0dd478b0b8)",
+  "arch_stdlib_path": "/Users/shuqingzhao/Documents/Codex/2026-06-19/do-you-have-a-statistic-my/arch-com-codegraph-postmerge-bench/stdlib",
+  "shared_index_seconds": {
+    "compiler": 1.525,
+    "user": 30.761
+  }
+}
