@@ -77,17 +77,37 @@ def graph_command_kind(command: str) -> str | None:
         if word in (";", "&&", "||", "|"):
             while segment and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]):
                 segment.pop(0)
-            if segment and Path(segment[0]).name == "env":
-                segment.pop(0)
-                while segment:
-                    if re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]) or segment[0] in (
-                        "-i", "--ignore-environment"
-                    ) or segment[0].startswith("--unset="):
-                        segment.pop(0)
-                    elif segment[0] in ("-u", "--unset") and len(segment) > 1:
+            while segment:
+                wrapper = Path(segment[0]).name
+                if wrapper == "env":
+                    segment.pop(0)
+                    while segment:
+                        if re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]) or segment[0] in (
+                            "-i", "--ignore-environment"
+                        ) or segment[0].startswith("--unset="):
+                            segment.pop(0)
+                        elif segment[0] in ("-u", "--unset") and len(segment) > 1:
+                            segment[:2] = []
+                        else:
+                            break
+                elif wrapper == "timeout":
+                    segment.pop(0)
+                    while segment and segment[0].startswith("-"):
+                        flag = segment.pop(0)
+                        if flag in ("-s", "--signal", "-k", "--kill-after") and segment:
+                            segment.pop(0)
+                    if segment:
+                        segment.pop(0)  # duration
+                elif wrapper == "nice":
+                    segment.pop(0)
+                    if segment and segment[0] in ("-n", "--adjustment") and len(segment) > 1:
                         segment[:2] = []
-                    else:
-                        break
+                    elif segment and re.match(r"^(?:-n?-?\d+|--adjustment=\S+)$", segment[0]):
+                        segment.pop(0)
+                elif wrapper == "command":
+                    segment.pop(0)
+                else:
+                    break
             if len(segment) >= 3 and Path(segment[0]).name == "arch" and segment[1] == "graph":
                 if "--help" not in segment and "-h" not in segment:
                     saw_query |= segment[2] in ("context", "dev-query", "query", "impact", "callers")
