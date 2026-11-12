@@ -48,6 +48,17 @@ class GraphToolsTests(unittest.TestCase):
             self.assertEqual(run.call_count, 3)
             self.assertIn("dev-index", run.call_args_list[1].args[0])
 
+    def test_source_excerpt_flag_reaches_both_graph_queries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp).resolve()
+            with patch.object(server, "WORKSPACE_ROOTS", [root]), patch.object(
+                server, "_run", return_value="[OK] source"
+            ) as run:
+                server.arch_graph_context("Demo", index=str(root / "user"), include_source=True)
+                self.assertIn("--include-source", run.call_args.args[0])
+                server.arch_dev_graph_query("Demo", root=str(root), include_source=True)
+                self.assertIn("--include-source", run.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

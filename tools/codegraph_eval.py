@@ -9,6 +9,7 @@ import json
 import os
 import random
 import re
+import shlex
 import signal
 import subprocess
 import tempfile
@@ -16,8 +17,9 @@ import time
 from pathlib import Path
 
 
-GRAPH_COMMAND = re.compile(r"(?:^|[\s/])(?:arch|cargo\s+run\b[^;\n]*?\s+--|target/(?:debug|release)/arch)\s+graph\b")
-GRAPH_INDEX = re.compile(r"\.arch(?:dev)?graph(?:/|\b)")
+MEMORY_COMMAND = re.compile(r"/\.codex/memories/")
+SEARCH_COMMAND = re.compile(r"(?:^|[\s'\"])(?:rg|grep|find)\b")
+SOURCE_READ_COMMAND = re.compile(r"(?:^|[\s'\"])(?:sed|head|tail|cat|nl)\b")
 NO_GRAPH = "Graph commands, graph MCP tools, and graph index files are unavailable for this task. Use ordinary repository search."
 VERIFY = (
     "Verify with at most three targeted retrieval calls and bounded output, then answer. "
@@ -55,6 +57,83 @@ def parse_events(raw: str) -> list[dict]:
     return events
 
 
+def graph_command_kind(command: str) -> str | None:
+    try:
+        outer = shlex.split(command)
+        if outer and Path(outer[0]).name in ("sh", "bash", "zsh"):
+            shell_arg = next((i + 1 for i, word in enumerate(outer[:-1])
+                              if word in ("-c", "-lc")), None)
+            if shell_arg is not None:
+                command = outer[shell_arg]
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return None
+    segment = []
+    saw_query = False
+    saw_setup = False
+    for word in words + [";"]:
+        if word in (";", "&&", "||", "|"):
+            while segment and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]):
+                segment.pop(0)
+            while segment:
+                wrapper = Path(segment[0]).name
+                if wrapper == "env":
+                    segment.pop(0)
+                    while segment:
+                        if re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", segment[0]) or segment[0] in (
+                            "-i", "--ignore-environment"
+                        ) or segment[0].startswith("--unset="):
+                            segment.pop(0)
+                        elif segment[0] in ("-u", "--unset") and len(segment) > 1:
+                            segment[:2] = []
+                        else:
+                            break
+                elif wrapper == "timeout":
+                    segment.pop(0)
+                    while segment and segment[0].startswith("-"):
+                        flag = segment.pop(0)
+                        if flag in ("-s", "--signal", "-k", "--kill-after") and segment:
+                            segment.pop(0)
+                    if segment:
+                        segment.pop(0)  # duration
+                elif wrapper == "nice":
+                    segment.pop(0)
+                    if segment and segment[0] in ("-n", "--adjustment") and len(segment) > 1:
+                        segment[:2] = []
+                    elif segment and re.match(r"^(?:-n?-?\d+|--adjustment=\S+)$", segment[0]):
+                        segment.pop(0)
+                elif wrapper == "command":
+                    segment.pop(0)
+                else:
+                    break
+            if len(segment) >= 3 and Path(segment[0]).name == "arch" and segment[1] == "graph":
+                if "--help" not in segment and "-h" not in segment:
+                    saw_query |= segment[2] in ("context", "dev-query", "query", "impact", "callers")
+                    saw_setup |= segment[2] in ("index", "dev-index")
+            if segment and Path(segment[0]).name == "cargo" and "--" in segment:
+                pos = segment.index("--")
+                if segment[pos + 1:pos + 2] == ["graph"] and "--help" not in segment:
+                    saw_query |= segment[pos + 2:pos + 3] in (["context"], ["dev-query"], ["query"],
+                                                               ["impact"], ["callers"])
+                    saw_setup |= segment[pos + 2:pos + 3] in (["index"], ["dev-index"])
+            segment = []
+        else:
+            segment.append(word)
+    if saw_query:
+        return "cli"
+    if saw_setup:
+        return "cli_setup"
+    if any(re.search(r"(?:^|/)\.arch(?:dev)?graph(?:/|$)", word) for word in words):
+        return "index_read"
+    return None
+
+
+def is_graph_command(command: str) -> bool:
+    return graph_command_kind(command) is not None
+
+
 def trace_result(events: list[dict]) -> dict:
     usage = [event["usage"] for event in events if event.get("type") == "turn.completed"]
     completed = [event["item"] for event in events if event.get("type") == "item.completed"]
@@ -63,10 +142,15 @@ def trace_result(events: list[dict]) -> dict:
     commands = [item.get("command", "") for item in command_items]
     mcp_calls = [item for item in completed if item.get("type") == "mcp_tool_call"]
     graph_commands = [item for item in command_items if
-                      GRAPH_COMMAND.search(item.get("command", "")) or GRAPH_INDEX.search(item.get("command", ""))]
+                      is_graph_command(item.get("command", ""))]
     graph_mcp_calls = [item for item in mcp_calls if re.search(r"arch_(?:dev_)?graph_", item.get("tool", ""))]
     graph_calls = len(graph_commands) + len(graph_mcp_calls)
-    successful_graph_calls = sum(item.get("exit_code") == 0 for item in graph_commands)
+    successful_graph_commands = sum(item.get("exit_code") == 0 and
+                                    graph_command_kind(item.get("command", "")) == "cli"
+                                    for item in graph_commands)
+    successful_graph_index_reads = sum(item.get("exit_code") == 0 and
+                                       graph_command_kind(item.get("command", "")) == "index_read"
+                                       for item in graph_commands)
     def mcp_succeeded(item: dict) -> bool:
         if item.get("status") != "completed" or item.get("error"):
             return False
@@ -75,13 +159,48 @@ def trace_result(events: list[dict]) -> dict:
         return any(part.get("type") == "text" and part.get("text", "").startswith("[OK]")
                    for part in content)
 
-    successful_graph_calls += sum(mcp_succeeded(item) for item in graph_mcp_calls)
+    successful_graph_mcp_calls = sum(mcp_succeeded(item) for item in graph_mcp_calls)
+    successful_graph_calls = (successful_graph_commands + successful_graph_index_reads +
+                              successful_graph_mcp_calls)
+    tool_breakdown = {kind: {"calls": 0, "output_chars": 0} for kind in
+                      ("memory", "graph", "search", "source_read", "other")}
+    after_graph_calls = 0
+    saw_graph = False
+    for item in completed:
+        if item.get("type") == "command_execution":
+            command = item.get("command", "")
+            if MEMORY_COMMAND.search(command):
+                kind = "memory"
+            elif is_graph_command(command):
+                kind = "graph"
+            elif SEARCH_COMMAND.search(command):
+                kind = "search"
+            elif SOURCE_READ_COMMAND.search(command):
+                kind = "source_read"
+            else:
+                kind = "other"
+            output = item.get("aggregated_output", "")
+        elif item.get("type") == "mcp_tool_call":
+            kind = "graph" if item in graph_mcp_calls else "other"
+            output = "".join(part.get("text", "") for part in
+                             (item.get("result") or {}).get("content", [])
+                             if part.get("type") == "text")
+        else:
+            continue
+        if saw_graph and kind != "graph":
+            after_graph_calls += 1
+        saw_graph |= kind == "graph"
+        tool_breakdown[kind]["calls"] += 1
+        tool_breakdown[kind]["output_chars"] += len(output)
     return {
         "answer": answers[-1] if answers else "",
         "commands": commands,
         "tool_calls": len(commands) + len(mcp_calls),
         "graph_calls": graph_calls,
         "successful_graph_calls": successful_graph_calls,
+        "successful_graph_commands": successful_graph_commands,
+        "successful_graph_index_reads": successful_graph_index_reads,
+        "successful_graph_mcp_calls": successful_graph_mcp_calls,
         "failed_mcp_calls": sum(bool(item.get("status") != "completed" or item.get("error") or
                                 (item in graph_mcp_calls and not mcp_succeeded(item)))
                                 for item in mcp_calls),
@@ -89,6 +208,8 @@ def trace_result(events: list[dict]) -> dict:
         "cached_input_tokens": sum(item.get("cached_input_tokens", 0) for item in usage),
         "output_tokens": sum(item["output_tokens"] for item in usage),
         "usage_present": bool(usage),
+        "tool_breakdown": tool_breakdown,
+        "after_graph_calls": after_graph_calls,
     }
 
 
@@ -187,10 +308,26 @@ def make_mcp_config(workspace: Path, arch_bin: Path, mcp_python: Path) -> str:
     )
 
 
-def prompt_for(task: dict, condition: str) -> str:
+def prompt_for(task: dict, condition: str, arch_command: str = "arch",
+               graph_token_budget: int = 100, include_source: bool = False) -> str:
     prompt = task["prompt"] + " " + VERIFY
     if condition == "no_graph":
         prompt += " " + NO_GRAPH
+    elif condition == "graph_cli":
+        command = (f"{arch_command} graph context" if task["cohort"] == "user"
+                   else f"{arch_command} graph dev-query")
+        index = ".archgraph" if task["cohort"] == "user" else ".archdevgraph"
+        source_flag = " --include-source" if include_source else ""
+        prompt += (f" For the first retrieval, use `{command}` with the task wording, "
+                   f"`--index {index} --token-budget {graph_token_budget}{source_flag}`. "
+                   "Do not call graph MCP tools. Verify only missing details from source.")
+    elif condition == "graph_mcp":
+        name = "arch_graph_context" if task["cohort"] == "user" else "arch_dev_graph_query"
+        arg = "task" if task["cohort"] == "user" else "query"
+        source_arg = ", include_source=True" if include_source else ""
+        tool = f"{name}({arg}=..., token_budget={graph_token_budget}{source_arg})"
+        prompt += (f" For the first retrieval, call `{tool}` against the prebuilt index. "
+                   "Do not run graph CLI commands. Verify only missing details from source.")
     if task["kind"] == "edit":
         prompt += " Work only inside this checkout."
     return prompt
@@ -198,7 +335,8 @@ def prompt_for(task: dict, condition: str) -> str:
 
 def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Path,
                 arch_bin: Path, mcp_python: Path, model: str, timeout: int,
-                ignore_user_config: bool) -> dict:
+                ignore_user_config: bool, graph_token_budget: int = 100,
+                include_source: bool = False) -> dict:
     label = f"{task['id']}-r{repeat}-{condition}"
     if task["kind"] == "edit":
         temp = tempfile.TemporaryDirectory(prefix="arch-graph-eval-", dir=output)
@@ -214,7 +352,7 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         workspace = repo
         index_seconds = 0.0
     try:
-        prompt = prompt_for(task, condition)
+        prompt = prompt_for(task, condition, str(arch_bin), graph_token_budget, include_source)
         command = [
             "codex", "exec", "--json", "--approve-for-me", "-m", model,
             "-c", 'model_reasoning_effort="low"',
@@ -259,7 +397,15 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
             )
         else:
             outcome, note = answer_passes(task, trace["answer"]), "answer rubric"
-        valid_method = condition != "no_graph" or trace["graph_calls"] == 0
+        valid_method = (
+            (condition != "no_graph" or trace["graph_calls"] == 0)
+            and (condition != "graph_cli" or
+                 (trace["successful_graph_commands"] > 0 and
+                  trace["successful_graph_mcp_calls"] == 0))
+            and (condition != "graph_mcp" or
+                 (trace["successful_graph_mcp_calls"] > 0 and
+                  trace["successful_graph_commands"] == 0))
+        )
         return {
             "task_id": task["id"], "cohort": task["cohort"], "kind": task["kind"],
             "condition": condition, "repeat": repeat, "exit_code": exit_code,
@@ -270,7 +416,12 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
             "output_tokens": trace["output_tokens"], "tool_calls": trace["tool_calls"],
             "graph_calls": trace["graph_calls"], "agent_seconds": elapsed,
             "successful_graph_calls": trace["successful_graph_calls"],
+            "successful_graph_commands": trace["successful_graph_commands"],
+            "successful_graph_index_reads": trace["successful_graph_index_reads"],
+            "successful_graph_mcp_calls": trace["successful_graph_mcp_calls"],
             "failed_mcp_calls": trace["failed_mcp_calls"],
+            "tool_breakdown": trace["tool_breakdown"],
+            "after_graph_calls": trace["after_graph_calls"],
             "index_seconds": index_seconds, "answer": trace["answer"],
         }
     finally:
@@ -317,6 +468,50 @@ def summarize(records: list[dict]) -> dict:
             "known_file_graph_uses": sum(r["graph_calls"] > 0 for r in subset
                                          if r["condition"] == "default" and r["kind"] == "known_file"),
         }
+        guided_arms = {}
+        for condition in ("graph_cli", "graph_mcp"):
+            arm = [r for r in subset if r["condition"] == condition]
+            guided_arms[condition] = {
+                "attempts": len(arm), "successes": sum(verified_success(r) for r in arm),
+                "tokens": sum(r["input_tokens"] + r["output_tokens"] for r in arm),
+                "uncached_tokens": sum(r["input_tokens"] - r["cached_input_tokens"]
+                                       + r["output_tokens"] for r in arm),
+                "successful_graph_calls": sum(r.get("successful_graph_calls", 0) for r in arm),
+            }
+        cli = {(r["task_id"], r["repeat"]): r for r in subset
+               if r["condition"] == "graph_cli" and verified_success(r)}
+        guided_pairs = [(r, cli[(r["task_id"], r["repeat"])]) for r in subset
+                        if r["condition"] == "graph_mcp" and verified_success(r)
+                        and (r["task_id"], r["repeat"]) in cli]
+        mcp_tokens = sum(m["input_tokens"] + m["output_tokens"] for m, _ in guided_pairs)
+        cli_tokens = sum(c["input_tokens"] + c["output_tokens"] for _, c in guided_pairs)
+        groups[cohort]["guided_arms"] = guided_arms
+        groups[cohort]["guided_pairs"] = len(guided_pairs)
+        groups[cohort]["cli_vs_mcp_saving_pct"] = (
+            round(100 * (1 - cli_tokens / mcp_tokens), 2) if mcp_tokens else None)
+        search = {(r["task_id"], r["repeat"]): r for r in subset
+                  if r["condition"] == "no_graph" and verified_success(r)}
+        search_pairs = [(search[(r["task_id"], r["repeat"])], r) for r in subset
+                        if r["condition"] == "graph_cli" and verified_success(r)
+                        and (r["task_id"], r["repeat"]) in search]
+        def pair_totals(pairs: list[tuple[dict, dict]]) -> dict:
+            def totals(side: int) -> tuple[int, int]:
+                return (sum(pair[side]["input_tokens"] + pair[side]["output_tokens"] for pair in pairs),
+                        sum(pair[side]["input_tokens"] - pair[side]["cached_input_tokens"]
+                            + pair[side]["output_tokens"] for pair in pairs))
+            baseline, baseline_uncached = totals(0)
+            graph, graph_uncached = totals(1)
+            return {"pairs": len(pairs), "search_tokens": baseline, "graph_tokens": graph,
+                    "search_uncached_tokens": baseline_uncached,
+                    "graph_uncached_tokens": graph_uncached,
+                    "total_saving_pct": round(100 * (1 - graph / baseline), 2) if baseline else None,
+                    "uncached_saving_pct": round(100 * (1 - graph_uncached / baseline_uncached), 2)
+                    if baseline_uncached else None}
+        groups[cohort]["cli_vs_search"] = pair_totals(search_pairs)
+        groups[cohort]["cli_vs_search_by_task"] = {
+            task_id: pair_totals([pair for pair in search_pairs if pair[0]["task_id"] == task_id])
+            for task_id in sorted({pair[0]["task_id"] for pair in search_pairs})
+        }
     return groups
 
 
@@ -334,6 +529,10 @@ def main() -> None:
     run.add_argument("--seed", type=int, default=7)
     run.add_argument("--timeout", type=int, default=90)
     run.add_argument("--task", action="append")
+    run.add_argument("--condition", action="append",
+                     choices=("no_graph", "default", "graph_cli", "graph_mcp"))
+    run.add_argument("--graph-token-budget", type=int, default=100)
+    run.add_argument("--include-source", action="store_true")
     run.add_argument("--ignore-user-config", action="store_true")
     analyze = sub.add_parser("analyze")
     analyze.add_argument("records", type=Path)
@@ -352,6 +551,8 @@ def main() -> None:
         tasks = [task for task in tasks if task["id"] in args.task]
     if args.repeats < 1 or not tasks:
         p.error("at least one task and repeat are required")
+    if args.graph_token_budget < 1:
+        p.error("--graph-token-budget must be positive")
     args.output.mkdir(parents=True, exist_ok=True)
     records_path = args.output / "records.jsonl"
     if records_path.exists():
@@ -363,6 +564,9 @@ def main() -> None:
         "selected_task_ids": [task["id"] for task in tasks],
         "model": args.model, "seed": args.seed, "repeats": args.repeats,
         "ignore_user_config": args.ignore_user_config, "approval_mode": "approve-for-me",
+        "conditions": args.condition or ["no_graph", "default"],
+        "graph_token_budget": args.graph_token_budget,
+        "include_source": args.include_source,
         "codex_version": subprocess.check_output(["codex", "--version"], text=True).strip(),
         "arch_version": subprocess.check_output([str(arch_bin), "--version"], text=True).strip(),
         "arch_stdlib_path": str(repo / "stdlib"),
@@ -376,12 +580,13 @@ def main() -> None:
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     schedule = [(task, repeat, condition) for task in tasks
                 for repeat in range(1, args.repeats + 1)
-                for condition in ("no_graph", "default")]
+                for condition in (args.condition or ["no_graph", "default"])]
     random.Random(args.seed).shuffle(schedule)
     with records_path.open("w") as records:
         for task, repeat, condition in schedule:
             record = run_attempt(task, condition, repeat, repo, args.output, arch_bin, mcp_python,
-                                 args.model, args.timeout, args.ignore_user_config)
+                                 args.model, args.timeout, args.ignore_user_config,
+                                 args.graph_token_budget, args.include_source)
             records.write(json.dumps(record) + "\n")
             records.flush()
             print(f"{task['id']} r{repeat} {condition}: correct={record['success']} "

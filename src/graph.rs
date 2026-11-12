@@ -484,6 +484,7 @@ pub fn impact(index: &GraphIndex, symbol: &str, depth: usize, limit: usize) -> V
 
 pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
     let terms = tokenize(task);
+    let task_lower = task.to_ascii_lowercase();
     let mut direct = query(index, task, index.nodes.len());
     if direct.iter().any(|hit| is_construct_like(&hit.node.kind)) {
         direct.retain(|hit| !matches!(hit.node.kind.as_str(), "generated_sv" | "interface_stub"));
@@ -505,6 +506,18 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
         }
         if terms.iter().any(|term| term == &hit.node.kind) {
             hit.score += 80;
+        }
+        if hit.node.kind == "instance"
+            && terms
+                .iter()
+                .any(|term| term == &hit.node.name.to_ascii_lowercase())
+        {
+            hit.score += 100;
+        }
+        if matches!(hit.node.kind.as_str(), "instance" | "use")
+            && task_lower.contains(&hit.node.file.to_ascii_lowercase())
+        {
+            hit.score += if hit.node.kind == "use" { 320 } else { 160 };
         }
     }
     direct.sort_by(|a, b| {
@@ -530,7 +543,7 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
             if ids.insert(other.clone()) {
                 if let Some(node) = node_by_id.get(other) {
                     extras.push(QueryHit {
-                        score: hit.score.saturating_sub(25).max(1),
+                        score: hit.score.saturating_sub(100).max(1),
                         node: (*node).clone(),
                     });
                 }
@@ -608,6 +621,24 @@ mod context_ranking_tests {
         );
         assert_eq!(hits[0].node.name, "round_robin_arbiter");
     }
+
+    #[test]
+    fn named_import_file_promotes_use_node() {
+        let mut use_node = node("import", "use", "TestPkg");
+        use_node.file = "examples/pkg_user.arch".into();
+        let index = GraphIndex {
+            index_root: String::new(),
+            files: Vec::new(),
+            edges: Vec::new(),
+            nodes: vec![
+                use_node,
+                node("package", "package", "TestPkg"),
+                node("path", "module", "OtherDatapath"),
+            ],
+        };
+        let hits = context(&index, "Find TestPkg import in examples/pkg_user.arch", 3);
+        assert_eq!(hits[0].node.kind, "use");
+    }
 }
 
 pub fn format_query_hits(hits: &[QueryHit]) -> String {
@@ -626,6 +657,78 @@ pub fn format_query_hits(hits: &[QueryHit]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+pub fn format_query_hits_with_source(
+    index: &GraphIndex,
+    hits: &[QueryHit],
+) -> std::io::Result<String> {
+    let mut lines = Vec::with_capacity(hits.len());
+    let files: BTreeMap<_, _> = index
+        .files
+        .iter()
+        .map(|file| (file.rel_path.as_str(), file))
+        .collect();
+    let nodes: BTreeMap<_, _> = index
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let mut targets = BTreeMap::new();
+    for edge in &index.edges {
+        if matches!(edge.kind.as_str(), "instantiates" | "imports") {
+            if let Some(target) = nodes.get(edge.dst.as_str()) {
+                targets.entry(edge.src.as_str()).or_insert(*target);
+            }
+        }
+    }
+    let mut source_lines: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for hit in hits {
+        let mut line = format!(
+            "{}  {}  {}  score={}",
+            location_label(&hit.node),
+            hit.node.kind,
+            hit.node.name,
+            hit.score
+        );
+        if let (Some(file), Some(span)) = (files.get(hit.node.file.as_str()), &hit.node.span) {
+            if span.line_start == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} has no source line", hit.node.file),
+                ));
+            }
+            if !source_lines.contains_key(hit.node.file.as_str()) {
+                source_lines.insert(
+                    hit.node.file.as_str(),
+                    fs::read_to_string(&file.abs_path)?
+                        .lines()
+                        .map(str::to_string)
+                        .collect(),
+                );
+            }
+            let excerpt = source_lines[hit.node.file.as_str()]
+                .get(span.line_start.saturating_sub(1))
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("{}:{} is unavailable", hit.node.file, span.line_start),
+                    )
+                })?;
+            let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+            let excerpt: String = excerpt.chars().take(120).collect();
+            line.push_str(&format!(" | {excerpt}"));
+        }
+        if let Some(target) = targets.get(hit.node.id.as_str()) {
+            line.push_str(&format!(" -> {} {}", location_label(target), target.name));
+        }
+        lines.push(line);
+    }
+    Ok(if lines.is_empty() {
+        "No graph matches.".to_string()
+    } else {
+        lines.join("\n")
+    })
 }
 
 pub fn format_callers(hits: &[(EdgeRecord, NodeRecord)]) -> String {

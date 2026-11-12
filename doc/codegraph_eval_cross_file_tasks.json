@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "tasks": [
+    {
+      "id": "user_axi_dma_instance_targets",
+      "cohort": "user",
+      "kind": "discovery",
+      "prompt": "In tests/axi_dma/AxiDmaTop.arch, which separately declared FIFO and FSM do the mm2s_fifo and mm2s_fsm instances target? Give both instance names, target names, and declaration paths.",
+      "answer_any": [["mm2s_fifo"], ["Mm2sFifo"], ["tests/axi_dma/Mm2sFifo.arch"], ["mm2s_fsm"], ["FsmMm2s"], ["tests/axi_dma/FsmMm2s.arch"]]
+    },
+    {
+      "id": "user_package_import_target",
+      "cohort": "user",
+      "kind": "discovery",
+      "prompt": "Which separately declared package file satisfies the TestPkg import in examples/pkg_user.arch? Give the import path and package declaration path.",
+      "answer_any": [["examples/TestPkg.arch"]]
+    },
+    {
+      "id": "user_nic400_cdc_fifo_targets",
+      "cohort": "user",
+      "kind": "discovery",
+      "prompt": "In examples/nic400/Nic400CdcAxi4.arch, which separate FIFO declarations do ar_fifo and r_fifo instantiate? Give both instance names, target names, and declaration paths.",
+      "answer_any": [["ar_fifo"], ["Nic400ArCdcFifo"], ["examples/nic400/Nic400ArCdcFifo.arch"], ["r_fifo"], ["Nic400RCdcFifo"], ["examples/nic400/Nic400RCdcFifo.arch"]]
+    },
+    {
+      "id": "compiler_pipe_reg_change_map",
+      "cohort": "compiler",
+      "kind": "discovery",
+      "prompt": "For an ARCH pipe_reg reset change, identify the AST type, parser owner, SystemVerilog emitter, and shipped fixture with source paths.",
+      "answer_any": [["PipeRegDecl"], ["src/ast.rs"], ["parse_module", "parse_pipe_reg_decl"], ["src/parser.rs"], ["emit_pipe_reg"], ["src/codegen/module.rs"], ["examples/pipe_reg_test.arch"]]
+    },
+    {
+      "id": "user_known_file_control",
+      "cohort": "user",
+      "kind": "known_file",
+      "prompt": "In examples/fsm_counter.arch, report the declaration line of FsmCounter as path:line.",
+      "answer_any": [["examples/fsm_counter.arch:16"]]
+    },
+    {
+      "id": "compiler_known_file_control",
+      "cohort": "compiler",
+      "kind": "known_file",
+      "prompt": "In src/codegen/fifo.rs, name the function that emits the synchronous FIFO body.",
+      "answer_any": [["emit_fifo_sync_body"]]
+    }
+  ]
+}

@@ -10,6 +10,13 @@ top of a 100-token-budget response; its reported line must still contain that
 symbol in the current source. The script prints index time, query time, output
 length, and ranks as JSON and fails on a coverage or bound regression. It does
 not estimate provider tokens or test whether an agent chooses the graph.
+An opt-in `--include-source` mode appends a short line excerpt from the
+freshness-checked source and, for `use` or instance nodes, the indexed target
+declaration. The direct gate also checks this mode at 200 tokens against the
+frozen discovery prompts and the separate
+`doc/codegraph_eval_cross_file_tasks.json` relationship cases.
+The cross-file user relationship gate uses 100 tokens; the owner excerpt
+checks use 200 tokens to retain the AST/parser/backend triple.
 
 The direct gate is deliberately cheaper than the live agent evaluation below.
 Run the latter only after a retrieval change passes the direct gate, including
@@ -80,3 +87,13 @@ alternative correct answers and edit quality beyond the deterministic rubric.
 The summary distinguishes the default-vs-search delta from savings on pairs
 where the default arm actually used the graph. If no such pair exists, the
 graph-saving metric is null.
+
+For a controlled transport comparison, select `--condition graph_cli
+--condition graph_mcp`. Both guided arms request one graph lookup with a
+100-token response budget, but only the transport differs. Use
+`--graph-token-budget 200 --include-source` for the answer-ready experiment;
+compare it with the same 200-token budget without excerpts. The trace records
+memory, graph, search, source-read, and other tool call counts and output
+characters, plus non-graph calls after the first graph call. These are
+retrieval-work proxies, not provider-token attribution per tool; provider
+usage remains available only for the whole agent attempt.
