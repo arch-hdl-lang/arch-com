@@ -41,6 +41,15 @@ search. The agent's prompt, tool-call, and cache behavior remain part of the
 measured total. The user known-file control made no graph calls; the default
 agent read directly as intended.
 
+Trace inspection found 17 tool calls across the six default user discovery
+attempts versus 12 across search-only. Default made six graph calls, five
+memory lookups, two source reads, and four other calls; every graph-using
+trace also checked graph `--help` before the query (sometimes bundled with a
+memory lookup). The next guidance change provides complete CLI commands and
+allows a fresh, unambiguous `--include-source` result to answer a location
+question without a redundant source read. That change happened **after** this
+run and has no measured token effect yet.
+
 Compiler discovery results remain unsuitable for a savings claim: the frozen
 rubric passed two default declaration answers, two search-only declaration
 answers, and no output-port-reset answers in either arm. It requires an exact
