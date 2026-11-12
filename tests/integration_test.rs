@@ -37473,7 +37473,7 @@ fn test_dev_graph_cli_query_and_stale_mapping() {
         String::from_utf8_lossy(&built.stderr)
     );
     let queried = std::process::Command::new(arch_bin)
-        .args(["graph", "dev-query", "pipe_reg reset", "--root"])
+        .args(["graph", "dev-query", "pipe_reg declaration", "--root"])
         .arg(root)
         .arg("--index")
         .arg(&index)

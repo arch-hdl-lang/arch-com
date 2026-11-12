@@ -44,8 +44,9 @@ CASES = (
     },
     {
         "id": "compiler_pipe_reg_owners",
+        "query": "pipe_reg declaration",
         "kind": "dev-query",
-        "expected": (("src/ast.rs", "PipeRegDecl"), ("src/parser.rs", "parse_module"),
+        "expected": (("src/ast.rs", "PipeRegDecl"), ("src/parser.rs", "parse_pipe_reg_decl"),
                      ("src/codegen/module.rs", "emit_pipe_reg")),
         "max_rank": 4,
     },
@@ -71,6 +72,10 @@ CROSS_RELATIONS = {
 RELATION_MAX_RANK = {"user_axi_dma_instance_targets": 2,
                      "user_package_import_target": 4,
                      "user_nic400_cdc_fifo_targets": 2}
+NIC400_AGENT_QUERY = (
+    "In Nic400CdcAxi4, trace instances ar_fifo and r_fifo to their instantiated FIFO "
+    "target names and declaration source paths. Return only relevant source."
+)
 
 
 def run(command: list[str], root: Path, timeout: int = 120) -> tuple[str, float]:
@@ -172,15 +177,28 @@ def main() -> None:
                             "pass": passed and bounded, "seconds": seconds,
                             "output_chars": len(output), "bounded": bounded,
                             **({"output": output} if not passed else {})})
-        compiler_task = cross_tasks["compiler_pipe_reg_change_map"]
-        output, seconds = run([str(arch_bin), "graph", "dev-query", compiler_task["prompt"],
-                               "--root", str(root), "--index", str(dev_index),
-                               "--token-budget", str(SOURCE_TOKEN_BUDGET),
+        output, seconds = run([str(arch_bin), "graph", "context", NIC400_AGENT_QUERY,
+                               "--index", str(user_index), "--token-budget", str(SOURCE_TOKEN_BUDGET),
                                "--include-source"], root)
         bounded = len(output) <= SOURCE_TOKEN_BUDGET * 4
-        records.append({"id": compiler_task["id"], "include_source": True,
-                        "pass": answer_passes(compiler_task, output) and bounded,
-                        "seconds": seconds, "output_chars": len(output), "bounded": bounded})
+        passed = grade_relations(output, CROSS_RELATIONS["user_nic400_cdc_fifo_targets"],
+                                 root, max_rank=3)
+        records.append({"id": "user_nic400_agent_query", "include_source": True,
+                        "pass": passed and bounded, "seconds": seconds,
+                        "output_chars": len(output), "bounded": bounded,
+                        **({"output": output} if not passed else {})})
+        for task_id in ("compiler_pipe_reg_change_map", "compiler_pipe_reg_port_reset_map"):
+            compiler_task = cross_tasks[task_id]
+            output, seconds = run([str(arch_bin), "graph", "dev-query", compiler_task["prompt"],
+                                   "--root", str(root), "--index", str(dev_index),
+                                   "--token-budget", str(SOURCE_TOKEN_BUDGET),
+                                   "--include-source"], root)
+            bounded = len(output) <= SOURCE_TOKEN_BUDGET * 4
+            passed = answer_passes(compiler_task, output)
+            records.append({"id": task_id, "include_source": True,
+                            "pass": passed and bounded,
+                            "seconds": seconds, "output_chars": len(output), "bounded": bounded,
+                            **({"output": output} if not passed else {})})
         print(json.dumps({"index_seconds": {"user": user_index_seconds,
                                             "developer": dev_index_seconds},
                           "cases": records}, indent=2))

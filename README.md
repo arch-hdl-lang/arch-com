@@ -157,8 +157,8 @@ arch graph impact "AxiWriteArb" --depth 2 --index .archgraph
 arch graph context "add coverage to the write arbiter" --index .archgraph
 arch graph context "which module does this instance use?" --index .archgraph --token-budget 200 --include-source
 arch graph dev-index --root . --out .archdevgraph
-arch graph dev-query "pipe_reg reset" --root . --index .archdevgraph --token-budget 400
-arch graph dev-query "pipe_reg reset" --root . --index .archdevgraph --token-budget 200 --include-source
+arch graph dev-query "pipe_reg declaration" --root . --index .archdevgraph --token-budget 400
+arch graph dev-query "pipe_reg output-port reset" --root . --index .archdevgraph --token-budget 200 --include-source
 arch graph html --index .archgraph --out arch-graph.html
 ```
 

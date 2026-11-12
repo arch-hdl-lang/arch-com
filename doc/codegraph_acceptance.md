@@ -1,9 +1,9 @@
 # ARCH code graph acceptance baseline
 
 The user-source graph and compiler-development graph are separate indexes.
-The developer map at `doc/codegraph_feature_map.json` covers nine reviewed
-features: module, bus, fifo, thread, fsm, pipeline, pipe_reg reset,
-tlm_method, and arbiter. Links to Rust symbols are syntax-parsed and
+The developer map at `doc/codegraph_feature_map.json` covers ten reviewed
+features: module, bus, fifo, thread, fsm, pipeline, pipe_reg declaration,
+pipe_reg output-port reset, tlm_method, and arbiter. Links to Rust symbols are syntax-parsed and
 location-checked; all ownership edges are explicitly curated.
 
 ## Reproduce
@@ -14,14 +14,15 @@ cargo test --offline --test integration_test test_graph
 cargo test --offline --test integration_test test_dev_graph_cli_query_and_stale_mapping
 python -m unittest discover -s mcp -p 'test_*.py'
 arch graph index examples/pipe_reg_test.arch --out .archgraph --clean
-arch graph context 'pipe_reg reset' --index .archgraph --token-budget 80
+arch graph context 'pipe_reg' --index .archgraph --token-budget 80
 arch graph dev-index --root . --out .archdevgraph
-arch graph dev-query 'pipe_reg reset' --root . --index .archdevgraph --token-budget 160
+arch graph dev-query 'pipe_reg declaration' --root . --index .archdevgraph --token-budget 160
+arch graph dev-query 'pipe_reg output-port reset' --root . --index .archdevgraph --token-budget 200
 ```
 
 The focused user index has 1 file, 12 nodes, and 17 edges. The developer
-index has 9 features, 47 nodes, and 65 edges. The bounded developer query
-locates `PipeRegDecl`, `parse_module`, `emit_pipe_reg`, and the example at
+index has 10 features, 53 nodes, and 72 edges. The bounded declaration query
+locates `PipeRegDecl`, `parse_pipe_reg_decl`, `emit_pipe_reg`, and the example at
 source lines, plus the specification and guidance. The user query returns a
 compact source neighborhood. Stale source files and changed generator IDs
 are rejected; MCP context can refresh a stale index when explicit source
@@ -36,7 +37,7 @@ example, standalone files with unresolved dependencies, and the outdated
 `stdlib/BusAxiLite.arch:21`. Context retrieval prioritizes source constructs
 over generated artifact names; a FIFO-reset task starts with FIFO nodes.
 
-All eight feature-map ARCH fixtures index successfully. The old
+All nine distinct feature-map ARCH fixtures index successfully. The old
 `examples/bus_basic.arch` does not pass current compiler driver checks, so
 the bus mapping uses `tests/native_param_bus_wire/Probe.arch` instead.
 

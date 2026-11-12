@@ -26,9 +26,19 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertEqual({task["kind"] for task in tasks},
                          {"discovery", "known_file", "coverage_miss", "edit"})
 
+    def test_pipe_reg_change_tasks_distinguish_declarations_from_ports(self):
+        tasks = {task["id"]: task for task in load_tasks(ROOT / "doc/codegraph_eval_cross_file_tasks.json")}
+        declaration = tasks["compiler_pipe_reg_change_map"]
+        port = tasks["compiler_pipe_reg_port_reset_map"]
+        self.assertIn("pipe_reg name: source stages N", declaration["prompt"])
+        self.assertIn("output-port", port["prompt"])
+        self.assertTrue(answer_passes(declaration, "PipeRegDecl src/ast.rs; parse_pipe_reg_decl src/parser.rs; emit_pipe_reg src/codegen/module.rs; examples/pipe_reg_test.arch"))
+        self.assertTrue(answer_passes(port, "PortRegInfo src/ast.rs; parse_port_decl src/parser.rs; emit_reg_block src/codegen/module.rs; tests/verilog_eval/Prob047_dff8ar.arch"))
+        self.assertFalse(answer_passes(port, "PipeRegDecl src/ast.rs; parse_pipe_reg_decl src/parser.rs; emit_pipe_reg src/codegen/module.rs; examples/pipe_reg_test.arch"))
+
     def test_cross_file_manifest_has_relationships_and_controls(self):
         tasks = load_tasks(ROOT / "doc/codegraph_eval_cross_file_tasks.json")
-        self.assertEqual(len(tasks), 6)
+        self.assertEqual(len(tasks), 7)
         self.assertEqual(sum(task["kind"] == "known_file" for task in tasks), 2)
         relation = CROSS_RELATIONS["user_package_import_target"]
         good = "examples/pkg_user.arch:1 use TestPkg -> examples/TestPkg.arch:1 TestPkg"

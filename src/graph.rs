@@ -513,6 +513,16 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
                 .any(|term| term == &hit.node.name.to_ascii_lowercase())
         {
             hit.score += 100;
+            if Path::new(&hit.node.file)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| {
+                    let stem = stem.to_ascii_lowercase();
+                    terms.iter().any(|term| term == &stem)
+                })
+            {
+                hit.score += 220;
+            }
         }
         if matches!(hit.node.kind.as_str(), "instance" | "use")
             && task_lower.contains(&hit.node.file.to_ascii_lowercase())
@@ -638,6 +648,39 @@ mod context_ranking_tests {
         };
         let hits = context(&index, "Find TestPkg import in examples/pkg_user.arch", 3);
         assert_eq!(hits[0].node.kind, "use");
+    }
+
+    #[test]
+    fn named_design_promotes_its_queried_instances() {
+        let mut ar = node("ar", "instance", "ar_fifo");
+        ar.file = "examples/nic400/Nic400CdcAxi4.arch".into();
+        let mut r = node("r", "instance", "r_fifo");
+        r.file = ar.file.clone();
+        let mut other_ar = node("other_ar", "instance", "ar_fifo");
+        other_ar.file = "examples/nic400/Nic400CdcAxi4Rw.arch".into();
+        let mut unqueried = node("unqueried", "instance", "control_inst");
+        unqueried.file = ar.file.clone();
+        let index = GraphIndex {
+            index_root: String::new(),
+            files: Vec::new(),
+            edges: Vec::new(),
+            nodes: vec![
+                ar,
+                r,
+                other_ar,
+                unqueried,
+                node("distractor", "module", "ReturnSource"),
+            ],
+        };
+        let hits = context(
+            &index,
+            "In Nic400CdcAxi4, trace instances ar_fifo and r_fifo to their target names. Return only relevant source.",
+            3,
+        );
+        let ids: BTreeSet<_> = hits.iter().map(|hit| hit.node.id.as_str()).collect();
+        assert!(ids.contains("ar") && ids.contains("r"));
+        assert!(!ids.contains("other_ar"));
+        assert!(!ids.contains("unqueried"));
     }
 }
 
