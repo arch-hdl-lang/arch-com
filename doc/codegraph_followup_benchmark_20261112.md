@@ -57,3 +57,13 @@ general provider-cost estimate. Keep graph for unknown ownership or cross-file
 discovery, but do not claim token savings for default-agent behavior. The full
 per-attempt traces are retained in the local benchmark artifact bundle; the
 published records contain each answer, score, tool breakdown, and token count.
+
+## Subsequent routing change
+
+The repository `AGENTS.md` now states the selective graph-first rule directly
+for agents working in this checkout: use one bounded graph query for unknown
+cross-file relationships or compiler ownership, but read exact known files
+directly. This instruction was added after the 42-attempt run and is **not**
+validated by its token results. A fresh unguided benchmark is required to
+measure whether agents actually select graph more often without regressing
+known-file controls.
