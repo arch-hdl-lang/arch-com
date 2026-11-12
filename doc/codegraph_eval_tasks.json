@@ -26,6 +26,7 @@
       "id": "user_missing_symbol",
       "cohort": "user",
       "kind": "coverage_miss",
+      "verdict": "no",
       "prompt": "Is there a FIFO declaration named NoSuchQueue in examples/ or stdlib/? Answer yes or no.",
       "answer_any": [["no", "not found", "does not exist", "none"]]
     },

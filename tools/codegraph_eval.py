@@ -39,6 +39,8 @@ def load_tasks(path: Path) -> list[dict]:
             "discovery", "known_file", "coverage_miss", "edit"
         ):
             raise ValueError(f"invalid cohort or kind: {task['id']}")
+        if task.get("verdict") not in (None, "no"):
+            raise ValueError(f"invalid verdict: {task['id']}")
     return data["tasks"]
 
 
@@ -179,11 +181,14 @@ def trace_result(events: list[dict]) -> dict:
 
 def answer_passes(task: dict, answer: str) -> bool:
     haystack = answer.casefold()
-    if task["id"] == "user_missing_symbol" and (
-        re.search(r"\byes\b", haystack) or
-        not re.match(r"\s*(?:no\b|none\b|not found\b|nosuchqueue\b.*\b(?:not found|does not exist)\b)", haystack)
-    ):
-        return False
+    if task.get("verdict") == "no":
+        leading = re.sub(r"^[\s*_`#>.:;!?-]+", "", haystack)
+        if not re.match(
+            r"(?:no\b|none\b|not found\b|there (?:is|are) no\b|"
+            r"(?:the )?(?:symbol|fifo|nosuchqueue)\b.{0,100}\b(?:not found|does not exist|not declared)\b)",
+            leading,
+        ):
+            return False
     def matches(choice: str) -> bool:
         return bool(re.search(rf"(?<!\w){re.escape(choice.casefold())}(?!\w)", haystack))
     return all(any(matches(choice) for choice in group) for group in task.get("answer_any", []))

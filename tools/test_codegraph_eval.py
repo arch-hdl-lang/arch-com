@@ -109,9 +109,13 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertEqual(trace_result(events)["failed_mcp_calls"], 1)
 
     def test_cargo_release_graph_command_counts(self):
-        events = [{"type": "item.completed", "item": {"type": "command_execution",
-                   "command": "cargo run --release -- graph query TxQueue", "exit_code": 0}}]
-        self.assertEqual(trace_result(events)["graph_calls"], 1)
+        for command in ("cargo run --release -- graph query TxQueue",
+                        "cargo run -q --release -- graph query TxQueue",
+                        "cargo run --bin arch -- graph query TxQueue"):
+            with self.subTest(command=command):
+                events = [{"type": "item.completed", "item": {"type": "command_execution",
+                           "command": command, "exit_code": 0}}]
+                self.assertEqual(trace_result(events)["graph_calls"], 1)
 
     def test_answer_rubric_accepts_alternative_owners(self):
         task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
@@ -126,6 +130,9 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertFalse(answer_passes(task, "NoSuchQueue is declared in examples/x.arch"))
         self.assertTrue(answer_passes(task, "No, NoSuchQueue was not found."))
         self.assertFalse(answer_passes(task, "Yes - NoSuchQueue is in examples/q.arch (no other copies)."))
+        self.assertTrue(answer_passes(task, "**No.** NoSuchQueue is not declared."))
+        self.assertTrue(answer_passes(task, "There is no FIFO named NoSuchQueue in examples/ or stdlib/."))
+        self.assertFalse(answer_passes(task, "**Yes.** NoSuchQueue is declared; no other copies exist."))
 
     def test_answer_keys_require_token_boundaries(self):
         tasks = {task["id"]: task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")}
