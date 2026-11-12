@@ -83,6 +83,24 @@
       ]
     },
     {
+      "name": "pipeline_log_seq",
+      "arch_files": [
+        "tests/pipeline_log_seq.arch"
+      ],
+      "tb_files": [
+        "tests/pipeline_log_seq_tb.cpp"
+      ]
+    },
+    {
+      "name": "pipeline_log_wait",
+      "arch_files": [
+        "tests/pipeline_log_wait.arch"
+      ],
+      "tb_files": [
+        "tests/pipeline_log_wait_tb.cpp"
+      ]
+    },
+    {
       "name": "pipeline_wait_stage",
       "arch_files": [
         "tests/pipeline_wait_stage.arch"

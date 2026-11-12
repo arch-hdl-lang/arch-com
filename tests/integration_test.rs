@@ -5287,6 +5287,144 @@ fn test_module_reg_log_native_behavior() {
 }
 
 #[test]
+fn test_pipeline_log_seq_emits_prefixed_display() {
+    // Regression for #1131 (SV half): a `log` in a pipeline stage `seq` block
+    // emitted `$display` through the module-scope emitter, which left stage-reg
+    // args as bare module idents (`acc`) — undefined at module scope, so
+    // Verilator rejected the SV. The args must now be stage-prefixed (`s0_acc`),
+    // both logs must appear in the non-reset (`else`) branch of the control
+    // process, and neither may carry a bare `acc` argument.
+    let source = include_str!("pipeline_log_seq.arch");
+    let sv = compile_to_sv(source);
+    assert_eq!(
+        sv.matches("$display(").count(),
+        2,
+        "expected exactly 2 $display (top-level + nested-if log):\n{sv}"
+    );
+    assert!(
+        sv.contains("[ALWAYS][PLOG]"),
+        "PLOG display must be emitted:\n{sv}"
+    );
+    assert!(
+        sv.contains("s0_acc"),
+        "stage-reg arg must be stage-prefixed (s0_acc):\n{sv}"
+    );
+    // The #1131 bug: a bare `acc` passed as a display argument. The real net is
+    // `s0_acc`, so a bare `, acc,` / `, acc)` only appears if the arg was left
+    // unprefixed (it does not match inside `, s0_acc,`).
+    assert!(
+        !sv.contains(", acc,") && !sv.contains(", acc)"),
+        "no $display may pass a bare (unprefixed) `acc` arg:\n{sv}"
+    );
+    // Neither log may sit in the reset branch of the control process.
+    let rst_begin = sv.find("if (rst) begin").expect("reset branch present");
+    let else_begin = sv[rst_begin..]
+        .find("end else begin")
+        .map(|o| rst_begin + o)
+        .expect("else branch present");
+    assert!(
+        !sv[rst_begin..else_begin].contains("$display("),
+        "no $display may be emitted in the reset branch:\n{}",
+        &sv[rst_begin..else_begin]
+    );
+}
+
+#[test]
+fn test_pipeline_log_seq_native_behavior() {
+    // #1131 (sim half): the native pipeline sim dropped a stage `seq`-block
+    // `log` via a `_ => {}` catch-all. It must now print — gated by `!rst` and
+    // reading the register's pre-edge value, matching SV's NBA read. Expect 5
+    // PLOG lines across 3 data edges (bare log x3 + nested `odd` log x2 on the
+    // two odd inputs 0x11/0x33), none during the reset edge. Verilator prints
+    // the identical values (checked in the PR).
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg("tests/pipeline_log_seq.arch")
+        .arg("--tb")
+        .arg("tests/pipeline_log_seq_tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run pipeline log-in-seq behavior probe");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "pipeline log-in-seq sim should pass\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("PASS pipeline-log-seq behavior"),
+        "expected PASS marker in stdout:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("[PLOG]").count(),
+        5,
+        "expected 5 log lines (none during reset):\n{stdout}"
+    );
+    // Pre-edge values: acc is 0 on the first edge, 17 on the second.
+    assert!(
+        stdout.contains("acc=0 in=17") && stdout.contains("acc=17 in=34"),
+        "logs must read the pre-edge register value:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_pipeline_log_wait_sv_arg_prefixed() {
+    // #1131 covers wait stages too on the SV side: the `$display` emitted inside
+    // the wait-stage FSM dispatch must reference the stage-prefixed
+    // `dataaccess_data`, not the bare `data` that Verilator rejected.
+    let source = include_str!("pipeline_log_wait.arch");
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("[ALWAYS][WLOG]"),
+        "WLOG display must be emitted:\n{sv}"
+    );
+    assert!(
+        sv.contains("dataaccess_data"),
+        "wait-stage reg arg must be stage-prefixed (dataaccess_data):\n{sv}"
+    );
+    assert!(
+        !sv.contains(", data,"),
+        "no $display may pass a bare (unprefixed) `data` arg:\n{sv}"
+    );
+}
+
+#[test]
+fn test_pipeline_log_wait_native_drops_log() {
+    // Pins the documented wait-stage sim gap (#1131): the SV now compiles and
+    // logs, but the native sim still drops the wait-stage `log` (its statement
+    // stream is coupled to the FSM lowering). Functional output is correct; the
+    // log is absent. When the wait-stage sim log is implemented, flip the count
+    // assertion and update #1131.
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg("tests/pipeline_log_wait.arch")
+        .arg("--tb")
+        .arg("tests/pipeline_log_wait_tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run pipeline log-in-wait behavior probe");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "pipeline log-in-wait sim should pass\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("PASS pipeline-log-wait behavior"),
+        "expected PASS marker in stdout:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("[WLOG]").count(),
+        0,
+        "wait-stage sim log is a known gap — expected 0 WLOG lines:\n{stdout}"
+    );
+}
+
+#[test]
 fn test_pipeline_comb_only_stage_error() {
     let source = r#"
 domain SysDomain

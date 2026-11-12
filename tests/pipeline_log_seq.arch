@@ -1,0 +1,35 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// Regression for #1131: a `log` in a pipeline stage `seq` block was dropped by
+// the native sim (`_ => {}` in the pipeline statement emitters) while the SV
+// codegen emitted a `$display` whose stage-register arguments were left bare
+// (`acc`, not `s0_acc`) — undefined at module scope, so Verilator rejected the
+// SV with "Can't find definition of variable 'acc'". Both backends must now
+// agree: the log fires on every non-reset edge (never during reset), reads the
+// register's pre-edge value (matching SV's non-blocking read in the control
+// `always_ff`), and the SV argument is stage-prefixed. The nested `log` inside
+// an `if` exercises structure preservation in the logs-only sim pass.
+pipeline PipeLogSeq
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+
+  stage S0
+    reg acc: UInt<8> reset rst => 0;
+
+    seq on clk rising
+      acc <= data_in;
+      log(Always, "PLOG", "acc=%0d in=%0d", acc, data_in);
+      if data_in[0] == 1
+        log(Always, "PLOG", "odd acc=%0d", acc);
+      end if
+    end seq
+
+    comb
+      data_out = acc;
+    end comb
+  end stage S0
+end pipeline PipeLogSeq

@@ -1,0 +1,47 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// Companion to pipeline_log_seq.arch for the wait-stage half of #1131.
+//
+// The SV fix (stage-prefixing the `log` arguments) covers wait stages too: the
+// `$display` emitted inside the wait-stage FSM dispatch now references
+// `dataaccess_data`, not the bare `data` that Verilator rejected. The native
+// *sim*, however, still drops this log — the wait-stage sim emitter's statement
+// stream is coupled to its FSM lowering, and weaving the logs-only pass through
+// it is deferred (tracked on #1131; the comb/seq emitter dedup is #1125). This
+// fixture pins both facts: SV arg is prefixed, native sim prints no `WLOG`.
+pipeline PipeLogWait
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port addr_in: in UInt<32>;
+  port data_out: out UInt<32>;
+  port mem_valid: in Bool;
+  port mem_data: in UInt<32>;
+
+  stage Fetch
+    reg addr: UInt<32> reset rst => 0;
+    seq on clk rising
+      addr <= addr_in;
+    end seq
+  end stage Fetch
+
+  stage DataAccess
+    reg data: UInt<32> reset rst => 0;
+    seq on clk rising
+      wait until mem_valid;
+      data <= mem_data;
+      log(Always, "WLOG", "data=%0d mem=%0d", data, mem_data);
+    end seq
+  end stage DataAccess
+
+  stage Writeback
+    reg result: UInt<32> reset rst => 0;
+    seq on clk rising
+      result <= DataAccess.data;
+    end seq
+    comb
+      data_out = result;
+    end comb
+  end stage Writeback
+end pipeline PipeLogWait
