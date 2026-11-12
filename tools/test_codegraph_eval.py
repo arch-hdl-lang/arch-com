@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codegraph_eval import answer_passes, graph_command_kind, is_graph_command, load_tasks, parse_events, prompt_for, summarize, trace_result, verified_success, workspace_env
-from codegraph_direct_eval import CROSS_RELATIONS, grade_relations
+from codegraph_direct_eval import CROSS_RELATIONS, PIPE_REG_OWNERS, grade_pipe_reg_owners, grade_relations
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +35,24 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertTrue(answer_passes(declaration, "PipeRegDecl src/ast.rs; parse_pipe_reg_decl src/parser.rs; emit_pipe_reg src/codegen/module.rs; examples/pipe_reg_test.arch"))
         self.assertTrue(answer_passes(port, "PortRegInfo src/ast.rs; parse_port_decl src/parser.rs; emit_reg_block src/codegen/module.rs; tests/verilog_eval/Prob047_dff8ar.arch"))
         self.assertFalse(answer_passes(port, "PipeRegDecl src/ast.rs; parse_pipe_reg_decl src/parser.rs; emit_pipe_reg src/codegen/module.rs; examples/pipe_reg_test.arch"))
+
+    def test_pipe_reg_direct_audit_requires_ranked_source_ownership(self):
+        for task_id, (feature, owners) in PIPE_REG_OWNERS.items():
+            lines = [f"feature {feature}"]
+            for role, path, symbol in owners:
+                source = (ROOT / path).read_text().splitlines()
+                line_number = (1 if role == "fixture" else
+                               next(i for i, line in enumerate(source, 1) if symbol in line))
+                excerpt = ("" if role == "fixture" else
+                           " | " + " ".join(source[line_number - 1].split())[:120])
+                lines.append(f"  {role} {path}:{line_number} {symbol} [curated]{excerpt}")
+            output = "\n".join(lines)
+            self.assertTrue(grade_pipe_reg_owners(output, task_id, ROOT))
+            self.assertFalse(grade_pipe_reg_owners(output.replace("src/ast.rs", "src/parser.rs"), task_id, ROOT))
+            self.assertFalse(grade_pipe_reg_owners(output.replace("[curated] | ", "[curated] | wrong ", 1), task_id, ROOT))
+            self.assertFalse(grade_pipe_reg_owners(output.replace("  fixture ", "  parser "), task_id, ROOT))
+            self.assertFalse(grade_pipe_reg_owners(output.replace("feature ", "feature wrong ", 1), task_id, ROOT))
+            self.assertFalse(grade_pipe_reg_owners(output.replace("\n  fixture ", "\n  extra unrelated line\n  fixture "), task_id, ROOT))
 
     def test_cross_file_manifest_has_relationships_and_controls(self):
         tasks = load_tasks(ROOT / "doc/codegraph_eval_cross_file_tasks.json")

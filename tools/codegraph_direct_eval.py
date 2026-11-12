@@ -11,7 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from codegraph_eval import answer_passes, load_tasks
+from codegraph_eval import load_tasks
 
 
 CASES = (
@@ -76,6 +76,23 @@ NIC400_AGENT_QUERY = (
     "In Nic400CdcAxi4, trace instances ar_fifo and r_fifo to their instantiated FIFO "
     "target names and declaration source paths. Return only relevant source."
 )
+PIPE_REG_OWNERS = {
+    "compiler_pipe_reg_change_map": (
+        "pipe_reg declaration",
+        (("ast", "src/ast.rs", "PipeRegDecl"),
+         ("parser", "src/parser.rs", "parse_pipe_reg_decl"),
+         ("backend", "src/codegen/module.rs", "emit_pipe_reg"),
+         ("fixture", "examples/pipe_reg_test.arch", "examples/pipe_reg_test.arch")),
+    ),
+    "compiler_pipe_reg_port_reset_map": (
+        "pipe_reg output-port reset",
+        (("ast", "src/ast.rs", "PortRegInfo"),
+         ("parser", "src/parser.rs", "parse_port_decl"),
+         ("backend", "src/codegen/module.rs", "emit_reg_block"),
+         ("fixture", "tests/verilog_eval/Prob047_dff8ar.arch",
+          "tests/verilog_eval/Prob047_dff8ar.arch")),
+    ),
+}
 
 
 def run(command: list[str], root: Path, timeout: int = 120) -> tuple[str, float]:
@@ -118,6 +135,37 @@ def grade_relations(output: str, relations: tuple[tuple[str, int, str, str, int,
         if not any(line.startswith(f"{parent}:{parent_line} ") and instance in line and
                    f"-> {child}:{child_line} {target}" in line
                    for line in output.splitlines()[:max_rank]):
+            return False
+    return True
+
+
+def grade_pipe_reg_owners(output: str, task_id: str, root: Path) -> bool:
+    feature, owners = PIPE_REG_OWNERS[task_id]
+    lines = output.splitlines()
+    if not lines or lines[0] != f"feature {feature}":
+        return False
+    for role, path, symbol in owners:
+        pattern = re.compile(
+            rf"^  {role} {re.escape(path)}:(\d+) {re.escape(symbol)} \[curated\]"
+            rf"(?: \| (.*))?$"
+        )
+        matched = False
+        for line in lines[1:5]:
+            match = pattern.fullmatch(line)
+            if not match:
+                continue
+            source = (root / path).read_text().splitlines()
+            line_number = int(match.group(1))
+            if not 0 < line_number <= len(source):
+                continue
+            if role == "fixture":
+                matched = match.group(2) is None and any("pipe_reg" in item for item in source)
+            else:
+                excerpt = " ".join(source[line_number - 1].split())[:120]
+                matched = symbol in source[line_number - 1] and match.group(2) == excerpt
+            if matched:
+                break
+        if not matched:
             return False
     return True
 
@@ -194,7 +242,7 @@ def main() -> None:
                                    "--token-budget", str(SOURCE_TOKEN_BUDGET),
                                    "--include-source"], root)
             bounded = len(output) <= SOURCE_TOKEN_BUDGET * 4
-            passed = answer_passes(compiler_task, output)
+            passed = grade_pipe_reg_owners(output, task_id, root)
             records.append({"id": task_id, "include_source": True,
                             "pass": passed and bounded,
                             "seconds": seconds, "output_chars": len(output), "bounded": bounded,
