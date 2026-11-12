@@ -15,12 +15,16 @@ Just write a normal commit message with no AI attribution trailer.
 Choose retrieval based on what is known before searching. Read an exact known
 file directly when no cross-file relationship is needed. For an unknown ARCH
 instance target, import, caller, or other cross-file relationship, first make
-one focused `arch graph context` query against `.archgraph` with
-`--token-budget 200 --include-source`. For unknown compiler ownership, first
-query `arch graph dev-query` against `.archdevgraph` with the same bounded
-source output. The `arch_graph_context` and `arch_dev_graph_query` MCP tools
-are equivalent when available. Verify returned source locations; use targeted
-search if the graph result is incomplete or the index cannot be refreshed.
+one focused `./target/debug/arch graph context` query against `.archgraph` with
+`--token-budget 200 --include-source`. This applies even when the task names
+the starting file but asks for a target declared elsewhere. For unknown
+compiler ownership, first query `./target/debug/arch graph dev-query` against
+`.archdevgraph` with the same bounded source output. The `arch_graph_context`
+and `arch_dev_graph_query` MCP tools are equivalent when available. If the
+local compiler binary is absent, build it or use the MCP tools; do not assume
+bare `arch` resolves to the ARCH HDL compiler (`/usr/bin/arch` is a different
+utility on macOS). Verify returned source locations; use targeted search if
+the graph result is incomplete or the index cannot be refreshed.
 
 ## PR review gate
 

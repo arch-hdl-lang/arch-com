@@ -67,3 +67,8 @@ directly. This instruction was added after the 42-attempt run and is **not**
 validated by its token results. A fresh unguided benchmark is required to
 measure whether agents actually select graph more often without regressing
 known-file controls.
+
+The first such [unguided routing run](codegraph_routing_benchmark_20261112.md)
+found two graph attempts, both blocked by macOS resolving bare `arch` to
+`/usr/bin/arch`. A subsequent `AGENTS.md` edit names the checkout binary;
+that repair remains unmeasured.
