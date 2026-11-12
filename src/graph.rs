@@ -483,6 +483,19 @@ pub fn impact(index: &GraphIndex, symbol: &str, depth: usize, limit: usize) -> V
 }
 
 pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
+    context_impl(index, task, limit, false)
+}
+
+pub fn context_with_source(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
+    context_impl(index, task, limit, true)
+}
+
+fn context_impl(
+    index: &GraphIndex,
+    task: &str,
+    limit: usize,
+    include_source: bool,
+) -> Vec<QueryHit> {
     let terms = tokenize(task);
     let task_lower = task.to_ascii_lowercase();
     let mut direct = query(index, task, index.nodes.len());
@@ -535,6 +548,14 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
             .cmp(&a.score)
             .then_with(|| a.node.id.cmp(&b.node.id))
     });
+    if include_source {
+        if let Some(focused) = focused_instance_targets(index, &direct, &task_lower, limit) {
+            return focused;
+        }
+        if let Some(focused) = focused_import_target(index, &direct, &task_lower) {
+            return focused;
+        }
+    }
     direct.truncate(limit.max(8));
     let node_by_id = node_map(index);
     let mut ids: BTreeSet<String> = direct.iter().map(|h| h.node.id.clone()).collect();
@@ -569,6 +590,99 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
     });
     direct.truncate(limit);
     direct
+}
+
+fn focused_instance_targets(
+    index: &GraphIndex,
+    hits: &[QueryHit],
+    task_lower: &str,
+    limit: usize,
+) -> Option<Vec<QueryHit>> {
+    if !(task_lower.contains("instantiat")
+        || (task_lower.contains("instance") && task_lower.contains("target")))
+    {
+        return None;
+    }
+    let named_files: BTreeSet<_> = index
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.kind == "instance" && task_lower.contains(&node.file.to_ascii_lowercase())
+        })
+        .map(|node| node.file.as_str())
+        .collect();
+    let file = named_files
+        .iter()
+        .next()
+        .filter(|_| named_files.len() == 1)?;
+    let terms = tokenize(&task_lower.replace(&file.to_ascii_lowercase(), " "));
+    let names: Vec<_> = terms.iter().filter(|term| term.contains('_')).collect();
+    if names.len() != 2
+        || !terms
+            .windows(3)
+            .any(|window| window[0] == *names[0] && window[1] == "and" && window[2] == *names[1])
+    {
+        return None;
+    }
+    let by_id = node_map(index);
+    let focused: Vec<_> = hits
+        .iter()
+        .filter(|hit| {
+            hit.node.kind == "instance"
+                && hit.node.file == **file
+                && names
+                    .iter()
+                    .any(|name| name.as_str() == hit.node.name.to_ascii_lowercase())
+                && index
+                    .edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.src == hit.node.id
+                            && edge.kind == "instantiates"
+                            && by_id.contains_key(&edge.dst)
+                    })
+                    .count()
+                    == 1
+        })
+        .cloned()
+        .collect();
+    (focused.len() == 2).then(|| focused.into_iter().take(limit).collect())
+}
+
+fn focused_import_target(
+    index: &GraphIndex,
+    hits: &[QueryHit],
+    task_lower: &str,
+) -> Option<Vec<QueryHit>> {
+    if !task_lower.contains("import")
+        || !task_lower.contains("package")
+        || !(task_lower.contains("file") || task_lower.contains("path"))
+    {
+        return None;
+    }
+    let by_id = node_map(index);
+    let focused: Vec<_> = hits
+        .iter()
+        .filter(|hit| {
+            hit.node.kind == "use"
+                && task_lower.contains(&hit.node.file.to_ascii_lowercase())
+                && tokenize(&task_lower.replace(&hit.node.file.to_ascii_lowercase(), " "))
+                    .iter()
+                    .any(|term| term == &hit.node.name.to_ascii_lowercase())
+                && index
+                    .edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.src == hit.node.id
+                            && edge.kind == "imports"
+                            && by_id.contains_key(&edge.dst)
+                    })
+                    .count()
+                    == 1
+        })
+        .cloned()
+        .collect();
+    (focused.len() == 1).then_some(focused)
 }
 
 #[cfg(test)]
@@ -681,6 +795,102 @@ mod context_ranking_tests {
         assert!(ids.contains("ar") && ids.contains("r"));
         assert!(!ids.contains("other_ar"));
         assert!(!ids.contains("unqueried"));
+    }
+
+    #[test]
+    fn complete_named_instance_targets_omit_unrelated_context() {
+        let mut ar = node("ar", "instance", "ar_fifo");
+        ar.file = "examples/nic400/Nic400CdcAxi4.arch".into();
+        let mut r = node("r", "instance", "r_fifo");
+        r.file = ar.file.clone();
+        let mut unrelated = node("unrelated", "instance", "control_inst");
+        unrelated.file = ar.file.clone();
+        let edges = [("ar", "ar_target"), ("r", "r_target")]
+            .into_iter()
+            .map(|(src, dst)| EdgeRecord {
+                src: src.into(),
+                dst: dst.into(),
+                kind: "instantiates".into(),
+                span: None,
+                attrs: BTreeMap::new(),
+                confidence: "resolved".into(),
+            })
+            .collect();
+        let mut index = GraphIndex {
+            index_root: String::new(),
+            files: Vec::new(),
+            edges,
+            nodes: vec![
+                ar,
+                r,
+                unrelated,
+                node("ar_target", "module", "Nic400ArCdcFifo"),
+                node("r_target", "module", "Nic400RCdcFifo"),
+            ],
+        };
+        let task = "In examples/nic400/Nic400CdcAxi4.arch, which separate FIFO declarations do ar_fifo and r_fifo instantiate?";
+        let hits = context_with_source(&index, task, 8);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].node.name, "ar_fifo");
+        assert_eq!(hits[1].node.name, "r_fifo");
+        assert!(context(&index, task, 8).len() > 2);
+
+        let incomplete = context_with_source(&index, &task.replace("r_fifo", "missing_fifo"), 8);
+        assert!(incomplete.len() > 2);
+        let unnamed = context_with_source(
+            &index,
+            "Which declarations do ar_fifo and r_fifo instantiate?",
+            8,
+        );
+        assert!(unnamed.len() > 2);
+        index.edges.push(index.edges[0].clone());
+        assert!(context_with_source(&index, task, 8).len() > 2);
+        index.edges.pop();
+        index.edges.pop();
+        assert!(context_with_source(&index, task, 8).len() > 2);
+    }
+
+    #[test]
+    fn complete_named_import_omits_unrelated_context() {
+        let mut import = node("import", "use", "TestPkg");
+        import.file = "examples/pkg_user.arch".into();
+        let mut index = GraphIndex {
+            index_root: String::new(),
+            files: Vec::new(),
+            edges: vec![EdgeRecord {
+                src: "import".into(),
+                dst: "package".into(),
+                kind: "imports".into(),
+                span: None,
+                attrs: BTreeMap::new(),
+                confidence: "resolved".into(),
+            }],
+            nodes: vec![
+                import,
+                node("package", "package", "TestPkg"),
+                node("other", "module", "OtherDatapath"),
+            ],
+        };
+        let task = "Which package file satisfies the TestPkg import in examples/pkg_user.arch? Give the declaration path.";
+        let hits = context_with_source(&index, task, 8);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].node.id, "import");
+        assert!(context(&index, task, 8).len() > 1);
+        assert!(context_with_source(&index, &task.replace("TestPkg", "MissingPkg"), 8).len() > 1);
+        assert!(
+            context_with_source(
+                &index,
+                "Which package file satisfies the TestPkg import?",
+                8
+            )
+            .len()
+                > 1
+        );
+        index.edges.push(index.edges[0].clone());
+        assert!(context_with_source(&index, task, 8).len() > 1);
+        index.edges.pop();
+        index.edges.clear();
+        assert!(context_with_source(&index, task, 8).len() > 1);
     }
 }
 

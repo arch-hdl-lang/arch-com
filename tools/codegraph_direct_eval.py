@@ -221,10 +221,11 @@ def main() -> None:
                                    "--include-source"], root)
             passed = grade_relations(output, relations, root, RELATION_MAX_RANK[task_id])
             bounded = len(output) <= CROSS_TOKEN_BUDGET * 4
+            compact = len(output.splitlines()) == len(relations)
             records.append({"id": task_id, "include_source": True,
-                            "pass": passed and bounded, "seconds": seconds,
-                            "output_chars": len(output), "bounded": bounded,
-                            **({"output": output} if not passed else {})})
+                            "pass": passed and bounded and compact, "seconds": seconds,
+                            "output_chars": len(output), "bounded": bounded, "compact": compact,
+                            **({"output": output} if not (passed and compact) else {})})
         output, seconds = run([str(arch_bin), "graph", "context", NIC400_AGENT_QUERY,
                                "--index", str(user_index), "--token-budget", str(SOURCE_TOKEN_BUDGET),
                                "--include-source"], root)
