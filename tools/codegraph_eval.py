@@ -39,6 +39,8 @@ def load_tasks(path: Path) -> list[dict]:
             raise ValueError(f"invalid cohort or kind: {task['id']}")
         if task.get("verdict") not in (None, "no"):
             raise ValueError(f"invalid verdict: {task['id']}")
+        if task.get("verdict") == "no" and not task.get("symbol"):
+            raise ValueError(f"missing absence symbol: {task['id']}")
     return data["tasks"]
 
 
@@ -93,17 +95,24 @@ def trace_result(events: list[dict]) -> dict:
 def answer_passes(task: dict, answer: str) -> bool:
     haystack = answer.casefold()
     if task.get("verdict") == "no":
+        symbol = re.escape(task["symbol"].casefold())
         leading = re.sub(r"^[\s*_`#>.:;!?-]+", "", haystack)
         if not re.match(
             r"(?:no\b|none\b|not found\b|there (?:is|are) no\b|"
-            r"(?:the )?(?:symbol|fifo|nosuchqueue)\b.{0,100}\b(?:not found|does not exist|not declared)\b)",
+            rf"(?:the )?(?:symbol|fifo|{symbol})\b.{{0,100}}\b(?:not found|does not exist|not declared)\b)",
             leading,
+        ) or re.search(
+            rf"\byes\b|\b(?:{symbol}|it) (?:is|are|was) (?:declared|defined)\b"
+            rf"|\b(?:declares|defines) (?:it|{symbol})\b"
+            r"|(?<!not )\b(?:found|exists|declared|defined) in \S+\.arch\b",
+            haystack,
         ):
             return False
     def matches(choice: str) -> bool:
         if "/" in choice:
             line = "" if re.search(r":\d+$", choice) else r"(?::\d+)?"
-            boundary = r"(?=$|[\s,;)\]}>!?`\"']|\.(?=$|[\s,;)\]}>!?`\"']))"
+            boundary = (r"(?=$|[\s,;)\]}>!?`\"']|\.(?=$|[\s,;)\]}>!?`\"'])"
+                        r"|:(?=$|\s|\d))")
             suffix = line + boundary
         else:
             suffix = r"(?!\w)"
