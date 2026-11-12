@@ -101,7 +101,9 @@ def answer_passes(task: dict, answer: str) -> bool:
         ):
             return False
     def matches(choice: str) -> bool:
-        return bool(re.search(rf"(?<!\w){re.escape(choice.casefold())}(?!\w)", haystack))
+        suffix = (r"(?::\d+)?(?=$|[\s,;)\]}}>!?`\"']|\.(?![\w-]))"
+                  if "/" in choice and not re.search(r":\d+$", choice) else r"(?!\w)")
+        return bool(re.search(rf"(?<!\w){re.escape(choice.casefold())}{suffix}", haystack))
     return all(any(matches(choice) for choice in group) for group in task.get("answer_any", []))
 
 

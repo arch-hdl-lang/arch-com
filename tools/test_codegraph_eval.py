@@ -97,6 +97,17 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertFalse(answer_passes(tasks["user_fifo_lookup"], "examples/sync_fifo.arch:170"))
         self.assertFalse(answer_passes(tasks["compiler_known_file"], "emit_fifo_sync_body_general"))
 
+    def test_path_answers_reject_filename_suffixes(self):
+        task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
+                    if task["id"] == "user_bus_relationship")
+        for suffix in (".bak", "/extra", "-copy", ":wrong"):
+            with self.subTest(suffix=suffix):
+                answer = f"stdlib/BusAxiLite.arch{suffix} tests/axi_dma/BusAxiLite.arch{suffix}"
+                self.assertFalse(answer_passes(task, answer))
+        self.assertTrue(answer_passes(
+            task, "stdlib/BusAxiLite.arch:1, tests/axi_dma/BusAxiLite.arch."
+        ))
+
     def test_unverified_answer_is_not_a_success(self):
         self.assertFalse(verified_success({"success": True, "kind": "coverage_miss", "tool_calls": 0}))
         self.assertTrue(verified_success({"success": True, "kind": "coverage_miss", "tool_calls": 1}))
