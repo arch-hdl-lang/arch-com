@@ -148,12 +148,14 @@ class CodegraphEvalTests(unittest.TestCase):
     def test_answer_keys_require_token_boundaries(self):
         tasks = {task["id"]: task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")}
         self.assertFalse(answer_passes(tasks["user_fifo_lookup"], "examples/sync_fifo.arch:170"))
+        self.assertFalse(answer_passes(tasks["user_fifo_lookup"], "examples/sync_fifo.arch:17.bak"))
+        self.assertTrue(answer_passes(tasks["user_fifo_lookup"], "examples/sync_fifo.arch:17."))
         self.assertFalse(answer_passes(tasks["compiler_known_file"], "emit_fifo_sync_body_general"))
 
     def test_path_answers_reject_filename_suffixes(self):
         task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
                     if task["id"] == "user_bus_relationship")
-        for suffix in (".bak", "/extra", "-copy", ":wrong"):
+        for suffix in (".bak", "..bak", "/extra", "-copy", ":wrong"):
             with self.subTest(suffix=suffix):
                 answer = f"stdlib/BusAxiLite.arch{suffix} tests/axi_dma/BusAxiLite.arch{suffix}"
                 self.assertFalse(answer_passes(task, answer))
