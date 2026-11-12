@@ -489,11 +489,16 @@ mod tests {
         let out = std::env::temp_dir().join(format!("arch-dev-graph-test-{}", std::process::id()));
         let stats = index(root, &root.join("doc/codegraph_feature_map.json"), &out).unwrap();
         assert!(stats.features >= 8);
-        let result = query(root, &out, "pipe_reg reset", 30, 600, &[], false).unwrap();
+        let result = query(root, &out, "pipe_reg declaration", 30, 600, &[], false).unwrap();
         assert!(result.contains("emit_pipe_reg"));
         assert!(result.contains("pipe_reg_test.arch"));
-        let sourced = query(root, &out, "pipe_reg reset", 30, 800, &[], true).unwrap();
+        let sourced = query(root, &out, "pipe_reg declaration", 30, 800, &[], true).unwrap();
         assert!(sourced.contains("| fn emit_pipe_reg("));
+        let port = query(root, &out, "pipe_reg output-port reset", 30, 800, &[], true).unwrap();
+        assert!(port.contains("PortRegInfo"));
+        assert!(port.contains("parse_port_decl"));
+        assert!(port.contains("emit_reg_block"));
+        assert!(port.contains("Prob047_dff8ar.arch"));
         assert!(!sourced.contains(" | **ARCH**"));
         assert!(!sourced.contains(" | ---"));
         let parser_only = query(

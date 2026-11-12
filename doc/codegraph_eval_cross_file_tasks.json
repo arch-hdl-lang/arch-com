@@ -26,8 +26,15 @@
       "id": "compiler_pipe_reg_change_map",
       "cohort": "compiler",
       "kind": "discovery",
-      "prompt": "For an ARCH pipe_reg reset change, identify the AST type, parser owner, SystemVerilog emitter, and shipped fixture with source paths.",
-      "answer_any": [["PipeRegDecl"], ["src/ast.rs"], ["parse_module", "parse_pipe_reg_decl"], ["src/parser.rs"], ["emit_pipe_reg"], ["src/codegen/module.rs"], ["examples/pipe_reg_test.arch"]]
+      "prompt": "For the ARCH pipe_reg declaration `pipe_reg name: source stages N`, identify its AST type, parser owner, SystemVerilog emitter, and shipped fixture with source paths.",
+      "answer_any": [["PipeRegDecl"], ["src/ast.rs"], ["parse_pipe_reg_decl"], ["src/parser.rs"], ["emit_pipe_reg"], ["src/codegen/module.rs"], ["examples/pipe_reg_test.arch"]]
+    },
+    {
+      "id": "compiler_pipe_reg_port_reset_map",
+      "cohort": "compiler",
+      "kind": "discovery",
+      "prompt": "For the ARCH pipe_reg output-port reset syntax `port q: out pipe_reg<T,N> reset rst=>0`, identify the AST reset metadata type, parser function, SystemVerilog sequential emitter, and shipped fixture with source paths.",
+      "answer_any": [["PortRegInfo"], ["src/ast.rs"], ["parse_port_decl"], ["src/parser.rs"], ["emit_reg_block"], ["src/codegen/module.rs"], ["tests/verilog_eval/Prob047_dff8ar.arch"]]
     },
     {
       "id": "user_known_file_control",

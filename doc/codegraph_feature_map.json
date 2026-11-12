@@ -44,11 +44,17 @@
       {"role": "backend", "path": "src/codegen/pipeline.rs", "symbol": "emit_pipeline_inst"},
       {"role": "fixture", "path": "examples/simple_pipeline.arch"}
     ]},
-    {"name": "pipe_reg reset", "links": [
+    {"name": "pipe_reg declaration", "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "PipeRegDecl"},
-      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_module"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_pipe_reg_decl"},
       {"role": "backend", "path": "src/codegen/module.rs", "symbol": "emit_pipe_reg"},
       {"role": "fixture", "path": "examples/pipe_reg_test.arch"}
+    ]},
+    {"name": "pipe_reg output-port reset", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "PortRegInfo"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_port_decl"},
+      {"role": "backend", "path": "src/codegen/module.rs", "symbol": "emit_reg_block"},
+      {"role": "fixture", "path": "tests/verilog_eval/Prob047_dff8ar.arch"}
     ]},
     {"name": "tlm_method", "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "TlmMethodMeta"},
