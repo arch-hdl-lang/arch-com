@@ -2,6 +2,8 @@
 
 The raw provider traces are retained locally, not committed to this repository;
 the headline token numbers cannot be independently recomputed from the repo alone.
+The task manifest gained an explicit negative-verdict field after this pilot;
+the hash below identifies the original run, not the current manifest bytes.
 
 ## Frozen run
 
