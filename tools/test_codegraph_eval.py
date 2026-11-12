@@ -91,6 +91,13 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertTrue(answer_passes(task, "**No.** NoSuchQueue is not declared."))
         self.assertTrue(answer_passes(task, "There is no FIFO named NoSuchQueue in examples/ or stdlib/."))
         self.assertFalse(answer_passes(task, "**Yes.** NoSuchQueue is declared; no other copies exist."))
+        self.assertTrue(answer_passes(task, "NoSuchQueue is not declared in examples/ or stdlib/."))
+        for answer in ("No in examples/; yes in stdlib/q.arch.",
+                       "There is no NoSuchQueue in examples/, but stdlib/q.arch declares it.",
+                       "The FIFO NoSuchQueue is declared in stdlib/q.arch; it does not exist in examples/.",
+                       "No in examples/, but found in stdlib/q.arch."):
+            with self.subTest(answer=answer):
+                self.assertFalse(answer_passes(task, answer))
 
     def test_answer_keys_require_token_boundaries(self):
         tasks = {task["id"]: task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")}
@@ -109,6 +116,17 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertTrue(answer_passes(
             task, "stdlib/BusAxiLite.arch:1, tests/axi_dma/BusAxiLite.arch."
         ))
+        self.assertTrue(answer_passes(task, "stdlib/BusAxiLite.arch and tests/axi_dma/BusAxiLite.arch:"))
+
+    def test_path_answers_accept_colon_forms(self):
+        task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
+                    if task["id"] == "user_fifo_lookup")
+        for answer in ("examples/sync_fifo.arch:17:1",
+                       "examples/sync_fifo.arch:17: fifo TxQueue",
+                       "examples/sync_fifo.arch:17:"):
+            with self.subTest(answer=answer):
+                self.assertTrue(answer_passes(task, answer))
+        self.assertFalse(answer_passes(task, "examples/sync_fifo.arch:170: fifo TxQueue"))
 
     def test_unverified_answer_is_not_a_success(self):
         self.assertFalse(verified_success({"success": True, "kind": "coverage_miss", "tool_calls": 0}))
