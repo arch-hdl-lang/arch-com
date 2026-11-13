@@ -30,7 +30,11 @@ focused graph query before other retrieval:
 ```
 
 This applies even when the starting file is named but the targets or ownership
-are uncertain. For unknown compiler ownership, use:
+are uncertain. A compiler question asking for the AST, parser, emitter, or
+fixture of a named ARCH syntax feature is still an ownership question; run one
+developer-graph query before broad Rust search, even when the syntax token is
+known. This does not override direct reads for facts inside a named Rust file.
+For compiler ownership, use:
 
 ```sh
 ./target/debug/arch graph dev-query "<feature>" --root . --index .archdevgraph --token-budget 200 --include-source
