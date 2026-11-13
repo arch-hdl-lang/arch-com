@@ -311,6 +311,10 @@ def make_mcp_config(workspace: Path, arch_bin: Path, mcp_python: Path) -> str:
 def prompt_for(task: dict, condition: str, arch_command: str = "arch",
                graph_token_budget: int = 100, include_source: bool = False) -> str:
     prompt = task["prompt"] + " " + VERIFY
+    if task["kind"] == "known_file" and condition in ("no_graph", "default"):
+        prompt += (" Before answering, execute one targeted source read or `rg -n` "
+                   "against the named file and use its output to verify the answer. "
+                   "Do not use a graph for an in-file fact, even if the answer seems familiar.")
     if condition == "no_graph":
         prompt += " " + NO_GRAPH
     elif condition == "graph_cli":

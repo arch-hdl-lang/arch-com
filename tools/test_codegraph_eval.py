@@ -235,6 +235,20 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertNotIn("arch graph", default)
         self.assertIn("Graph commands", baseline)
 
+    def test_known_file_controls_require_direct_verification_in_both_arms(self):
+        tasks = load_tasks(ROOT / "doc/codegraph_eval_cross_file_tasks.json")
+        for task in tasks:
+            for condition in ("no_graph", "default"):
+                prompt = prompt_for(task, condition)
+                if task["kind"] == "known_file":
+                    self.assertIn("execute one targeted source read or `rg -n`", prompt)
+                    self.assertIn("Do not use a graph for an in-file fact", prompt)
+                else:
+                    self.assertNotIn("Do not use a graph for an in-file fact", prompt)
+            if task["kind"] == "known_file":
+                self.assertNotIn("Do not use a graph for an in-file fact",
+                                 prompt_for(task, "graph_cli"))
+
     def test_guided_transport_prompts_keep_same_budget(self):
         task = next(task for task in load_tasks(ROOT / "doc/codegraph_eval_tasks.json")
                     if task["id"] == "compiler_arbiter_owners")
