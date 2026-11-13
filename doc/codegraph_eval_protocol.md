@@ -22,6 +22,22 @@ The direct gate is deliberately cheaper than the live agent evaluation below.
 Run the latter only after a retrieval change passes the direct gate, including
 known-file controls and answer quality before claiming token savings.
 
+## Selective-routing hypothesis
+
+The next routing comparison should test exact-symbol imports separately from
+uncertain instance targets and compiler impact questions. A named package
+declaration that one bounded `rg -n -g '*.arch'` can locate should take the
+direct-search path; ambiguous matches or multi-target relationships should
+take one focused graph query. Preserve known-file direct-read controls and
+graph fallback for incomplete results. The deterministic gate checks retrieval
+quality, not agent tool selection or provider tokens. Only a separately
+approved paired live run can establish whether this policy reduces tokens
+without lowering correctness.
+Before that run, record the installed ARCH skill digest and align its routing
+text with the reviewed repository skill, or explicitly isolate repository
+instructions with `--ignore-user-config` in both arms. An older installed skill
+can contradict the new routing rule and confound the comparison.
+
 ## Agent selection and tokens
 
 `tools/codegraph_eval.py` compares ordinary-search-only attempts with the
