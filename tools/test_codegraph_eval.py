@@ -59,9 +59,10 @@ class CodegraphEvalTests(unittest.TestCase):
         self.assertEqual(len(tasks), 7)
         self.assertEqual(sum(task["kind"] == "known_file" for task in tasks), 2)
         relation = CROSS_RELATIONS["user_package_import_target"]
-        good = "examples/pkg_user.arch:1 use TestPkg -> examples/TestPkg.arch:1 TestPkg"
+        good = "examples/pkg_user.arch:1 use TestPkg -> examples/TestPkg.arch:1 TestPkg | decl package TestPkg"
         self.assertTrue(grade_relations(good, relation, ROOT))
         self.assertFalse(grade_relations(good.replace("TestPkg.arch:1", "Other.arch:1"), relation, ROOT))
+        self.assertFalse(grade_relations(good.replace(" | decl package TestPkg", ""), relation, ROOT))
 
     def test_trace_parses_usage_and_graph_calls(self):
         raw = "\n".join(json.dumps(event) for event in [

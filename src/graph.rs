@@ -935,7 +935,7 @@ pub fn format_query_hits_with_source(
             }
         }
     }
-    let mut source_lines: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut source_lines: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for hit in hits {
         let mut line = format!(
             "{}  {}  {}  score={}",
@@ -944,36 +944,14 @@ pub fn format_query_hits_with_source(
             hit.node.name,
             hit.score
         );
-        if let (Some(file), Some(span)) = (files.get(hit.node.file.as_str()), &hit.node.span) {
-            if span.line_start == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("{} has no source line", hit.node.file),
-                ));
-            }
-            if !source_lines.contains_key(hit.node.file.as_str()) {
-                source_lines.insert(
-                    hit.node.file.as_str(),
-                    fs::read_to_string(&file.abs_path)?
-                        .lines()
-                        .map(str::to_string)
-                        .collect(),
-                );
-            }
-            let excerpt = source_lines[hit.node.file.as_str()]
-                .get(span.line_start.saturating_sub(1))
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("{}:{} is unavailable", hit.node.file, span.line_start),
-                    )
-                })?;
-            let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
-            let excerpt: String = excerpt.chars().take(120).collect();
+        if let Some(excerpt) = source_excerpt(&hit.node, &files, &mut source_lines)? {
             line.push_str(&format!(" | {excerpt}"));
         }
         if let Some(target) = targets.get(hit.node.id.as_str()) {
             line.push_str(&format!(" -> {} {}", location_label(target), target.name));
+            if let Some(excerpt) = source_excerpt(target, &files, &mut source_lines)? {
+                line.push_str(&format!(" | decl {excerpt}"));
+            }
         }
         lines.push(line);
     }
@@ -982,6 +960,41 @@ pub fn format_query_hits_with_source(
     } else {
         lines.join("\n")
     })
+}
+
+fn source_excerpt(
+    node: &NodeRecord,
+    files: &BTreeMap<&str, &FileRecord>,
+    source_lines: &mut BTreeMap<String, Vec<String>>,
+) -> std::io::Result<Option<String>> {
+    let (Some(file), Some(span)) = (files.get(node.file.as_str()), &node.span) else {
+        return Ok(None);
+    };
+    if span.line_start == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} has no source line", node.file),
+        ));
+    }
+    if !source_lines.contains_key(node.file.as_str()) {
+        source_lines.insert(
+            node.file.clone(),
+            fs::read_to_string(&file.abs_path)?
+                .lines()
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    let excerpt = source_lines[node.file.as_str()]
+        .get(span.line_start - 1)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{}:{} is unavailable", node.file, span.line_start),
+            )
+        })?;
+    let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+    Ok(Some(excerpt.chars().take(120).collect()))
 }
 
 pub fn format_callers(hits: &[(EdgeRecord, NodeRecord)]) -> String {

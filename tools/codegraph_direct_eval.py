@@ -132,8 +132,9 @@ def grade_relations(output: str, relations: tuple[tuple[str, int, str, str, int,
         target_line = (root / child).read_text().splitlines()[child_line - 1]
         if instance not in source_line or target not in target_line:
             return False
+        target_excerpt = " ".join(target_line.split())[:120]
         if not any(line.startswith(f"{parent}:{parent_line} ") and instance in line and
-                   f"-> {child}:{child_line} {target}" in line
+                   f"-> {child}:{child_line} {target} | decl {target_excerpt}" in line
                    for line in output.splitlines()[:max_rank]):
             return False
     return True
