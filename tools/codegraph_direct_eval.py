@@ -76,6 +76,16 @@ NIC400_AGENT_QUERY = (
     "In Nic400CdcAxi4, trace instances ar_fifo and r_fifo to their instantiated FIFO "
     "target names and declaration source paths. Return only relevant source."
 )
+INSTANCE_LIST_QUERIES = (
+    ("axi_dma_comma_list", "user_axi_dma_instance_targets",
+     "In tests/axi_dma/AxiDmaTop.arch, identify the instance targets of mm2s_fsm, mm2s_fifo."),
+    ("axi_dma_quoted_list", "user_axi_dma_instance_targets",
+     "Which declarations do `mm2s_fifo`, `mm2s_fsm` instantiate in tests/axi_dma/AxiDmaTop.arch?"),
+    ("nic400_comma_list", "user_nic400_cdc_fifo_targets",
+     "In examples/nic400/Nic400CdcAxi4.arch, identify the instance targets of ar_fifo, r_fifo."),
+    ("nic400_oxford_list", "user_nic400_cdc_fifo_targets",
+     "Which declarations do ar_fifo, and r_fifo instantiate in examples/nic400/Nic400CdcAxi4.arch?"),
+)
 PIPE_REG_OWNERS = {
     "compiler_pipe_reg_change_map": (
         "pipe_reg declaration",
@@ -237,6 +247,19 @@ def main() -> None:
                         "pass": passed and bounded, "seconds": seconds,
                         "output_chars": len(output), "bounded": bounded,
                         **({"output": output} if not passed else {})})
+        for case_id, task_id, query in INSTANCE_LIST_QUERIES:
+            output, seconds = run([str(arch_bin), "graph", "context", query,
+                                   "--index", str(user_index),
+                                   "--token-budget", str(SOURCE_TOKEN_BUDGET),
+                                   "--include-source"], root)
+            relations = CROSS_RELATIONS[task_id]
+            bounded = len(output.encode()) <= SOURCE_TOKEN_BUDGET * 4
+            passed = grade_relations(output, relations, root, max_rank=len(relations))
+            compact = len(output.splitlines()) == len(relations)
+            records.append({"id": case_id, "include_source": True,
+                            "pass": passed and bounded and compact, "seconds": seconds,
+                            "output_chars": len(output), "bounded": bounded, "compact": compact,
+                            **({"output": output} if not (passed and compact) else {})})
         for task_id in ("compiler_pipe_reg_change_map", "compiler_pipe_reg_port_reset_map"):
             compiler_task = cross_tasks[task_id]
             output, seconds = run([str(arch_bin), "graph", "dev-query", compiler_task["prompt"],

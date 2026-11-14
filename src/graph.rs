@@ -615,12 +615,41 @@ fn focused_instance_targets(
         .iter()
         .next()
         .filter(|_| named_files.len() == 1)?;
-    let terms = tokenize(&task_lower.replace(&file.to_ascii_lowercase(), " "));
-    let names: Vec<_> = terms.iter().filter(|term| term.contains('_')).collect();
-    if names.len() != 2
-        || !terms
-            .windows(3)
-            .any(|window| window[0] == *names[0] && window[1] == "and" && window[2] == *names[1])
+    let instance_names: BTreeSet<_> = index
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "instance" && node.file == **file)
+        .map(|node| node.name.to_ascii_lowercase())
+        .collect();
+    let list_task = task_lower
+        .replace(&file.to_ascii_lowercase(), " ")
+        .replace(',', " and ");
+    // Unlike search tokens, list operands must retain one-character names.
+    let terms: Vec<_> = list_task
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|term| !term.is_empty())
+        .map(str::to_string)
+        .collect();
+    // Keep unknown identifier-like names in the request so a partial match cannot
+    // suppress the wider context. Only compact a single, fully resolved list.
+    let positions: Vec<_> = terms
+        .iter()
+        .enumerate()
+        .filter(|(_, term)| term.contains('_') || instance_names.contains(*term))
+        .map(|(position, _)| position)
+        .collect();
+    let first = *positions.first()?;
+    let last = *positions.last()?;
+    let names: BTreeSet<_> = positions.iter().map(|&position| &terms[position]).collect();
+    if names.len() < 2
+        || names.len() > limit
+        || names.len() != positions.len()
+        || positions.windows(2).any(|pair| pair[1] == pair[0] + 1)
+        || (first > 0 && terms[first - 1] == "and")
+        || terms.get(last + 1).is_some_and(|term| term == "and")
+        || terms[first..=last]
+            .iter()
+            .any(|term| term != "and" && !names.contains(term))
     {
         return None;
     }
@@ -633,20 +662,27 @@ fn focused_instance_targets(
                 && names
                     .iter()
                     .any(|name| name.as_str() == hit.node.name.to_ascii_lowercase())
-                && index
-                    .edges
-                    .iter()
-                    .filter(|edge| {
-                        edge.src == hit.node.id
-                            && edge.kind == "instantiates"
-                            && by_id.contains_key(&edge.dst)
-                    })
-                    .count()
-                    == 1
         })
         .cloned()
         .collect();
-    (focused.len() == 2).then(|| focused.into_iter().take(limit).collect())
+    for name in names {
+        let mut matches = focused
+            .iter()
+            .filter(|hit| hit.node.name.to_ascii_lowercase() == *name);
+        let hit = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        let mut targets = index
+            .edges
+            .iter()
+            .filter(|edge| edge.src == hit.node.id && edge.kind == "instantiates");
+        let target = targets.next()?;
+        if targets.next().is_some() || !by_id.contains_key(&target.dst) {
+            return None;
+        }
+    }
+    Some(focused)
 }
 
 fn focused_import_target(
@@ -834,6 +870,82 @@ mod context_ranking_tests {
         assert_eq!(hits[0].node.name, "ar_fifo");
         assert_eq!(hits[1].node.name, "r_fifo");
         assert!(context(&index, task, 8).len() > 2);
+
+        for list in [
+            "ar_fifo, r_fifo",
+            "`ar_fifo`, `r_fifo`",
+            "ar_fifo, and r_fifo",
+        ] {
+            let paraphrase = task.replace("ar_fifo and r_fifo", list);
+            let hits = context_with_source(&index, &paraphrase, 8);
+            assert_eq!(hits.len(), 2, "{paraphrase}");
+            assert_eq!(hits[0].node.name, "ar_fifo");
+            assert_eq!(hits[1].node.name, "r_fifo");
+        }
+        for list in [
+            "ar_fifo, missing_fifo",
+            "ar_fifo, missing, r_fifo",
+            "ar_fifo, x, r_fifo",
+            "missing and ar_fifo and r_fifo",
+            "x and ar_fifo and r_fifo",
+            "ar_fifo, r_fifo and missing",
+            "ar_fifo, r_fifo and x",
+            "ar_fifo r_fifo",
+            "ar_fifo and ar_fifo",
+            "ar_fifo and r_fifo and ar_fifo",
+        ] {
+            let incomplete = task.replace("ar_fifo and r_fifo", list);
+            assert!(
+                context_with_source(&index, &incomplete, 8).len() > 2,
+                "{incomplete}"
+            );
+        }
+
+        let mut plain = index.clone();
+        plain.nodes[0].name = "ingress".into();
+        plain.nodes[1].name = "egress".into();
+        assert_eq!(
+            context_with_source(
+                &plain,
+                &task.replace("ar_fifo and r_fifo", "ingress, egress"),
+                8
+            )
+            .len(),
+            2
+        );
+        let mut short = plain.clone();
+        short.nodes[0].name = "a".into();
+        short.nodes[1].name = "b".into();
+        let short_hits =
+            context_with_source(&short, &task.replace("ar_fifo and r_fifo", "a, b"), 8);
+        assert_eq!(short_hits.len(), 2);
+        assert!(short_hits.iter().all(|hit| hit.node.kind == "instance"));
+        plain.nodes[2].name = "bridge".into();
+        plain.edges.push(EdgeRecord {
+            src: "unrelated".into(),
+            dst: "ar_target".into(),
+            ..plain.edges[0].clone()
+        });
+        let three = task.replace("ar_fifo and r_fifo", "ingress, egress, and bridge");
+        let hits = context_with_source(&plain, &three, 8);
+        assert_eq!(hits.len(), 3);
+        assert!(hits.iter().all(|hit| hit.node.kind == "instance"));
+        let direct = query(&plain, &three, plain.nodes.len());
+        assert!(
+            focused_instance_targets(&plain, &direct, &three.to_ascii_lowercase(), 2).is_none()
+        );
+
+        let mut ambiguous = index.clone();
+        let mut duplicate = ambiguous.nodes[0].clone();
+        duplicate.id = "duplicate_ar".into();
+        ambiguous.nodes.push(duplicate);
+        assert!(context_with_source(&ambiguous, task, 8).len() > 2);
+        let mut dangling = index.clone();
+        dangling.edges.push(EdgeRecord {
+            dst: "missing_target".into(),
+            ..dangling.edges[0].clone()
+        });
+        assert!(context_with_source(&dangling, task, 8).len() > 2);
 
         let incomplete = context_with_source(&index, &task.replace("r_fifo", "missing_fifo"), 8);
         assert!(incomplete.len() > 2);

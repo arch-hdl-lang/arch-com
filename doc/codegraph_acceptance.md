@@ -21,6 +21,27 @@ The marker and CLI newline fit within the approximate four-byte-per-token
 budget; source rows are never split. An unmarked result means no matching rows
 were dropped by these limits, not that the curated map covers every owner.
 
+Source-backed user context compacts explicit instance-target lists in one named
+file, including comma-separated lists and lists longer than two names. Each
+requested name must identify one instance with one existing target; incomplete
+lists, duplicate names, ambiguous instances or edges, and insufficient result
+limits fall back to ordinary ranked context. Names need not contain underscores.
+This conservative fast path is not a general natural-language parser; other
+wordings continue to use ordinary context ranking. It does not apply without
+`--include-source`. Run `tools/codegraph_direct_eval.py --arch-bin target/debug/arch`
+for source-checked CLI regressions, including list paraphrases. Output size is
+retrieval evidence, not a measurement of live model tokens or answer correctness.
+
+The 2026-11-13 local comparison used the same 20 direct-evaluation cases against
+the `8c6b4137` binary and the list-compaction patch. All 16 existing cases passed
+unchanged. Three of four added list variants failed compactness on the baseline;
+all four passed after the patch, retaining source-checked instance and target
+declaration lines. At the same 200-token approximate output budget, the two AXI
+DMA comma-list variants shrank from 793 to 303 characters each, and the NIC-400
+comma list from 749 to 368; the Oxford-comma control stayed at 368. These selected
+paraphrases test the identified failure, not held-out generalization. No model
+was invoked, and the prior live answer-extraction failure remains unresolved.
+
 ## Reproduce
 
 ```sh
