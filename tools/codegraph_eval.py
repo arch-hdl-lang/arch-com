@@ -49,7 +49,47 @@ def load_tasks(path: Path) -> list[dict]:
             if (task["kind"] != "known_file" or not isinstance(path, str) or not path
                     or Path(path).is_absolute() or ".." in Path(path).parts):
                 raise ValueError(f"invalid known-file source_path: {task['id']}")
+        if "source_sha256" in task:
+            digest = task["source_sha256"]
+            if (task["kind"] != "known_file" or not task.get("source_path")
+                    or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+                raise ValueError(f"invalid known-file source_sha256: {task['id']}")
+        if "expected_citation" in task:
+            citation = task["expected_citation"]
+            if (task["kind"] != "known_file" or not task.get("source_path") or task.get("verdict")
+                    or not isinstance(citation, dict) or set(citation) != {"symbol", "path", "line"}
+                    or not isinstance(citation["symbol"], str)
+                    or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", citation["symbol"])
+                    or citation["path"] != task["source_path"]
+                    or type(citation["line"]) is not int or citation["line"] < 1
+                    or "answer_any" in task):
+                raise ValueError(f"invalid expected_citation: {task['id']}")
     return data["tasks"]
+
+
+def validate_source_pins(tasks: list[dict], workspace: Path) -> dict:
+    """Check frozen source versions before index setup or any model invocation."""
+    pins = {}
+    root = workspace.resolve()
+    for task in tasks:
+        if "source_sha256" not in task:
+            continue
+        path = task["source_path"]
+        try:
+            source = (root / path).resolve()
+            if (Path(path).is_absolute() or ".." in Path(path).parts or not source.is_relative_to(root)
+                    or not source.is_file() or any(part in (".git", ".archgraph", ".archdevgraph")
+                                                  for part in (*Path(path).parts, *source.relative_to(root).parts))):
+                raise ValueError("not an allowed source file")
+            with source.open("rb") as stream:
+                raw = stream.read(1024 * 1024 + 1)
+            digest = hashlib.sha256(raw).hexdigest()
+            if len(raw) > 1024 * 1024 or digest != task["source_sha256"]:
+                raise ValueError("source hash mismatch or source exceeds 1 MiB")
+        except (OSError, ValueError, RuntimeError) as error:
+            raise ValueError(f"source pin failed for {task['id']}: {error}") from error
+        pins[task["id"]] = {"path": path, "sha256": digest, "read_bytes": len(raw)}
+    return pins
 
 
 def parse_events(raw: str) -> list[dict]:
@@ -220,6 +260,9 @@ def trace_result(events: list[dict]) -> dict:
 
 
 def answer_passes(task: dict, answer: str) -> bool:
+    if "expected_citation" in task:
+        citation = task["expected_citation"]
+        return answer == f"{citation['symbol']} {citation['path']}:{citation['line']}"
     haystack = answer.casefold()
     if task.get("verdict") == "no":
         symbol = re.escape(task["symbol"].casefold())
@@ -250,6 +293,7 @@ def answer_passes(task: dict, answer: str) -> bool:
 def verified_success(record: dict) -> bool:
     return bool(record["success"] and record.get("known_file_source_verified", True)
                 and record.get("known_file_answer_verified", True)
+                and record.get("source_pin_verified", True)
                 and (record["kind"] == "edit" or record.get("tool_calls", 0) > 0
                      or (record["kind"] == "known_file" and record.get("prefetched_source_verified", False))))
 
@@ -609,6 +653,8 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
                 prefetch_known_file: bool = False, prefetch_byte_budget: int = 8192,
                 verify_known_file_answer: bool = False, prefetch_excerpts: bool = False) -> dict:
     answer_gate = verify_known_file_answer and task["kind"] == "known_file"
+    if ("source_sha256" in task or "expected_citation" in task) and not answer_gate:
+        raise ValueError("pinned sources and exact citations require known-file answer verification")
     recovery_enabled = (recover_known_file or answer_gate) and task["kind"] == "known_file"
     if condition == "source_prefetch" and task["kind"] != "known_file":
         raise ValueError("source_prefetch requires known-file controls")
@@ -796,6 +842,9 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
             record.update(known_file_answer_verified=answer_evidence["verified"],
                           answer_evidence_seconds=round(answer_evidence_seconds, 6))
             record["success"] = record["success"] and answer_evidence["verified"]
+        if "source_sha256" in task:
+            record["source_pin_verified"] = answer_evidence.get("sha256") == task["source_sha256"]
+            record["success"] = record["success"] and record["source_pin_verified"]
         if prefetch_enabled:
             record.update(prefetched_source_verified=prefetched_source_verified,
                           prefetch_seconds=round(prefetch_seconds, 6),
@@ -1004,6 +1053,14 @@ def main() -> None:
                 p.error("answer evidence supports positive known-file controls only")
             if (args.recover_known_file or args.verify_known_file_answer) and not source.is_file():
                 p.error(f"known-file recovery requires an existing in-repository source_path: {task['id']}")
+    if any("source_sha256" in task or "expected_citation" in task for task in tasks) and not args.verify_known_file_answer:
+        p.error("pinned sources and exact citations require --verify-known-file-answer")
+    start = time.monotonic()
+    try:
+        source_pins = validate_source_pins(tasks, repo)
+    except ValueError as error:
+        p.error(str(error))
+    source_pin_seconds = time.monotonic() - start
     args.output.mkdir(parents=True, exist_ok=True)
     records_path = args.output / "records.jsonl"
     if records_path.exists():
@@ -1013,6 +1070,10 @@ def main() -> None:
         "repo_status": subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip(),
         "tasks_sha256": hashlib.sha256(args.tasks.read_bytes()).hexdigest(),
         "selected_task_ids": [task["id"] for task in tasks],
+        "answer_grading_policies": {task["id"]: "exact-citation-v1" if "expected_citation" in task
+                                    else "answer-rubric-v1" for task in tasks},
+        "source_pins": source_pins,
+        "source_pin_check_seconds": round(source_pin_seconds, 6),
         "model": args.model, "seed": args.seed, "repeats": args.repeats,
         "ignore_user_config": args.ignore_user_config, "approval_mode": "approve-for-me",
         "conditions": conditions,

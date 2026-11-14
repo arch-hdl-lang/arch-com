@@ -372,3 +372,91 @@ directory. The six-task, one-repeat schedule remains 12 trials, at most 24
 model invocations. Payload size reductions are not measured model-token
 savings; quality parity and provider-reported total/uncached usage remain
 necessary. Extra trials or a new live run require fresh approval.
+
+### Frozen held out confirmation
+
+`doc/codegraph_eval_held_out_source_tasks.json` defines six new controls, three
+ARCH and three compiler tasks. Two files fit whole-source prefetch; four need
+excerpts. Their prompts and targets were selected before running the selector
+on them. The retrieval policy remains the implementation at `607c17e7`.
+Do not change its ranking or replace a missed task after seeing coverage.
+"Held out" here means different questions/files from the prior tracked
+known-file manifests and recorded known-file answers, not unseen model
+training data or a representative random sample of repositories.
+
+| Task | Frozen declaration | Source bytes | Payload bytes | Declaration supplied |
+| --- | --- | ---: | ---: | --- |
+| ROM | `examples/rom_lut.arch:2` (`RomLut`) | 358 | 630 | Yes, whole file |
+| Block decoder | `examples/lz4_block_decoder.arch:44` (`Lz4BlockDecoder`) | 10,087 | 1,433 | Yes, excerpt |
+| Mesh | `examples/mesh_noc_4x4/mesh4x4.arch:275` (`Mesh4x4`) | 16,659 | 764 | Yes, excerpt |
+| Clock-gate emitter | `src/codegen/clkgate.rs:7` (`emit_clkgate`) | 2,670 | 3,449 | Yes, whole file |
+| Format-tag lookup | `src/fp_format.rs:248` (`by_tag`) | 22,339 | 1,090 | No, excerpt misses it |
+| Async FIFO detection | `src/resolve.rs:1258` (`detect_async_fifo`) | 51,826 | 1,066 | Yes, excerpt |
+
+These are local payload measurements, not model results. The lookup miss is
+retained to exercise explicit fallback. Small-file payloads retain the existing
+complete-file encoding. The final manifest SHA-256 is
+`55d46fc805d51e48e24ff927da84ffc9caf29c6537d4a8b47e7994f8f11e3859`.
+
+Every task has an `expected_citation` with an exact case-sensitive symbol,
+path, and positive line number. The source-bound verifier's normalized citation
+must equal those fields, not merely contain matching words. This prevents a
+filename from accidentally satisfying the symbol rubric (for example,
+`Mesh4x4` in `mesh4x4.arch`) and rejects comments, references, and end markers
+at other lines. Expected citations are independently specified and not passed
+to the prompt, selector, or retry decision. The ordinary `answer_any` rubric
+is unchanged for historical manifests; mixing the two rubric forms is rejected.
+The grading-format correction was made after a local negative test exposed
+the filename match, without changing any question, target, or selection rule.
+
+Each source has a frozen `source_sha256`. Startup checks bounded file reads
+before indexing or model launch, rejects mismatches and disallowed paths, and
+records the validated pins, bytes, and check time. Pinned/exact-citation tasks
+require `--verify-known-file-answer`. Each trial also compares the final
+evidence-read hash against its pin and records `source_pin_verified`; a mismatch
+fails without an answer-key-guided retry. These checks supplement, not replace,
+the supplied-payload freshness check. Metadata pins `exact-citation-v1` for
+these tasks and `answer-rubric-v1` for legacy tasks. Historical artifacts must
+not be regraded with the new manifest.
+
+The proposed live confirmation is **36 trials, at most 72 model invocations**:
+six tasks, three repeats, two interleaved conditions, seed 83. Both arms use
+`source-line-prefix-v2`, exact citation grading, and at most one recovery per
+trial; only `source_prefetch` enables query windows. The common budget is
+8,192 bytes, timeout 180 seconds, GPT-6 Luna with low reasoning effort, and
+the local ARCH MCP. Approval must explicitly cover repository-derived source
+and context export for this run. No live calls are authorized by local tests.
+
+```sh
+python3 tools/codegraph_eval.py run \
+  --repo . --arch-bin target/debug/arch \
+  --mcp-python /private/tmp/arch-codegraph-known-file-live-venv/bin/python3 \
+  --tasks doc/codegraph_eval_held_out_source_tasks.json \
+  --condition no_graph --condition source_prefetch \
+  --prefetch-excerpts --verify-known-file-answer --recover-known-file \
+  --prefetch-byte-budget 8192 --model gpt-6-luna \
+  --repeats 3 --seed 83 --timeout 180 --ignore-user-config \
+  --output /tmp/arch-held-out-source-live-NEW_RUN_ID
+```
+
+Before launch, rebuild the compiler at the clean benchmark commit and use a
+new output directory. Freeze and record the manifest, source pins, repository,
+binary, CLI, MCP, and instruction versions. Do not tune prompts, thresholds,
+or ranking during the run, replace failed cases, or spend unused call capacity
+on extra trials. Preserve completed artifacts on interruption rather than
+restarting completed trials.
+
+Report all scheduled trials, including failures and all recovery costs.
+A clean savings result requires **18/18 correct in each arm**, valid usage,
+approved methods, and lower full-arm total and uncached tokens. Otherwise
+report the quality or cost tradeoff, not an overall savings win. Audit traces
+for answer-key/benchmark-artifact access as well as prohibited graph use;
+oracle access invalidates the claimed comparison even if the answer is correct.
+Report per-task and per-repeat totals, both whole-file/excerpt strata, model
+tool calls, recoveries, host reads/bytes/time, and shared setup separately.
+The existing paired-success-only summary is secondary, never a replacement
+for full-arm totals. Three repeats of six tasks are not 18 independent task
+samples; describe cache variation and avoid generalizing a single saving rate.
+
+Status: manifest and local tests prepared; live confirmation awaits fresh
+run-specific approval. No live result exists for this held-out manifest.

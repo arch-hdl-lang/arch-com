@@ -8,7 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from codegraph_eval import ANSWER_EVIDENCE_POLICY, answer_passes, graph_command_kind, is_graph_command, known_file_answer_evidence, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, summarize, trace_result, verified_success, workspace_env
+from codegraph_eval import ANSWER_EVIDENCE_POLICY, answer_passes, graph_command_kind, is_graph_command, known_file_answer_evidence, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, summarize, trace_result, validate_source_pins, verified_success, workspace_env
 from codegraph_direct_eval import CROSS_RELATIONS, PIPE_REG_OWNERS, grade_pipe_reg_owners, grade_relations
 
 
@@ -353,13 +353,19 @@ class CodegraphEvalTests(unittest.TestCase):
 
     def run_mock_recovery(self, stages, enabled=True, condition="default", kind="known_file",
                           prefetch=False, byte_budget=8192, verify_answer=False, answer_groups=None,
-                          excerpts=False, source="// Engine\nfn emit_ready_body() {}\n"):
+                          excerpts=False, source="// Engine\nfn emit_ready_body() {}\n", source_pin=None,
+                          expected_citation=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "engine.rs").write_text(source)
             task = {"id": "held_out", "kind": kind, "cohort": "compiler",
                     "prompt": "In engine.rs, identify the function that emits the ready body.",
                     "source_path": "engine.rs", "answer_any": answer_groups or [["emit_ready_body"]]}
+            if source_pin is not None:
+                task["source_sha256"] = source_pin
+            if expected_citation is not None:
+                task["expected_citation"] = expected_citation
+                del task["answer_any"]
             processes = []
             for stage in stages:
                 events = []
@@ -1192,6 +1198,164 @@ class CodegraphEvalTests(unittest.TestCase):
                 self.assertFalse(current["complete"])
                 observed = "\n".join(f"{task['source_path']}:{n} {line}" for n, line in rows)
                 self.assertTrue(answer_passes(task, observed))
+
+    def test_held_out_manifest_pins_exact_declarations_and_disjoint_paths(self):
+        path = ROOT / "doc/codegraph_eval_held_out_source_tasks.json"
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),
+                         "55d46fc805d51e48e24ff927da84ffc9caf29c6537d4a8b47e7994f8f11e3859")
+        tasks = load_tasks(path)
+        self.assertEqual(len(tasks), 6)
+        self.assertEqual(sum(t["cohort"] == "user" for t in tasks), 3)
+        self.assertEqual(len(validate_source_pins(tasks, ROOT)), 6)
+        prior_paths = {t.get("source_path") for manifest in (
+            "codegraph_eval_tasks.json", "codegraph_eval_cross_file_tasks.json", "codegraph_eval_known_file_tasks.json")
+            for t in load_tasks(ROOT / "doc" / manifest)}
+        prefixes = {
+            "held_out_rom_declaration": "ram RomLut",
+            "held_out_block_decoder_declaration": "module Lz4BlockDecoder",
+            "held_out_mesh_declaration": "module Mesh4x4",
+            "held_out_clock_gate_emitter": "pub(crate) fn emit_clkgate(",
+            "held_out_format_tag_lookup": "pub fn by_tag(",
+            "held_out_async_fifo_detection": "pub fn detect_async_fifo(",
+        }
+        for task in tasks:
+            self.assertNotIn(task["source_path"], prior_paths)
+            expected = task["expected_citation"]
+            symbol, line = expected["symbol"], expected["line"]
+            location = f"{expected['path']}:{line}"
+            source_line = (ROOT / task["source_path"]).read_text().split("\n")[line - 1].strip()
+            self.assertTrue(source_line.startswith(prefixes[task["id"]]))
+            witness = json.dumps({"symbol": symbol, "path": task["source_path"], "line": line, "quote": source_line})
+            evidence = known_file_answer_evidence(witness, ROOT, task["source_path"])
+            self.assertTrue(evidence["verified"])
+            self.assertTrue(answer_passes(task, evidence["graded_answer"]))
+            self.assertFalse(answer_passes(task, f"{symbol} {task['source_path']}:{line + 1}"))
+            self.assertFalse(answer_passes(task, f"wrong_symbol {location}"))
+            self.assertFalse(answer_passes(task, f"{symbol.swapcase()} {location}"))
+            self.assertFalse(answer_passes(task, f"{symbol} {location} extra"))
+            original = prompt_for(task, "no_graph", verify_known_file_answer=True)
+            altered = {**task, "expected_citation": {**expected, "symbol": "different_gold"}, "source_sha256": "0" * 64}
+            self.assertEqual(original, prompt_for(altered, "no_graph", verify_known_file_answer=True))
+
+    def test_source_pin_schema_and_preflight_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = b"fn ready() {}\n"
+            (root / "a.rs").write_bytes(raw)
+            task = {"id": "pinned", "kind": "known_file", "cohort": "compiler", "source_path": "a.rs",
+                    "source_sha256": hashlib.sha256(raw).hexdigest(), "prompt": "Find ready"}
+            pins = validate_source_pins([task], root)
+            self.assertEqual(pins["pinned"]["read_bytes"], len(raw))
+            for value in (None, 1, "bad", "A" * 64):
+                manifest = root / "tasks.json"
+                manifest.write_text(json.dumps({"schema_version": 1, "tasks": [{**task, "source_sha256": value}]}))
+                with self.assertRaisesRegex(ValueError, "source_sha256"):
+                    load_tasks(manifest)
+            (root / "a.rs").write_bytes(raw + b"// changed\n")
+            with self.assertRaisesRegex(ValueError, "source pin failed"):
+                validate_source_pins([task], root)
+            (root / "a.rs").unlink()
+            with self.assertRaises(ValueError):
+                validate_source_pins([task], root)
+            (root / "outside.rs").write_bytes(raw)
+            (root / "repo").mkdir()
+            (root / "repo/link.rs").symlink_to(root / "outside.rs")
+            for name in ("link.rs", "../outside.rs", str(root / "outside.rs")):
+                with self.assertRaises(ValueError):
+                    validate_source_pins([{**task, "source_path": name}], root / "repo")
+            (root / ".git").mkdir()
+            (root / ".git/a.rs").write_bytes(raw)
+            with self.assertRaises(ValueError):
+                validate_source_pins([{**task, "source_path": ".git/a.rs"}], root)
+            oversized = b"x" * (1024 * 1024 + 1)
+            (root / "a.rs").write_bytes(oversized)
+            with self.assertRaises(ValueError):
+                validate_source_pins([{**task, "source_sha256": hashlib.sha256(oversized).hexdigest()}], root)
+
+    def test_source_pin_is_checked_again_at_answer_without_oracle_retry(self):
+        source = "// Engine\nfn emit_ready_body() {}\n"
+        digest = hashlib.sha256(source.encode()).hexdigest()
+        for pin, success in ((digest, True), ("0" * 64, False)):
+            result, commands, _ = self.run_mock_recovery([
+                {"command": "cat engine.rs", "answer": self.ready_citation()}], condition="no_graph",
+                verify_answer=True, source=source, source_pin=pin)
+            self.assertEqual(result["source_pin_verified"], success)
+            self.assertEqual(result["success"], success)
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(verified_success({**result, "success": True}), success)
+        with self.assertRaisesRegex(ValueError, "pinned sources"):
+            self.run_mock_recovery([], source_pin=digest)
+
+    def test_pin_failure_precedes_output_indexing_and_model_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe = root / "bin"
+            exe.touch()
+            argv = ["codegraph_eval.py", "run", "--repo", str(ROOT),
+                    "--tasks", str(ROOT / "doc/codegraph_eval_held_out_source_tasks.json"),
+                    "--output", str(root / "out"), "--arch-bin", str(exe), "--mcp-python", str(exe)]
+            for flags in ([], ["--verify-known-file-answer"]):
+                with patch("sys.argv", argv + flags), redirect_stderr(io.StringIO()), \
+                        patch("codegraph_eval.validate_source_pins", side_effect=ValueError("source pin failed")), \
+                        patch("codegraph_eval.prepare_indexes") as setup, \
+                        patch("codegraph_eval.run_attempt") as run, self.assertRaises(SystemExit):
+                    main()
+                setup.assert_not_called()
+                run.assert_not_called()
+                self.assertFalse((root / "out").exists())
+
+    def test_held_out_schedule_has_36_trials_and_72_call_ceiling(self):
+        template, _, _ = self.run_mock_recovery([
+            {"command": "cat engine.rs", "answer": self.ready_citation()}], verify_answer=True)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe = root / "bin"
+            exe.touch()
+            argv = ["codegraph_eval.py", "run", "--repo", str(ROOT),
+                    "--tasks", str(ROOT / "doc/codegraph_eval_held_out_source_tasks.json"),
+                    "--output", str(root / "out"), "--arch-bin", str(exe), "--mcp-python", str(exe),
+                    "--condition", "no_graph", "--condition", "source_prefetch", "--prefetch-excerpts",
+                    "--verify-known-file-answer", "--repeats", "3", "--seed", "83"]
+            with patch("sys.argv", argv), redirect_stdout(io.StringIO()), \
+                    patch("codegraph_eval.subprocess.check_output", side_effect=["abc", "", "codex test", "arch test"]), \
+                    patch("codegraph_eval.prepare_indexes", return_value=0), \
+                    patch("codegraph_eval.run_attempt", return_value=template) as run:
+                main()
+            meta = json.loads((root / "out/metadata.json").read_text())
+            self.assertEqual(meta["max_model_attempts"], 72)
+            self.assertEqual(meta["seed"], 83)
+            self.assertEqual(len(meta["source_pins"]), 6)
+            self.assertEqual(set(meta["answer_grading_policies"].values()), {"exact-citation-v1"})
+            self.assertEqual(run.call_count, 36)
+            self.assertEqual(len({tuple(call.args[:3][1:]) + (call.args[0]["id"],) for call in run.call_args_list}), 36)
+
+    def test_exact_citation_schema_rejects_ambiguous_or_invalid_gold(self):
+        task = {"id": "pinned", "kind": "known_file", "cohort": "compiler", "source_path": "engine.rs"}
+        valid = {"symbol": "emit_ready_body", "path": "engine.rs", "line": 2}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tasks.json"
+            for citation in (None, {}, {**valid, "line": True}, {**valid, "line": 0},
+                             {**valid, "path": "different.rs"}, {**valid, "symbol": "bad-name"},
+                             {**valid, "quote": "extra"}):
+                path.write_text(json.dumps({"schema_version": 1, "tasks": [{**task, "expected_citation": citation}]}))
+                with self.assertRaisesRegex(ValueError, "expected_citation"):
+                    load_tasks(path)
+            path.write_text(json.dumps({"schema_version": 1, "tasks": [
+                {**task, "expected_citation": valid, "answer_any": [["ambiguous second rubric"]]}]}))
+            with self.assertRaises(ValueError):
+                load_tasks(path)
+
+    def test_exact_citation_rejects_comment_without_answer_key_retry(self):
+        source = "// emit_ready_body emits ready body\nfn emit_ready_body() {}\n"
+        expected = {"symbol": "emit_ready_body", "path": "engine.rs", "line": 2}
+        for line, quote, success in ((1, "// emit_ready_body emits ready body", False),
+                                     (2, "fn emit_ready_body() {}", True)):
+            result, commands, _ = self.run_mock_recovery([
+                {"answer": self.ready_citation(line=line, quote=quote)}], condition="source_prefetch",
+                verify_answer=True, source=source, expected_citation=expected)
+            self.assertTrue(result["known_file_answer_verified"])
+            self.assertEqual(result["success"], success)
+            self.assertEqual(len(commands), 1)
 
 
 if __name__ == "__main__":
