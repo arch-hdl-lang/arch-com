@@ -34,9 +34,10 @@ quality, not agent tool selection or provider tokens. Only a separately
 approved paired live run can establish whether this policy reduces tokens
 without lowering correctness.
 Before that run, record the installed ARCH skill digest and align its routing
-text with the reviewed repository skill, or explicitly isolate repository
-instructions with `--ignore-user-config` in both arms. An older installed skill
-can contradict the new routing rule and confound the comparison.
+text with the reviewed repository skill. `--ignore-user-config` disables
+config.toml; it does not establish isolation from installed skills or plugins.
+An older installed skill can contradict the new routing rule and confound the
+comparison.
 
 ## Agent selection and tokens
 
@@ -45,10 +46,10 @@ current default ARCH workflow. Neither arm receives a graph command or index
 path in the task prompt. The default arm may choose graph retrieval, direct
 file reads, or search. The search-only arm receives a graph prohibition and
 an instruction to use ordinary repository search. Both arms see the same
-repository and session-local ARCH MCP server; the installed Codex skill is
-available unless `--ignore-user-config`
-is selected. Both arms are equally told to make bounded retrieval calls and
-finish the task, so a planning message alone cannot masquerade as an answer.
+repository and session-local ARCH MCP server; record the installed skill state
+separately from the `--ignore-user-config` setting. Both arms are equally told
+to make bounded retrieval calls and finish the task, so a planning message
+alone cannot masquerade as an answer.
 This measures actual graph selection as well as token use.
 
 The runner uses `--approve-for-me` with a session-local read-only sandbox for
@@ -113,3 +114,52 @@ memory, graph, search, source-read, and other tool call counts and output
 characters, plus non-graph calls after the first graph call. These are
 retrieval-work proxies, not provider-token attribution per tool; provider
 usage remains available only for the whole agent attempt.
+
+## Opt-in known-file recovery
+
+The 2026-11-13 live check still produced two incorrect default known-file
+answers without a source read, despite explicit prompting. To test an
+orchestration remedy, add `--recover-known-file` to a separately approved run.
+This is a new workflow policy, not a graph retrieval improvement or a change to
+the frozen scoring rubric. It applies identically to `no_graph` and `default`;
+guided graph conditions are rejected when this flag is enabled.
+
+Known-file tasks provide a `source_path` field naming the already-known file,
+not a gold symbol or line number. Both checked-in manifests add only this
+metadata to their existing controls; their digests therefore change, while
+task prompts and answer keys stay unchanged. The runner rejects missing files
+and paths outside the checkout before launching a model.
+
+The policy checks the completed trace for a successful, nonempty direct read
+of that exact file. It recognizes simple `rg` searches, numeric `sed -n`
+line ranges, and `cat`, including single shell wrappers. Failed commands,
+filename/count-only searches, unrelated paths, graph calls, command chains,
+redirections, and unrecognized shell forms do not satisfy the gate. This
+conservative trace classifier is not an adversarial security boundary and
+does not prove that the read excerpt supports the answer. The answer rubric
+remains independently required.
+
+If the model exits normally with usage but lacks that read, the runner permits
+one fresh ephemeral recovery invocation with the original task and a reminder
+to perform a simple bounded read. It supplies neither the previous answer nor
+the answer key. It does not retry infrastructure failures, missing usage, or
+incorrect answers that already have recognized source evidence. A second
+unverified response fails closed; there is no retry loop. Discovery/edit tasks
+are unchanged. This policy has deterministic/mock coverage only until a new
+live test is approved; it does not guarantee recovery or token savings.
+
+The original trace retains its filename; the recovery gets a
+`-recovery1.jsonl` trace and matching stderr file. `records.jsonl` retains one
+row per scheduled task/repeat/condition, with `stages`, `model_attempts`,
+`recovery_attempts`, and `known_file_source_verified` on controlled rows.
+Tokens, cached tokens, tool calls, and latency include both stages, including
+the rejected first response. Only the final response is graded; a forbidden
+graph call in either stage still invalidates the search-only arm. Summary arms
+report recovery counts when present. Legacy records and summary output are
+unchanged when recovery metadata is absent.
+
+`metadata.json` records the policy and maximum model invocations. The seven-task,
+two-repeat paired suite has 28 scheduled rows and **up to 36 model invocations**
+with recovery (eight known-file rows may each retry once). Obtain approval for
+that maximum, not merely 28 calls. Never present recovered successes without
+their initial token cost, or silently rescore earlier evidence under this policy.

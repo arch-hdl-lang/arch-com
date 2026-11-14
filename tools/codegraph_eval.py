@@ -43,6 +43,11 @@ def load_tasks(path: Path) -> list[dict]:
             raise ValueError(f"invalid verdict: {task['id']}")
         if task.get("verdict") == "no" and not task.get("symbol"):
             raise ValueError(f"missing absence symbol: {task['id']}")
+        if "source_path" in task:
+            path = task["source_path"]
+            if (task["kind"] != "known_file" or not isinstance(path, str) or not path
+                    or Path(path).is_absolute() or ".." in Path(path).parts):
+                raise ValueError(f"invalid known-file source_path: {task['id']}")
     return data["tasks"]
 
 
@@ -242,7 +247,71 @@ def answer_passes(task: dict, answer: str) -> bool:
 
 
 def verified_success(record: dict) -> bool:
-    return bool(record["success"] and (record["kind"] == "edit" or record.get("tool_calls", 0) > 0))
+    return bool(record["success"] and record.get("known_file_source_verified", True)
+                and (record["kind"] == "edit" or record.get("tool_calls", 0) > 0))
+
+
+def known_file_source_read(events: list[dict], workspace: Path, source_path: str) -> bool:
+    """Recognize a conservative subset of direct reads, not arbitrary shell programs."""
+    target = (workspace / source_path).resolve()
+    if not target.is_relative_to(workspace.resolve()) or not target.is_file():
+        return False
+    for event in events:
+        item = event.get("item", {})
+        if (event.get("type") != "item.completed" or item.get("type") != "command_execution"
+                or item.get("exit_code") != 0 or not item.get("aggregated_output", "").strip()):
+            continue
+        try:
+            command = item.get("command", "")
+            words = shlex.split(command)
+            if len(words) == 3 and Path(words[0]).name in ("sh", "bash", "zsh") and words[1] in ("-c", "-lc"):
+                command = words[2]
+            # Do not infer evidence from chains, redirections, or command substitution.
+            if any(c in command for c in ("$(", "`", "\n")):
+                continue
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
+            lexer.whitespace_split = True
+            words = list(lexer)
+            if not words or any(re.fullmatch(r"[;&|<>()]+", word) for word in words):
+                continue
+            tool, args = Path(words[0]).name, words[1:]
+            if tool == "rg":
+                while args and args[0].startswith("-") and args[0] != "--":
+                    flag = args.pop(0)
+                    if flag in ("-n", "--line-number", "-i", "--ignore-case", "-F",
+                                "--fixed-strings", "--no-heading", "--with-filename", "--no-filename"):
+                        continue
+                    if re.fullmatch(r"-[ABCm]\d+", flag):
+                        continue
+                    if (flag in ("-A", "-B", "-C", "-m", "--after-context", "--before-context",
+                                 "--context", "--max-count") and args and args[0].isdigit()):
+                        args.pop(0)
+                        continue
+                    break
+                else:
+                    if args[:1] == ["--"]:
+                        args.pop(0)
+                    if len(args) == 2:
+                        args = args[1:]  # pattern, then one explicit source file
+                    else:
+                        continue
+                    if (workspace / args[0]).resolve() == target:
+                        return True
+                continue
+            if tool == "sed" and len(args) == 3 and args[0] == "-n" and re.fullmatch(r"\d+(?:,\d+)?p", args[1]):
+                args = args[2:]
+            elif tool == "cat":
+                if args[:1] == ["-n"]:
+                    args.pop(0)
+                if args[:1] == ["--"]:
+                    args.pop(0)
+            else:
+                continue
+            if len(args) == 1 and (workspace / args[0]).resolve() == target:
+                return True
+        except (ValueError, OSError):
+            continue
+    return False
 
 
 def edit_passes(task: dict, workspace: Path, env: dict[str, str]) -> tuple[bool, str]:
@@ -340,7 +409,10 @@ def prompt_for(task: dict, condition: str, arch_command: str = "arch",
 def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Path,
                 arch_bin: Path, mcp_python: Path, model: str, timeout: int,
                 ignore_user_config: bool, graph_token_budget: int = 100,
-                include_source: bool = False) -> dict:
+                include_source: bool = False, recover_known_file: bool = False) -> dict:
+    recovery_enabled = recover_known_file and task["kind"] == "known_file"
+    if recovery_enabled and (condition not in ("no_graph", "default") or not task.get("source_path")):
+        raise ValueError("known-file recovery requires source_path and no_graph/default conditions")
     label = f"{task['id']}-r{repeat}-{condition}"
     if task["kind"] == "edit":
         temp = tempfile.TemporaryDirectory(prefix="arch-graph-eval-", dir=output)
@@ -369,31 +441,58 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         env = workspace_env(workspace)
         env["PATH"] = str(arch_bin.parent) + os.pathsep + env.get("PATH", "")
         env["CARGO_TARGET_DIR"] = str(repo / "target")
-        start = time.monotonic()
-        process = subprocess.Popen(command, cwd=workspace, env=env, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
-        try:
-            raw, stderr = process.communicate(timeout=max(timeout, 180) if task["kind"] == "edit" else timeout)
-            exit_code = process.returncode
-        except subprocess.TimeoutExpired:
+        all_events, stages = [], []
+        elapsed = 0.0
+        source_verified = False
+        for stage in range(2 if recovery_enabled else 1):
+            start = time.monotonic()
+            process = subprocess.Popen(command, cwd=workspace, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, start_new_session=True)
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                raw, stderr = process.communicate(timeout=5)
+                raw, stderr = process.communicate(timeout=max(timeout, 180) if task["kind"] == "edit" else timeout)
+                exit_code = process.returncode
             except subprocess.TimeoutExpired:
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    os.killpg(process.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
-                raw, stderr = process.communicate()
-            exit_code = 124
-            stderr += "\nattempt timed out"
-        elapsed = round(time.monotonic() - start, 3)
-        (output / f"{label}.jsonl").write_text(raw)
-        (output / f"{label}.stderr.txt").write_text(stderr)
-        trace = trace_result(parse_events(raw))
+                try:
+                    raw, stderr = process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    raw, stderr = process.communicate()
+                exit_code = 124
+                stderr += "\nattempt timed out"
+            stage_seconds = round(time.monotonic() - start, 3)
+            elapsed += stage_seconds
+            stage_label = label if stage == 0 else f"{label}-recovery{stage}"
+            (output / f"{stage_label}.jsonl").write_text(raw)
+            (output / f"{stage_label}.stderr.txt").write_text(stderr)
+            events = parse_events(raw)
+            stage_trace = trace_result(events)
+            all_events.extend(events)
+            if recovery_enabled:
+                source_verified = known_file_source_read(events, workspace, task["source_path"])
+                stages.append({"trace": f"{stage_label}.jsonl", "exit_code": exit_code,
+                               "source_verified": source_verified, "agent_seconds": stage_seconds,
+                               **{k: stage_trace[k] for k in ("usage_present", "input_tokens", "cached_input_tokens", "output_tokens")}})
+            if (not recovery_enabled or source_verified or exit_code != 0
+                    or not stage_trace["usage_present"]):
+                break
+            command[-1] = prompt + (
+                f" Your previous attempt did not provide a recognized successful direct read of {task['source_path']}. "
+                "Before answering, run a simple `rg -n PATTERN FILE` or `sed -n 'START,ENDp' FILE` "
+                "against that exact file, with bounded output. Do not chain commands. "
+                "Use the observed declaration spelling and line number, not memory. "
+                "Do not use graph tools. If source cannot be read, state that verification failed."
+            )
+        trace = trace_result(all_events)
+        # Usage and calls include rejected stages; only the final response is graded.
+        trace["answer"] = stage_trace["answer"]
+        elapsed = round(elapsed, 3)
         if task["kind"] == "edit":
             outcome, note = edit_passes(task, workspace, env)
             (output / f"{label}.diff").write_text(
@@ -410,11 +509,12 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
                  (trace["successful_graph_mcp_calls"] > 0 and
                   trace["successful_graph_commands"] == 0))
         )
-        return {
+        record = {
             "task_id": task["id"], "cohort": task["cohort"], "kind": task["kind"],
             "condition": condition, "repeat": repeat, "exit_code": exit_code,
             "success": exit_code == 0 and trace["usage_present"] and valid_method and outcome
-            and (task["kind"] == "edit" or trace["tool_calls"] > 0),
+            and (task["kind"] == "edit" or trace["tool_calls"] > 0)
+            and (not recovery_enabled or (source_verified and stage_trace["usage_present"])),
             "valid_method": valid_method, "grader_note": note,
             "input_tokens": trace["input_tokens"], "cached_input_tokens": trace["cached_input_tokens"],
             "output_tokens": trace["output_tokens"], "tool_calls": trace["tool_calls"],
@@ -428,6 +528,10 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
             "after_graph_calls": trace["after_graph_calls"],
             "index_seconds": index_seconds, "answer": trace["answer"],
         }
+        if recovery_enabled:
+            record.update(known_file_source_verified=source_verified, recovery_attempts=len(stages) - 1,
+                          model_attempts=len(stages), stages=stages)
+        return record
     finally:
         if temp is not None:
             temp.cleanup()
@@ -450,6 +554,12 @@ def summarize(records: list[dict]) -> dict:
                 "agent_seconds": round(sum(r["agent_seconds"] for r in arm), 3),
                 "index_seconds": round(sum(r["index_seconds"] for r in arm), 3),
             }
+            if any("recovery_attempts" in r for r in records):
+                arms[condition].update(
+                    model_attempts=sum(r.get("model_attempts", 1) for r in arm),
+                    recovery_attempts=sum(r.get("recovery_attempts", 0) for r in arm),
+                    source_verified_controls=sum(r.get("known_file_source_verified", False) for r in arm),
+                )
         paired = {(r["task_id"], r["repeat"]): r for r in subset if r["condition"] == "no_graph"}
         pairs = [(base, r) for r in subset if r["condition"] == "default"
                  if (base := paired.get((r["task_id"], r["repeat"]))) is not None
@@ -538,6 +648,8 @@ def main() -> None:
     run.add_argument("--graph-token-budget", type=int, default=100)
     run.add_argument("--include-source", action="store_true")
     run.add_argument("--ignore-user-config", action="store_true")
+    run.add_argument("--recover-known-file", action="store_true",
+                     help="require direct source evidence for known-file controls; retry once if absent, counting both attempts")
     analyze = sub.add_parser("analyze")
     analyze.add_argument("records", type=Path)
     args = p.parse_args()
@@ -557,6 +669,16 @@ def main() -> None:
         p.error("at least one task and repeat are required")
     if args.graph_token_budget < 1:
         p.error("--graph-token-budget must be positive")
+    conditions = args.condition or ["no_graph", "default"]
+    if args.recover_known_file:
+        if any(condition not in ("no_graph", "default") for condition in conditions):
+            p.error("--recover-known-file supports only no_graph/default conditions")
+        for task in tasks:
+            if task["kind"] != "known_file":
+                continue
+            source = (repo / task.get("source_path", "")).resolve()
+            if not source.is_relative_to(repo) or not source.is_file():
+                p.error(f"known-file recovery requires an existing in-repository source_path: {task['id']}")
     args.output.mkdir(parents=True, exist_ok=True)
     records_path = args.output / "records.jsonl"
     if records_path.exists():
@@ -568,7 +690,10 @@ def main() -> None:
         "selected_task_ids": [task["id"] for task in tasks],
         "model": args.model, "seed": args.seed, "repeats": args.repeats,
         "ignore_user_config": args.ignore_user_config, "approval_mode": "approve-for-me",
-        "conditions": args.condition or ["no_graph", "default"],
+        "conditions": conditions,
+        "recover_known_file": args.recover_known_file,
+        "max_model_attempts": args.repeats * len(conditions) * (
+            len(tasks) + sum(args.recover_known_file and task["kind"] == "known_file" for task in tasks)),
         "graph_token_budget": args.graph_token_budget,
         "include_source": args.include_source,
         "codex_version": subprocess.check_output(["codex", "--version"], text=True).strip(),
@@ -584,13 +709,13 @@ def main() -> None:
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     schedule = [(task, repeat, condition) for task in tasks
                 for repeat in range(1, args.repeats + 1)
-                for condition in (args.condition or ["no_graph", "default"])]
+                for condition in conditions]
     random.Random(args.seed).shuffle(schedule)
     with records_path.open("w") as records:
         for task, repeat, condition in schedule:
             record = run_attempt(task, condition, repeat, repo, args.output, arch_bin, mcp_python,
                                  args.model, args.timeout, args.ignore_user_config,
-                                 args.graph_token_budget, args.include_source)
+                                 args.graph_token_budget, args.include_source, args.recover_known_file)
             records.write(json.dumps(record) + "\n")
             records.flush()
             print(f"{task['id']} r{repeat} {condition}: correct={record['success']} "
