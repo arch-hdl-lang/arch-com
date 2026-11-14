@@ -8,7 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from codegraph_eval import ANSWER_EVIDENCE_POLICY, answer_passes, graph_command_kind, is_graph_command, known_file_answer_evidence, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, summarize, trace_result, validate_source_pins, verified_success, workspace_env
+from codegraph_eval import ANSWER_EVIDENCE_POLICY, PREFETCH_POLICY, SOURCE_READ_POLICY, answer_passes, graph_command_kind, is_graph_command, known_file_answer_evidence, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, source_windows, summarize, trace_result, validate_source_pins, verified_success, workspace_env
 from codegraph_direct_eval import CROSS_RELATIONS, PIPE_REG_OWNERS, grade_pipe_reg_owners, grade_relations
 
 
@@ -983,7 +983,7 @@ class CodegraphEvalTests(unittest.TestCase):
             self.assertEqual(payload["sha256"], hashlib.sha256(raw).hexdigest())
             self.assertEqual(dict(payload["lines"])[51], lines[50])
             self.assertTrue(all(lines[n - 1] == text for n, text in payload["lines"]))
-            self.assertLessEqual(len(payload["lines"]), 20)
+            self.assertLessEqual(len(payload["lines"]), 52)
             self.assertLessEqual(result["payload_bytes"], 2048)
             self.assertEqual(result["read_bytes"], len(raw))
             self.assertEqual(result, prefetch_source(root, "sample.rs", 2048, query))
@@ -1138,7 +1138,8 @@ class CodegraphEvalTests(unittest.TestCase):
                     patch("codegraph_eval.run_attempt", return_value=template) as run:
                 main()
             meta = json.loads((root / "out/metadata.json").read_text())
-            self.assertEqual(meta["prefetch_policy"], "query-windows-v1")
+            self.assertEqual(meta["prefetch_policy"], PREFETCH_POLICY)
+            self.assertEqual(meta["source_read_policy"], SOURCE_READ_POLICY)
             self.assertEqual(meta["prefetch_excerpt_condition"], "source_prefetch")
             self.assertEqual(meta["answer_evidence_policy"], ANSWER_EVIDENCE_POLICY)
             self.assertEqual(meta["max_model_attempts"], 24)
@@ -1356,6 +1357,115 @@ class CodegraphEvalTests(unittest.TestCase):
             self.assertTrue(result["known_file_answer_verified"])
             self.assertEqual(result["success"], success)
             self.assertEqual(len(commands), 1)
+
+    def test_literal_glob_read_requires_exact_numbered_target_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "src/design.arch").write_text("module Design\n")
+            (root / "other").mkdir()
+            (root / "other/design.arch").write_text("module Other\n")
+            def events(command, output="src/design.arch:1:module Design", code=0):
+                return [{"type": "item.completed", "item": {"type": "command_execution", "command": command,
+                         "aggregated_output": output, "exit_code": code}}]
+            for command in ("rg -n --glob design.arch module src", "rg --line-number -g design.arch module .",
+                            "rg -n --glob=design.arch -C 2 -- module ./src",
+                            "zsh -lc \"rg -n --glob 'design.arch' module src\""):
+                with self.subTest(command=command):
+                    self.assertTrue(known_file_source_read(events(command), root, "src/design.arch"))
+            for output in ("other/design.arch:1:module Other", "design.arch:1:module Design",
+                           "src/design.arch", "src/design.arch:module Design", "src/design.arch:0:module Design",
+                           "src/design.arch-1-module Design", "src/design.arch:1", "",
+                           "other/design.arch:1:src/design.arch:1:module Design"):
+                self.assertFalse(known_file_source_read(events("rg -n -g design.arch module src", output), root, "src/design.arch"))
+            for command in ("rg -n -g '*.arch' module src", "rg -n -g '!other.arch' module src",
+                            "rg -n -g other.arch module src", "rg -n -g src/design.arch module src",
+                            "rg -n -g design.arch -g design.arch module src",
+                            "rg -n -g design.arch module other", "rg -n -g design.arch module ..",
+                            "rg -n -g design.arch module src other", "rg -n module src",
+                            "rg -g design.arch module src", "rg -n --no-filename -g design.arch module src",
+                            "rg -n --count -g design.arch module src", "rg -n --files -g design.arch src",
+                            "rg -n --pre echo -g design.arch module src", "rg -n --replace fake -g design.arch module src",
+                            "rg -n -g design.arch module src; echo fake", "rg -n -g design.arch module src | head",
+                            "rg -n -g design.arch module $(echo src)"):
+                with self.subTest(command=command):
+                    self.assertFalse(known_file_source_read(events(command), root, "src/design.arch"))
+            self.assertFalse(known_file_source_read(events("rg -n -g design.arch module src", code=1), root, "src/design.arch"))
+
+    def test_literal_glob_read_avoids_recovery_without_relaxing_answer_grading(self):
+        stage = {"command": "rg -n --glob 'engine.rs' emit .", "tool_output": "./engine.rs:2:fn emit_ready_body() {}",
+                 "answer": self.ready_citation()}
+        for expected, success in (("emit_ready_body", True), ("wrong_gold", False)):
+            result, commands, _ = self.run_mock_recovery([stage], condition="no_graph", verify_answer=True,
+                                                        answer_groups=[[expected]])
+            self.assertTrue(result["known_file_source_verified"])
+            self.assertTrue(result["known_file_answer_verified"])
+            self.assertEqual(result["success"], success)
+            self.assertEqual(result["model_attempts"], 1)
+            self.assertEqual(result["recovery_attempts"], 0)
+            self.assertEqual(len(commands), 1)
+
+    def test_comment_tail_windows_include_following_source_without_gold(self):
+        lines = ["noise"] * 40
+        lines[10:16] = ["/// Needle description", "/// More description", "/// Final description",
+                        "fn unrelated_name() {", "    body();", "}"]
+        receipt = source_windows(lines, "Needle", "sample.rs", "0" * 64, 8192)
+        payload = json.loads(receipt["payload"])
+        self.assertEqual(payload["selection"], "query-windows-v2")
+        self.assertEqual(receipt["selected_lines"], list(range(9, 17)))
+        self.assertEqual(dict(payload["lines"])[14], "fn unrelated_name() {")
+        self.assertTrue(all(text == lines[n - 1] for n, text in payload["lines"]))
+        self.assertFalse(payload["complete"])
+        self.assertEqual(receipt, source_windows(lines, "Needle", "sample.rs", "0" * 64, 8192))
+
+    def test_comment_tail_stays_bounded_and_handles_eof(self):
+        for newline in ("", "\r"):
+            lines = ["/// Needle" + newline] + ["/// filler" + newline] * 100 + ["fn beyond_limit() {}"]
+            receipt = source_windows(lines, "Needle", "a.rs", "0" * 64, 8192)
+            self.assertEqual(max(receipt["selected_lines"]), 11)
+            self.assertNotIn(102, receipt["selected_lines"])
+            self.assertLessEqual(len(receipt["selected_lines"]), 13)
+        for lines in (["/// Needle"], ["/// Needle", "/// filler", "/// tail"]):
+            receipt = source_windows(lines, "Needle", "a.rs", "0" * 64, 8192)
+            self.assertEqual(receipt["selected_lines"], list(range(1, len(lines) + 1)))
+
+    def test_comment_extension_never_crosses_intervening_code_or_blank_line(self):
+        for middle in ("fn already_in_view() {}", "", "let text = \"// not a comment\";", "/* block comment */"):
+            lines = ["// Needle", middle] + ["// filler"] * 30
+            receipt = source_windows(lines, "Needle", "a.rs", "0" * 64, 8192)
+            self.assertEqual(receipt["selected_lines"], [1, 2, 3])
+
+    def test_comment_tail_budget_falls_back_to_original_window(self):
+        lines = ["/// Needle", "/// filler", "/// tail", "fn target() {" + "x" * 2000]
+        receipt = source_windows(lines, "Needle", "a.rs", "0" * 64, 400)
+        self.assertEqual(receipt["status"], "ready")
+        self.assertEqual(receipt["selected_lines"], [1, 2, 3])
+        self.assertLessEqual(receipt["payload_bytes"], 400)
+        self.assertEqual(source_windows(lines, "Needle", "a.rs", "0" * 64, 1)["status"], "no_excerpt")
+
+    def test_comment_tail_regression_covers_formerly_held_out_lookup(self):
+        task = next(t for t in load_tasks(ROOT / "doc/codegraph_eval_held_out_source_tasks.json")
+                    if t["id"] == "held_out_format_tag_lookup")
+        receipt = prefetch_source(ROOT, task["source_path"], 8192, task["prompt"])
+        self.assertEqual(receipt["policy"], PREFETCH_POLICY)
+        self.assertIn(task["expected_citation"]["line"], receipt["selected_lines"])
+        self.assertLessEqual(receipt["payload_bytes"], 8192)
+        self.assertLessEqual(len(receipt["selected_lines"]), 52)
+
+    def test_comment_tail_selection_does_not_depend_on_expected_citation(self):
+        source = "// Needle ready body\n// description\n// tail\nfn emit_ready_body() {}\n" + "// filler\n" * 100
+        expected = {"symbol": "emit_ready_body", "path": "engine.rs", "line": 4}
+        stage = {"answer": self.ready_citation(line=4)}
+        good, commands, _ = self.run_mock_recovery([stage], condition="source_prefetch", verify_answer=True,
+                                                   excerpts=True, source=source, byte_budget=512, expected_citation=expected)
+        bad, other_commands, _ = self.run_mock_recovery([stage], condition="source_prefetch", verify_answer=True,
+            excerpts=True, source=source, byte_budget=512, expected_citation={**expected, "symbol": "wrong_gold"})
+        self.assertTrue(good["success"])
+        self.assertEqual(good["tool_calls"], 0)
+        self.assertFalse(bad["success"])
+        self.assertEqual(good["prefetch"], bad["prefetch"])
+        self.assertEqual([c[-1] for c in commands], [c[-1] for c in other_commands])
+        self.assertEqual(len(other_commands), 1)
 
 
 if __name__ == "__main__":

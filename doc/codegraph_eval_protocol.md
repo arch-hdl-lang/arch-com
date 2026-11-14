@@ -140,6 +140,18 @@ conservative trace classifier is not an adversarial security boundary and
 does not prove that the read excerpt supports the answer. The answer rubric
 remains independently required.
 
+The current `source_read_policy=exact-file-or-literal-glob-v2` also recognizes
+a limited directory-search form: `rg -n --glob filename PATTERN DIR` (or `-g`
+or `--glob=filename`). There must be exactly one literal basename glob equal
+to the target file's basename, one in-workspace directory containing that
+target, and a numbered match row explicitly resolving to the exact target.
+Wildcard/negative/path globs, multiple globs or roots, hidden filenames,
+context-only rows, replacement/preprocessor/count modes, and unrelated output
+do not qualify. Existing direct-file reads retain their prior behavior.
+This uses the trusted command trace, not arbitrary shell-output claims, and
+adds no extra source-content reads. Answer/source-pin verification still runs
+separately; recognizing a read never proves the answer is correct.
+
 If the model exits normally with usage but lacks that read, the runner permits
 one fresh ephemeral recovery invocation with the original task and a reminder
 to perform a simple bounded read. It supplies neither the previous answer nor
@@ -147,8 +159,8 @@ the answer key. It does not retry infrastructure failures, missing usage,
 forbidden graph use in search-only attempts, or incorrect answers that already
 have recognized source evidence. A second
 unverified response fails closed; there is no retry loop. Discovery/edit tasks
-are unchanged. This policy has deterministic/mock coverage only until a new
-live test is approved; it does not guarantee recovery or token savings.
+are unchanged. The original policy has live results below; subsequent
+trace-recognition changes need fresh confirmation and do not guarantee savings.
 
 The original trace retains its filename; the recovery gets a
 `-recovery1.jsonl` trace and matching stderr file. `records.jsonl` retains one
@@ -226,15 +238,16 @@ prompts with the flag disabled, frozen task rubrics, and old results are not
 rewritten. No live effectiveness or savings claim follows from mocked retries;
 a new, explicitly approved paired run is still required.
 
-## First-pass source prefetch experiment
+## Whole-file prefetch mode
 
 The focused recovery live check restored 4/4 default correctness after two
 retries, but used 25.75% more total and 36.35% more uncached tokens than
 search-only. A separate opt-in experiment now tests whether supplying source
 before the first model invocation avoids that recovery cost. It is not enabled
-by default and has no new live token result yet.
+by default. This section describes the whole-file mode; the later excerpt
+experiment, frozen live result, and untested v2 repairs are recorded below.
 
-The `source_prefetch` condition reads the exact `source_path` supplied by a
+Without `--prefetch-excerpts`, `source_prefetch` reads the exact `source_path` supplied by a
 known-file task, before starting Codex. It provides the **complete file** as
 JSON containing numbered lines, a SHA-256 digest, and a trailing-newline flag.
 It does not inspect the task prompt, rubric, symbol names, or graph to select
@@ -308,10 +321,13 @@ prefetch fields retain their previous analysis.
 `--verify-known-file-answer` and the paired `no_graph` / `source_prefetch`
 conditions; it cannot be combined with global `--prefetch-known-file`.
 Search-only prompts and small-file source payloads are unchanged. Production
-compiler/MCP defaults are unchanged. No live token result exists for this mode.
+compiler/MCP defaults are unchanged. The v1 live result and subsequent v2
+repairs are described below; v2 has not been live-tested.
 
 When a complete file exceeds the payload budget, treatment can supply up to
-four windows of five whole source lines each. Selection uses only source,
+four windows with five whole source lines each as the base. The v2
+comment-tail rule below can extend these windows within the same byte budget.
+Selection uses only source,
 path, byte budget, and the task question, never the answer rubric or expected
 symbol. It removes the named path and generic question words, then ranks
 literal lexical overlap: case-sensitive term count first, case-folded count
@@ -353,7 +369,7 @@ The evidence-read hash must also match the supplied snapshot and the quote
 must match the serialized row, preventing a changed-then-restored file from
 validating an excerpt quote the model never received.
 
-Run metadata pins `prefetch_policy=query-windows-v1`; ordinary runs record
+Run metadata pins `prefetch_policy=query-windows-v2`; ordinary runs record
 `complete-file-v1` when prefetch is enabled, otherwise null; metadata separately
 identifies `source_prefetch` as the excerpt-enabled condition. Receipts identify selected lines, completeness, read bytes,
 and policy. Partial-source stages record `prefetch_answer_covered`; summaries
@@ -419,7 +435,8 @@ the supplied-payload freshness check. Metadata pins `exact-citation-v1` for
 these tasks and `answer-rubric-v1` for legacy tasks. Historical artifacts must
 not be regraded with the new manifest.
 
-The proposed live confirmation is **36 trials, at most 72 model invocations**:
+The frozen pre-run plan (completed at `7d923bc9`) specified
+**36 trials, at most 72 model invocations**:
 six tasks, three repeats, two interleaved conditions, seed 83. Both arms use
 `source-line-prefix-v2`, exact citation grading, and at most one recovery per
 trial; only `source_prefetch` enables query windows. The common budget is
@@ -458,5 +475,51 @@ The existing paired-success-only summary is secondary, never a replacement
 for full-arm totals. Three repeats of six tasks are not 18 independent task
 samples; describe cache variation and avoid generalizing a single saving rate.
 
-Status: manifest and local tests prepared; live confirmation awaits fresh
-run-specific approval. No live result exists for this held-out manifest.
+The frozen `7d923bc9` live confirmation completed 36 trials in 40 model calls:
+18/18 final passes in both arms, with 42.05% fewer total and 4.21% fewer
+uncached tokens for the combined treatment. However, the excerpt stratum used
+2.98% more uncached tokens, and the full-arm uncached advantage depended on
+an unnecessary baseline retry. Removing only that retry diagnostically gives
+39.17% fewer total but 1.11% more uncached tokens; this is not a rescore.
+The three format-tag treatment trials all needed recovery. These cases are
+now development regressions, not untouched held-out tasks for further tuning.
+Reproducing the frozen policy requires its original commit, not the current
+CLI and selector.
+
+### Post confirmation repairs
+
+The v2 read recognizer accepts the successful literal-basename directory
+search that caused the ROM baseline's unnecessary retry, while requiring
+explicit numbered target-path output and retaining the other method gates.
+Offline replay recognizes that first trace now; the original failed read gate,
+retry, token totals, and final grade remain frozen in the live artifact.
+
+`query-windows-v2` retains v1 ranking, four-window and 64-candidate limits,
+source hashes, and the 8,192-byte default budget. When every line from a match
+center through the base window's right edge starts with `//` after indentation,
+the window may extend by at most eight whole lines. It follows the consecutive
+comment tail and, if reached within that limit, includes the first following
+non-comment line plus up to two more lines. It does not scan across code or a
+blank line already inside the base window. The maximum is 13 lines per window,
+52 before deduplication across four windows. If the extension cannot fit the
+rendered byte budget, the original base window is tried; no line is clipped.
+
+This is bounded lexical context completion, not an AST declaration detector.
+Long comment blocks, attributes, block comments, and multiline strings can
+still leave required evidence outside the payload. The partial-source warning,
+literal-row coverage, exact citation, source pin, and freshness checks remain
+required; an omitted declaration still requires a real source read.
+
+Local regression measurements on the six formerly held-out cases show the
+expected declaration included in 6/6 payloads rather than 5/6. The format-tag
+payload grows from 1,090 to 1,948 bytes; async-FIFO detection grows from 1,066
+to 1,215 bytes; the other four payload sizes are unchanged. These are payload
+coverage results, not agent correctness or token savings. Synthetic tests
+cover comment tails, EOF, CRLF, intervening code, oversized lines, budget
+fallback, unrelated glob output, and grading independence. New metadata pins
+both policies; historical summary calculations remain unchanged.
+
+No new live run has been made for these repairs. A confirmation on these six
+tasks would be a regression run, not fresh held-out evidence; either that run
+or a new held-out experiment requires separate approval and must retain all
+attempt costs and quality failures.

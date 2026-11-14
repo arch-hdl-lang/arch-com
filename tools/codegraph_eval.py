@@ -21,6 +21,8 @@ MEMORY_COMMAND = re.compile(r"/\.codex/memories/")
 SEARCH_COMMAND = re.compile(r"(?:^|[\s'\"])(?:rg|grep|find)\b")
 SOURCE_READ_COMMAND = re.compile(r"(?:^|[\s'\"])(?:sed|head|tail|cat|nl)\b")
 ANSWER_EVIDENCE_POLICY = "source-line-prefix-v2"
+SOURCE_READ_POLICY = "exact-file-or-literal-glob-v2"
+PREFETCH_POLICY = "query-windows-v2"
 NO_GRAPH = "Graph commands, graph MCP tools, and graph index files are unavailable for this task. Use ordinary repository search."
 VERIFY = (
     "Verify with at most three targeted retrieval calls and bounded output, then answer. "
@@ -323,11 +325,22 @@ def source_windows(lines: list[str], query: str, source_path: str,
     for *_, center in ranked:
         if center in selected:
             continue
-        candidate = selected | set(range(max(0, center - 2), min(len(lines), center + 3)))
-        rendered = json.dumps({"path": source_path, "sha256": digest, "complete": False,
-                               "total_lines": len(lines), "selection": "query-windows-v1",
-                               "lines": [[i + 1, lines[i]] for i in sorted(candidate)]}, separators=(",", ":"))
-        if len(rendered.encode("utf-8")) > byte_budget:
+        base_end = end = min(len(lines), center + 3)
+        if all(line.lstrip().startswith("//") for line in lines[center:end]):
+            limit = min(len(lines), end + 8)
+            # Do not sever a matched line-comment tail from its following source.
+            while end < limit and lines[end - 1].lstrip().startswith("//"):
+                end += 1
+            if end > base_end and not lines[end - 1].lstrip().startswith("//"):
+                end = min(limit, end + 2)
+        for window_end in ((end, base_end) if end != base_end else (end,)):
+            candidate = selected | set(range(max(0, center - 2), window_end))
+            rendered = json.dumps({"path": source_path, "sha256": digest, "complete": False,
+                                   "total_lines": len(lines), "selection": PREFETCH_POLICY,
+                                   "lines": [[i + 1, lines[i]] for i in sorted(candidate)]}, separators=(",", ":"))
+            if len(rendered.encode("utf-8")) <= byte_budget:
+                break
+        else:
             continue
         selected, payload = candidate, rendered
         windows += 1
@@ -362,7 +375,7 @@ def prefetch_source(workspace: Path, source_path: str, byte_budget: int,
         with target.open("rb") as source:
             raw = source.read(read_limit + 1)
         if query is not None:
-            result.update(read_bytes=len(raw), policy="query-windows-v1")
+            result.update(read_bytes=len(raw), policy=PREFETCH_POLICY)
         if len(raw) > read_limit:
             if query is not None:
                 return {**result, "status": "source_too_large"}
@@ -481,10 +494,26 @@ def known_file_source_read(events: list[dict], workspace: Path, source_path: str
                 continue
             tool, args = Path(words[0]).name, words[1:]
             if tool == "rg":
+                glob = None
+                numbered, hidden_filename = False, False
                 while args and args[0].startswith("-") and args[0] != "--":
                     flag = args.pop(0)
+                    if flag in ("-g", "--glob") or flag.startswith("--glob="):
+                        if glob is not None:
+                            break
+                        if flag.startswith("--glob="):
+                            glob = flag.partition("=")[2]
+                        elif args:
+                            glob = args.pop(0)
+                        else:
+                            break
+                        if not re.fullmatch(r"[A-Za-z0-9_.-]+", glob) or glob != target.name:
+                            break
+                        continue
                     if flag in ("-n", "--line-number", "-i", "--ignore-case", "-F",
                                 "--fixed-strings", "--no-heading", "--with-filename", "--no-filename"):
+                        numbered |= flag in ("-n", "--line-number")
+                        hidden_filename |= flag == "--no-filename"
                         continue
                     if re.fullmatch(r"-[ABCm]\d+", flag):
                         continue
@@ -497,11 +526,18 @@ def known_file_source_read(events: list[dict], workspace: Path, source_path: str
                     if args[:1] == ["--"]:
                         args.pop(0)
                     if len(args) == 2:
-                        args = args[1:]  # pattern, then one explicit source file
+                        args = args[1:]  # pattern, then one explicit file or directory
                     else:
                         continue
-                    if (workspace / args[0]).resolve() == target:
+                    searched = (workspace / args[0]).resolve()
+                    if searched == target:
                         return True
+                    if (glob is not None and numbered and not hidden_filename and searched.is_dir()
+                            and searched.is_relative_to(workspace.resolve()) and target.is_relative_to(searched)):
+                        for row in item["aggregated_output"].splitlines():
+                            match = re.fullmatch(r"(.+?):([1-9][0-9]*):(.*)", row)
+                            if match and (workspace / match[1]).resolve() == target:
+                                return True
                 continue
             if tool == "sed" and len(args) == 3 and args[0] == "-n" and re.fullmatch(r"\d+(?:,\d+)?p", args[1]):
                 args = args[2:]
@@ -1080,9 +1116,10 @@ def main() -> None:
         "recover_known_file": args.recover_known_file,
         "verify_known_file_answer": args.verify_known_file_answer,
         "answer_evidence_policy": ANSWER_EVIDENCE_POLICY if args.verify_known_file_answer else None,
+        "source_read_policy": SOURCE_READ_POLICY,
         "prefetch_known_file": args.prefetch_known_file,
         "prefetch_byte_budget": args.prefetch_byte_budget,
-        "prefetch_policy": ("query-windows-v1" if args.prefetch_excerpts else "complete-file-v1")
+        "prefetch_policy": (PREFETCH_POLICY if args.prefetch_excerpts else "complete-file-v1")
         if args.prefetch_known_file or "source_prefetch" in conditions else None,
         "prefetch_excerpt_condition": "source_prefetch" if args.prefetch_excerpts else None,
         "max_model_attempts": args.repeats * len(conditions) * (
