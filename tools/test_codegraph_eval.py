@@ -3,6 +3,9 @@ import hashlib
 import io
 import json
 import os
+import shlex
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -11,7 +14,7 @@ from unittest.mock import Mock, patch
 
 from codegraph_eval import ANSWER_EVIDENCE_POLICY, PREFETCH_POLICY, SOURCE_READ_POLICY, answer_passes, graph_command_kind, is_graph_command, known_file_answer_evidence, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, source_windows, summarize, trace_result, validate_source_pins, verified_success, workspace_env
 from codegraph_direct_eval import CROSS_RELATIONS, PIPE_REG_OWNERS, grade_pipe_reg_owners, grade_relations
-from codegraph_eval import DISCOVERY_EVIDENCE_POLICY, discovery_answer_evidence
+from codegraph_eval import DISCOVERY_EVIDENCE_POLICY, discovery_answer_evidence, discovery_output_schema, discovery_retrieval_method
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +66,9 @@ class DiscoveryCitationTests(unittest.TestCase):
         output = "ast.rs:1:pub struct Engine {\nparser.rs:1:fn parse_engine() {"
         for command in ("rg -n 'Engine|parse_engine' .", "rg -n 'Engine|parse_engine'",
                         "rg -n -g '*.rs' -g '!ignored.rs' 'Engine|parse_engine' .",
+                        "rg -n 'Engine|parse_engine' . -g '*.rs' -g '!ignored.rs'",
+                        "rg 'Engine|parse_engine' ast.rs -n parser.rs -m 2",
+                        "rg -n -e Engine . --regexp parse_engine --glob=*.rs",
                         "rg -n 'Engine|parse_engine' ast.rs parser.rs"):
             with self.subTest(command=command):
                 self.assertTrue(self.grade(events=[self.command(command, output)])["verified"])
@@ -100,6 +106,63 @@ class DiscoveryCitationTests(unittest.TestCase):
                        boolean_line, wrong_quote, wrong_path, {}, []):
             with self.subTest(answer=answer):
                 self.assertFalse(self.grade(answer)["verified"])
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep integration requires rg")
+    def test_discovery_postfix_options_with_real_rg_output(self):
+        for args in (["rg", "-n", "Engine|parse_engine", ".", "-g", "*.rs"],
+                     ["rg", "Engine|parse_engine", "-n", "ast.rs", "parser.rs", "-m", "2"],
+                     ["rg", "-n", "-e", "Engine", ".", "--regexp", "parse_engine", "--glob=*.rs"]):
+            result = subprocess.run(args, cwd=self.root, text=True, capture_output=True, check=True)
+            self.assertTrue(self.grade(events=[self.command(shlex.join(args), result.stdout)])["verified"])
+        for path, pattern in (("ast.rs", "Engine"), ("parser.rs", "parse_engine")):
+            result = subprocess.run(["rg", pattern, path, "-n", "-m", "1"], cwd=self.root,
+                                    text=True, capture_output=True, check=True)
+            events = [self.graph, self.command(f"rg {pattern} {path} -n -m 1", result.stdout)]
+            # Remove the graph witness for this file, forcing the single-file route.
+            events[0] = self.command("arch graph dev-query engine", "\n".join(
+                row for row in self.output.splitlines() if not row.startswith(path)))
+            self.assertTrue(self.grade(events=events)["verified"])
+
+    def test_discovery_postfix_unsafe_options_and_spoofed_output_fail(self):
+        output = "ast.rs:1:pub struct Engine {\nparser.rs:1:fn parse_engine() {"
+        for suffix in ("--replace fake", "--pre cat", "--files", "--count", "-l", "--json",
+                       "--no-filename", "-g", "-m nope", "--unknown", "| cat", "; echo forged"):
+            command = f"rg -n 'Engine|parse_engine' . {suffix}"
+            with self.subTest(command=command):
+                self.assertFalse(self.grade(events=[self.command(command, output)])["verified"])
+        for output in ("other.rs:1:// ast.rs:1:pub struct Engine {\nparser.rs:1:fn parse_engine() {",
+                       "ast.rs:1:unrelated\nother.rs:1:pub struct Engine {\nparser.rs:1:fn parse_engine() {"):
+            self.assertFalse(self.grade(events=[self.command("rg -n Engine . -g '*.rs'", output)])["verified"])
+
+    def test_discovery_indentation_only_is_ignored(self):
+        answer = copy.deepcopy(self.answer)
+        for citation in answer.values():
+            citation["quote"] = " \t  " + citation["quote"]
+        self.assertTrue(self.grade(answer)["verified"])
+        self.assertFalse(known_file_answer_evidence(json.dumps(answer["ast"]), self.root, "ast.rs")["verified"])
+        for quote in ("pub  struct Engine {", "pub struct Eng", "\npub struct Engine {", "pub struct Engine { "):
+            answer["ast"]["quote"] = quote
+            self.assertFalse(self.grade(answer)["verified"])
+
+    def test_output_schema_contains_only_public_shape(self):
+        changed = copy.deepcopy(self.task)
+        changed["expected_citations"] = {"secret": "hidden oracle"}
+        changed["source_pins"] = {"secret": "hidden hash"}
+        schema = discovery_output_schema(self.task)
+        self.assertEqual(schema, discovery_output_schema(changed))
+        self.assertEqual(schema["required"], self.task["citation_roles"])
+        self.assertFalse(schema["additionalProperties"])
+        self.assertNotIn("Engine", json.dumps(schema))
+        for role in self.task["citation_roles"]:
+            citation, missing = schema["properties"][role]["anyOf"]
+            self.assertEqual(missing, {"type": "null"})
+            self.assertFalse(citation["additionalProperties"])
+            self.assertEqual(set(citation["required"]), {"symbol", "path", "line", "quote"})
+        answer = copy.deepcopy(self.answer)
+        answer["ast"] = None
+        self.assertFalse(self.grade(answer)["verified"])
+        raw = json.dumps(self.answer) + "}"
+        self.assertFalse(discovery_answer_evidence(self.task, raw, self.root, [self.graph])["verified"])
 
     def test_duplicate_keys_and_oversized_answers_fail(self):
         for raw in ('{"ast":null,"ast":null,"parser":null}',
@@ -184,6 +247,11 @@ class DiscoveryCitationTests(unittest.TestCase):
                                      self.root / "arch", self.root / "python", "test-model", 10, True,
                                      recover_known_file=True, verify_known_file_answer=True)
             self.assertEqual(popen.call_count, 1)
+            command = popen.call_args.args[0]
+            schema_path = Path(command[command.index("--output-schema") + 1])
+            self.assertEqual(json.loads(schema_path.read_text()), discovery_output_schema(self.task))
+            self.assertEqual(record["discovery_output_schema_sha256"],
+                             hashlib.sha256(schema_path.read_bytes()).hexdigest())
             self.assertEqual(record["success"], correct)
             self.assertEqual(record["discovery_answer_verified"], correct)
             self.assertEqual(record["model_attempts"], 1)
@@ -193,6 +261,53 @@ class DiscoveryCitationTests(unittest.TestCase):
             record["success"] = True
             record["discovery_answer_verified"] = False
             self.assertFalse(verified_success(record))
+
+    def test_discovery_call_limit_fails_without_retry_and_keeps_usage(self):
+        events = [self.graph] * 4 + [
+            {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(self.answer)}},
+            {"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 20}}]
+        process = Mock(returncode=0)
+        process.communicate.return_value = ("\n".join(json.dumps(event) for event in events), "")
+        with patch("codegraph_eval.subprocess.Popen", return_value=process) as popen:
+            record = run_attempt(self.task, "default", 1, self.root, self.root,
+                                 self.root / "arch", self.root / "python", "test-model", 10, True)
+        self.assertEqual(popen.call_count, 1)
+        self.assertTrue(record["discovery_answer_verified"])
+        self.assertFalse(record["valid_method"])
+        self.assertFalse(record["success"])
+        self.assertEqual(record["input_tokens"] + record["output_tokens"], 120)
+
+    def test_compound_retrieval_plus_clean_witness_fails_method(self):
+        for command in ("rg -n Engine .; rg -n parse_engine .; cat ast.rs; cat parser.rs",
+                        "rg -n Engine . && cat ast.rs", "cat ast.rs | cat", "cat < ast.rs",
+                        "python3 -c 'print(open(\"ast.rs\").read())'",
+                        "sed -n '1p;e echo forged' ast.rs", "rg --pre cat Engine ."):
+            events = [self.command(command, self.output), self.graph,
+                      {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(self.answer)}},
+                      {"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 20}}]
+            process = Mock(returncode=0)
+            process.communicate.return_value = ("\n".join(json.dumps(event) for event in events), "")
+            with patch("codegraph_eval.subprocess.Popen", return_value=process) as popen:
+                record = run_attempt(self.task, "default", 1, self.root, self.root,
+                                     self.root / "arch", self.root / "python", "test-model", 10, True)
+            self.assertEqual(popen.call_count, 1)
+            self.assertTrue(record["discovery_answer_verified"])
+            self.assertEqual(record["tool_calls"], 2)
+            self.assertFalse(record["valid_method"], command)
+            self.assertFalse(record["success"])
+            self.assertEqual(record["input_tokens"] + record["output_tokens"], 120)
+
+    def test_single_retrieval_method_forms(self):
+        for command in ("rg -n Engine . -g '*.rs'", "cat -n -- ast.rs parser.rs",
+                        "sed -n '1,2p' ast.rs", "/bin/zsh -lc \"rg -n Engine .\"",
+                        "./target/debug/arch graph dev-query engine --include-source"):
+            self.assertTrue(discovery_retrieval_method([self.command(command, self.output)]), command)
+        for command in ("", "cat $(cat input)", "cat `cat input`", "cat ast.rs\ncat parser.rs",
+                        "sh -c 'sh -c cat'", "rg --replace forged Engine ast.rs", "sed -n '1p' -"):
+            self.assertFalse(discovery_retrieval_method([self.command(command, self.output)]), command)
+        for tool, valid in (("arch_graph_context", True), ("arch_dev_graph_query", True), ("execute_python", False)):
+            event = {"type": "item.completed", "item": {"type": "mcp_tool_call", "tool": tool}}
+            self.assertEqual(discovery_retrieval_method([event]), valid)
 
 
 class CodegraphEvalTests(unittest.TestCase):

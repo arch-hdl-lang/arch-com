@@ -526,7 +526,7 @@ attempt costs and quality failures.
 
 ### Source-backed discovery roles
 
-New discovery manifests may opt into `role-citations-v1` instead of the legacy
+New discovery manifests may opt into `role-citations-v2` instead of the legacy
 substring rubric. `citation_roles` lists public answer slots (for example
 `ast`, `parser`, `backend`, or paired instance/target slots).
 `expected_citations` maps each slot to an exact symbol/path/line triple;
@@ -551,7 +551,48 @@ feedback. Only public roles, the task question and the common evidence contract
 do. Discovery has one model invocation and **no answer-key-driven recovery**;
 known-file recovery behavior is unchanged. The record includes the evidence
 policy, per-role witnesses, host read count/bytes/time and the verified verdict.
-Historical manifests, records and summaries retain their old grading behavior.
+Historical records and summaries retain their stored verdicts and policies.
+
+Version 2 applies to new executions of role-citation tasks. Frozen v1 records
+must be replayed with their pinned harness, not regraded in place. Compared to
+v1, discovery quotes may include leading ASCII spaces or tabs; these alone are
+removed before literal-prefix verification. Interior whitespace, identifier
+boundaries, exact source locations and source hashes remain checked. The
+known-file quote and source-read policies are unchanged.
+
+Discovery `rg` witnesses accept allowlisted options before or after positional
+operands, including globs, repeated `-e` patterns and numeric context/count
+limits. Directory/multi-file results still require a numbered filename prefix
+and the quote on the same matching row. Output rewriting, preprocessing,
+file/count-only modes, unknown flags, chained commands and pipelines remain
+unrecognized. Prompts now explicitly require single retrieval commands.
+The three-retrieval-call ceiling is enforced for role-citation tasks; exceeding
+it fails `valid_method` even when citations are correct. Failed attempts retain
+all usage and have no discovery retry.
+The method gate also rejects compound or opaque command forms anywhere in the
+attempt, even if a later clean retrieval provides valid witnesses. Supported
+forms are allowlisted `rg`, `cat`, bounded `sed -n` print commands, and the graph
+CLI/MCP queries. Scripts, preprocessing and arbitrary MCP tools are not allowed.
+One multi-file search still counts as one retrieval command; this is not a count
+of files read or an adversarial sandbox against replaced executables.
+
+Role-citation runs also pass `--output-schema` to `codex exec`. The generated
+schema contains only public role names and the common citation field types,
+never expected symbols, paths, lines or hashes. A missing role's value may be
+null, which remains an unverified answer. Each invocation retains its schema
+file and records its SHA-256. There is no post-hoc JSON repair or fallback retry
+if structured output is unsupported or malformed. Local command-construction
+tests do not establish live model support or a token saving.
+
+`doc/codegraph_eval_cross_file_regression_tasks.json` is a development regression
+set derived from the November 14 cross-file run, **not a fresh held-out set**.
+It resolves the AES declaration-selection ambiguity in the public question rather than
+silently changing the original answer key. Copy the manifest outside the model
+checkout and freeze it before a separately approved live run. The frozen
+95f0fc0c experiment and its original pass/fail results remain unchanged.
+Naming the intended AES declaration files makes that task easier; its costs
+are not directly comparable to the original ambiguous question. The specified
+files are source-location lookup targets, not a combined compilation set.
 
 Keep new experiment manifests outside the model checkout. Both arms must avoid
 benchmark oracles/artifacts, memory and Git metadata; do not read the curated

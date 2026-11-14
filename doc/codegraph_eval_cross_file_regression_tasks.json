@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "provenance": "Development regression tasks derived from the frozen 95f0fc0c cross-file confirmation experiment. These are not held-out tasks. The AES question now names the intended declaration files, making source discovery easier; costs are not directly comparable to the original ambiguous question. The key-expansion and S-box files are separately registered units in tests/arch_regression_baseline.json, not one combined compilation set. The frozen manifest and results are unchanged.",
+  "tasks": [
+    {
+      "id": "regression_aes_instance_roles",
+      "cohort": "user",
+      "kind": "discovery",
+      "prompt": "For this source-location lookup, use tests/aes/aes_cipher_top.arch for the instances, tests/aes/aes_key_expand_128.arch for the key-expansion declaration, and tests/aes/aes_sbox.arch for the standalone S-box declaration. These files are lookup sources, not a combined compilation set. In the top file, trace key_exp to its target in the specified key-expansion file and us00 to its target in the standalone S-box file. Do not select other same-named module definitions, including the AesSbox copy embedded in the key-expansion file. Cite each instance and target under key_instance, key_target, sbox_instance, sbox_target respectively.",
+      "citation_roles": ["key_instance", "key_target", "sbox_instance", "sbox_target"],
+      "expected_citations": {
+        "key_instance": {"symbol": "key_exp", "path": "tests/aes/aes_cipher_top.arch", "line": 48},
+        "key_target": {"symbol": "AesKeyExpand128", "path": "tests/aes/aes_key_expand_128.arch", "line": 121},
+        "sbox_instance": {"symbol": "us00", "path": "tests/aes/aes_cipher_top.arch", "line": 59},
+        "sbox_target": {"symbol": "AesSbox", "path": "tests/aes/aes_sbox.arch", "line": 4}
+      },
+      "source_pins": {
+        "tests/aes/aes_cipher_top.arch": "7fd7165043241db47e7cfd0aeaaa27965c5a5fc020754f299a5556b5c7b4e143",
+        "tests/aes/aes_key_expand_128.arch": "36b747e82dfdcccee19dd78ef47d2050e990475e8e105bde461d491984d0ca4d",
+        "tests/aes/aes_sbox.arch": "9d25396ad02d5edbc93e698803b4d8c60379790a8009ffd53d57d51e5e686ecf"
+      }
+    },
+    {
+      "id": "regression_e203_instance_roles",
+      "cohort": "user",
+      "kind": "discovery",
+      "prompt": "In tests/e203/e203_ifu_top.arch, trace ifetch and icb to their separately declared target modules. Cite each instance and its target under ifetch_instance, ifetch_target, icb_instance, icb_target respectively.",
+      "citation_roles": ["ifetch_instance", "ifetch_target", "icb_instance", "icb_target"],
+      "expected_citations": {
+        "ifetch_instance": {"symbol": "ifetch", "path": "tests/e203/e203_ifu_top.arch", "line": 92},
+        "ifetch_target": {"symbol": "e203_ifu_ifetch", "path": "tests/e203/e203_ifu_ifetch.arch", "line": 6},
+        "icb_instance": {"symbol": "icb", "path": "tests/e203/e203_ifu_top.arch", "line": 139},
+        "icb_target": {"symbol": "e203_ifu_ift2icb", "path": "tests/e203/e203_ifu_ift2icb.arch", "line": 6}
+      },
+      "source_pins": {
+        "tests/e203/e203_ifu_top.arch": "11b02ec62337fb38beb8f1e6d3d8845ee7af90e64dce9d2aa92264312c8c3718",
+        "tests/e203/e203_ifu_ifetch.arch": "3cd0870eda6e9fa2a29a75d39f0639c3698dac9bcd0c33c0277b10f277cc9807",
+        "tests/e203/e203_ifu_ift2icb.arch": "e4501dda73e2918057fcc42392dd38b204b270e18494e85378122a1953b8a503"
+      }
+    },
+    {
+      "id": "regression_pipeline_owner_roles",
+      "cohort": "compiler",
+      "kind": "discovery",
+      "prompt": "For ARCH pipeline declarations, identify the AST declaration type, declaration parser function, and top-level SystemVerilog emitter for the whole pipeline declaration, not a helper for instances inside a pipeline. Cite them under ast, parser, backend respectively.",
+      "citation_roles": ["ast", "parser", "backend"],
+      "expected_citations": {
+        "ast": {"symbol": "PipelineDecl", "path": "src/ast.rs", "line": 2573},
+        "parser": {"symbol": "parse_pipeline", "path": "src/parser.rs", "line": 5523},
+        "backend": {"symbol": "emit_pipeline", "path": "src/codegen/pipeline.rs", "line": 167}
+      },
+      "source_pins": {
+        "src/ast.rs": "ac4edb0ec7e31515eaf644499be7866e05d4713c73f5d4a384c658949a426b5f",
+        "src/parser.rs": "544d3004babf0473dd4b048a75d10d318be9fae3040dcc8fbb2f728f1973e752",
+        "src/codegen/pipeline.rs": "f2e15c35bbc25eed0e02e4cebfb62aba60544d4bebc03ef83894d7ccb3331544"
+      }
+    },
+    {
+      "id": "regression_fsm_owner_roles",
+      "cohort": "compiler",
+      "kind": "discovery",
+      "prompt": "For ARCH FSM declarations, identify the AST declaration type, declaration parser function, and SystemVerilog FSM emitter function. Cite them under ast, parser, backend respectively.",
+      "citation_roles": ["ast", "parser", "backend"],
+      "expected_citations": {
+        "ast": {"symbol": "FsmDecl", "path": "src/ast.rs", "line": 2180},
+        "parser": {"symbol": "parse_fsm", "path": "src/parser.rs", "line": 5263},
+        "backend": {"symbol": "emit_fsm", "path": "src/codegen/fsm.rs", "line": 10}
+      },
+      "source_pins": {
+        "src/ast.rs": "ac4edb0ec7e31515eaf644499be7866e05d4713c73f5d4a384c658949a426b5f",
+        "src/parser.rs": "544d3004babf0473dd4b048a75d10d318be9fae3040dcc8fbb2f728f1973e752",
+        "src/codegen/fsm.rs": "7125cc1ed3e67ff670877a381432496bb242c58c86ddf59d8d1c3c15440e2afb"
+      }
+    },
+    {
+      "id": "regression_ram_known_file",
+      "cohort": "user",
+      "kind": "known_file",
+      "source_path": "examples/single_port_ram.arch",
+      "source_sha256": "d7765e85efeada06f5869641f95fba26f27ca2287626e2c42de833459218e45e",
+      "prompt": "In examples/single_port_ram.arch, identify the RAM declaration and its source line.",
+      "expected_citation": {"symbol": "SimpleMem", "path": "examples/single_port_ram.arch", "line": 14}
+    },
+    {
+      "id": "regression_ram_emitter_known_file",
+      "cohort": "compiler",
+      "kind": "known_file",
+      "source_path": "src/codegen/ram.rs",
+      "source_sha256": "4729ce02e1e494a76ee58e56ae299b1539ca59c11a1a016fc41097b93bd62aa1",
+      "prompt": "In src/codegen/ram.rs, identify the function that emits a true-dual-port RAM and its declaration line.",
+      "expected_citation": {"symbol": "emit_ram_true_dual", "path": "src/codegen/ram.rs", "line": 517}
+    }
+  ]
+}
