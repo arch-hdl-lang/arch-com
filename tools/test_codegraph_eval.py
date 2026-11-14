@@ -8,7 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from codegraph_eval import answer_passes, graph_command_kind, is_graph_command, known_file_answer_evidence, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, summarize, trace_result, verified_success, workspace_env
+from codegraph_eval import ANSWER_EVIDENCE_POLICY, answer_passes, graph_command_kind, is_graph_command, known_file_answer_evidence, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, summarize, trace_result, verified_success, workspace_env
 from codegraph_direct_eval import CROSS_RELATIONS, PIPE_REG_OWNERS, grade_pipe_reg_owners, grade_relations
 
 
@@ -405,6 +405,8 @@ class CodegraphEvalTests(unittest.TestCase):
             (root / "engine.rs").write_bytes(b"// Engine\r\n  fn emit_ready_body() {}\r\n")
             result = known_file_answer_evidence(self.ready_citation(), root, "engine.rs")
             self.assertTrue(result["verified"])
+            self.assertEqual(result["quote_match"], "full_line")
+            self.assertEqual(result["policy"], ANSWER_EVIDENCE_POLICY)
             self.assertEqual(result["graded_answer"], "emit_ready_body engine.rs:2")
             self.assertEqual(result["read_calls"], 1)
             for answer in ("No function exists", "null", "[]", self.ready_citation(line=True),
@@ -417,6 +419,68 @@ class CodegraphEvalTests(unittest.TestCase):
                            " " * 8193 + self.ready_citation()):
                 with self.subTest(answer=answer):
                     self.assertFalse(known_file_answer_evidence(answer, root, "engine.rs")["verified"])
+
+    def test_answer_evidence_accepts_verbatim_declaration_prefixes(self):
+        cases = (
+            ("engine.rs", "emit_ready_body", "fn emit_ready_body() {}", "fn emit_ready_body()"),
+            ("engine.rs", "load_cache", "pub(crate) fn load_cache(root: &Path) -> io::Result<PathBuf> {",
+             "pub(crate) fn load_cache(root: &Path) -> io::Result<PathBuf>"),
+            ("engine.rs", "load_cache", "pub(crate) fn load_cache(root: &Path) -> io::Result<PathBuf> {",
+             "pub(crate) fn load_cache"),
+            ("engine.rs", "Holder", "struct Holder<T> {", "struct Holder<T>"),
+            ("unit.arch", "PacketQueue", "fifo PacketQueue // packet storage", "fifo PacketQueue"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path, symbol, source, quote in cases:
+                with self.subTest(source=source, quote=quote):
+                    (root / path).write_text("// Header\n  " + source + "\n")
+                    result = known_file_answer_evidence(
+                        self.ready_citation(path=path, symbol=symbol, quote=quote), root, path)
+                    self.assertTrue(result["verified"])
+                    self.assertEqual(result["quote_match"], "line_prefix")
+                    self.assertEqual(result["graded_answer"], f"{symbol} {path}:2")
+
+    def test_answer_evidence_prefix_rejects_mutated_text_and_split_identifiers(self):
+        source = "pub fn load_cache(root: &Path) -> io::Result<PathBuf> {"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "engine.rs").write_text("// Header\n" + source + "\n")
+            for changes in (
+                    {"quote": source.replace("&Path", "&str")[:-2]},
+                    {"quote": source.replace("PathBuf", "String")[:-2]},
+                    {"quote": source.replace("pub fn", "pub  fn")[:-2]},
+                    {"quote": "load_cache"},
+                    {"quote": "pub fn load_cache(root: &Path) -> io::Res"},
+                    {"quote": "pub fn load_cache(root: &Path) -> io::Result<Path"},
+                    {"quote": "pub fn load_cache", "symbol": "load"},
+                    {"quote": "pub fn load", "symbol": "load"},
+                    {"quote": "pub fn load_cache", "line": 1},
+                    {"quote": "pub fn load_cache", "path": "other.rs"},
+                    {"quote": "pub fn load_cache", "symbol": "other"},
+                    {"quote": "pub fn\nload_cache"},
+            ):
+                with self.subTest(changes=changes):
+                    answer = self.ready_citation(**({"symbol": "load_cache", **changes}))
+                    self.assertFalse(known_file_answer_evidence(answer, root, "engine.rs")["verified"])
+            # A second occurrence of the short name cannot validate a split declaration name.
+            (root / "engine.rs").write_text("// Header\nfn load_cache(load: usize) {\n")
+            self.assertFalse(known_file_answer_evidence(
+                self.ready_citation(symbol="load", quote="fn load"), root, "engine.rs")["verified"])
+
+    def test_answer_evidence_prefix_avoids_format_only_recovery(self):
+        for condition in ("no_graph", "default", "source_prefetch"):
+            stage = {"answer": self.ready_citation(quote="fn emit_ready_body()")}
+            if condition != "source_prefetch":
+                stage["command"] = "cat engine.rs"
+            result, commands, _ = self.run_mock_recovery(
+                [stage], condition=condition, verify_answer=True)
+            self.assertTrue(result["success"])
+            self.assertEqual(result["model_attempts"], 1)
+            self.assertEqual(result["recovery_attempts"], 0)
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(result["stages"][0]["answer_evidence"]["quote_match"], "line_prefix")
+            self.assertIn("verbatim prefix", commands[0][-1])
 
     def test_answer_evidence_rejects_unavailable_oversized_and_external_source(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -667,6 +731,7 @@ class CodegraphEvalTests(unittest.TestCase):
                 self.assertEqual(metadata["recover_known_file"], enabled)
                 self.assertEqual(metadata["prefetch_known_file"], prefetched)
                 self.assertEqual(metadata["verify_known_file_answer"], evidence)
+                self.assertEqual(metadata["answer_evidence_policy"], ANSWER_EVIDENCE_POLICY if evidence else None)
                 self.assertEqual(metadata["prefetch_byte_budget"], 8192)
                 self.assertEqual(run.call_count, 28)
                 self.assertTrue(all(call.args[-1] == enabled for call in run.call_args_list))

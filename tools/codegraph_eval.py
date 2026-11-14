@@ -20,6 +20,7 @@ from pathlib import Path
 MEMORY_COMMAND = re.compile(r"/\.codex/memories/")
 SEARCH_COMMAND = re.compile(r"(?:^|[\s'\"])(?:rg|grep|find)\b")
 SOURCE_READ_COMMAND = re.compile(r"(?:^|[\s'\"])(?:sed|head|tail|cat|nl)\b")
+ANSWER_EVIDENCE_POLICY = "source-line-prefix-v2"
 NO_GRAPH = "Graph commands, graph MCP tools, and graph index files are unavailable for this task. Use ordinary repository search."
 VERIFY = (
     "Verify with at most three targeted retrieval calls and bounded output, then answer. "
@@ -302,7 +303,8 @@ def known_file_answer_evidence(answer: str, workspace: Path, source_path: str) -
 
     This does not prove that the cited symbol semantically answers the question.
     """
-    result = {"verified": False, "reason": "invalid_json", "read_calls": 0, "read_bytes": 0}
+    result = {"verified": False, "reason": "invalid_json", "read_calls": 0, "read_bytes": 0,
+              "policy": ANSWER_EVIDENCE_POLICY}
     def unique_object(pairs):
         obj = {}
         for key, value in pairs:
@@ -340,11 +342,19 @@ def known_file_answer_evidence(answer: str, workspace: Path, source_path: str) -
         lines = raw.decode("utf-8").split("\n")
         result["sha256"] = hashlib.sha256(raw).hexdigest()
         line = citation["line"]
-        if line > len(lines) or lines[line - 1].strip() != citation["quote"]:
+        if line > len(lines):
             return {**result, "reason": "quote_mismatch"}
-        if not re.search(rf"(?<!\w){re.escape(citation['symbol'])}(?!\w)", citation["quote"]):
+        source_line, quote = lines[line - 1].strip(), citation["quote"]
+        if not source_line.startswith(quote):
+            return {**result, "reason": "quote_mismatch"}
+        # A prefix may omit trailing syntax, but cannot split an identifier.
+        if (len(quote) < len(source_line) and re.match(r"\w", quote[-1])
+                and re.match(r"\w", source_line[len(quote)])):
+            return {**result, "reason": "quote_mismatch"}
+        if not re.search(rf"(?<!\w){re.escape(citation['symbol'])}(?!\w)", quote):
             return {**result, "reason": "symbol_mismatch"}
         return {**result, "verified": True, "reason": "source_bound",
+                "quote_match": "full_line" if quote == source_line else "line_prefix",
                 "graded_answer": f"{citation['symbol']} {source_path}:{line}"}
     except (OSError, ValueError, RuntimeError):
         return result
@@ -518,7 +528,10 @@ def prompt_for(task: dict, condition: str, arch_command: str = "arch",
         prompt += (
             " Return only a JSON object with exactly these fields: symbol (the exact identifier), "
             "path (the named repository-relative file), line (a positive integer), and quote "
-            "(the complete declaration line with surrounding whitespace removed). "
+            "(a verbatim prefix of the declaration line, starting after indentation and "
+            "including the complete identifier; the full line is also accepted). "
+            "You may omit trailing syntax such as an opening brace, but do not change "
+            "characters or cut inside identifiers. "
             "Copy these from the observed source, not memory. Check all matching declarations "
             "before concluding none exists. If you cannot support an answer, return null; "
             "that is an unverified result, not a verified absence claim."
@@ -910,6 +923,7 @@ def main() -> None:
         "conditions": conditions,
         "recover_known_file": args.recover_known_file,
         "verify_known_file_answer": args.verify_known_file_answer,
+        "answer_evidence_policy": ANSWER_EVIDENCE_POLICY if args.verify_known_file_answer else None,
         "prefetch_known_file": args.prefetch_known_file,
         "prefetch_byte_budget": args.prefetch_byte_budget,
         "max_model_attempts": args.repeats * len(conditions) * (

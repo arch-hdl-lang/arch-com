@@ -178,8 +178,14 @@ Absence-verdict controls and guided graph arms are rejected for this policy.
 
 The model must return only a JSON object with `symbol`, `path`, `line`, and
 `quote`. The verifier requires the exact named path, a positive integer line,
-the complete source line with surrounding whitespace removed, and the symbol
-as a whole identifier in that quote. It rejects duplicate/extra fields, prose
+and a verbatim prefix of the source line after surrounding whitespace is
+removed from the source. The full line is also accepted. The quote must contain
+the complete symbol as a whole identifier and cannot end inside an identifier
+in the actual source. For example, a signature may omit its trailing opening
+brace or body; `fn load` cannot witness `fn load_cache(...)`. Changed characters
+or internal whitespace, arbitrary substrings, and invented signatures are not
+accepted. This verifies a symbol and location, not every detail of a signature
+that the quote omits. It rejects duplicate/extra fields, prose
 or null answers, mismatched locations/quotes, external or metadata paths, and
 missing, binary, invalid UTF-8, or over-1-MiB source files. Answers are bounded
 to 8192 UTF-8 bytes. Source lines are LF-delimited. The verifier reads source
@@ -203,13 +209,19 @@ of declaration syntax, semantic relevance, complete absence, or that the
 model's own read included the cited line. This is a bounded evidence contract,
 not a general semantic verifier or a production default.
 
-Each stage records `answer_evidence` with its result, reason, source-read count,
+The versioned policy is `source-line-prefix-v2`. Each stage records
+`answer_evidence` with its policy, result, reason, source-read count,
 bytes read, and source hash when available. Records add
 `known_file_answer_verified` and `answer_evidence_seconds`; summaries add
 `answer_verified_controls`, `answer_evidence_reads`, and evidence-check time.
 These host reads are separate from prefetch reads and model tool calls. All
 model stages, including failed answers, retain their full token/latency cost.
-Metadata records the flag and the maximum model-call count. Legacy records,
+Successful evidence also records `quote_match` as `full_line` or `line_prefix`.
+Metadata records `answer_evidence_policy`, the flag, and the maximum model-call
+count. Verification-enabled runs predating this version field used the exact
+whole-line rule; in particular, the 2026-11-14 run at `56a642b2` remains frozen
+at 6/6 versus 5/6 despite offline acceptance of its omitted-brace answer under
+the new policy. An offline policy replay is not a new model trial. Legacy records,
 prompts with the flag disabled, frozen task rubrics, and old results are not
 rewritten. No live effectiveness or savings claim follows from mocked retries;
 a new, explicitly approved paired run is still required.
