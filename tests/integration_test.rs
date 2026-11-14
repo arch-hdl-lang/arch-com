@@ -37489,6 +37489,27 @@ fn test_dev_graph_cli_query_and_stale_mapping() {
     assert!(output.contains("emit_pipe_reg"), "{output}");
     assert!(!output.contains("parse_module"), "{output}");
     assert!(output.len() <= 400, "{output}");
+    let uncovered = std::process::Command::new(arch_bin)
+        .args([
+            "graph",
+            "dev-query",
+            "ram AST parser emitter fixture",
+            "--root",
+        ])
+        .arg(root)
+        .arg("--index")
+        .arg(&index)
+        .output()
+        .expect("uncovered developer graph query");
+    assert!(
+        uncovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&uncovered.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&uncovered.stdout).trim(),
+        "(no matches)"
+    );
 }
 
 #[test]

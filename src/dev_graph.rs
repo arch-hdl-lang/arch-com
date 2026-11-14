@@ -30,6 +30,8 @@ struct FeatureMap {
 #[derive(Debug, Deserialize)]
 struct Feature {
     name: String,
+    #[serde(default)]
+    aliases: Vec<String>,
     links: Vec<Link>,
 }
 
@@ -46,6 +48,8 @@ pub struct DevNode {
     pub id: String,
     pub kind: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     pub path: String,
     pub line: usize,
 }
@@ -229,6 +233,7 @@ pub fn index(root: &Path, map_path: &Path, out: &Path) -> io::Result<DevStats> {
                 id: feature_id.clone(),
                 kind: "feature".into(),
                 name: feature.name.clone(),
+                aliases: feature.aliases.clone(),
                 path: String::new(),
                 line: 0,
             },
@@ -259,6 +264,7 @@ pub fn index(root: &Path, map_path: &Path, out: &Path) -> io::Result<DevStats> {
                 id: target.clone(),
                 kind: kind.into(),
                 name,
+                aliases: Vec::new(),
                 path: link.path.clone(),
                 line,
             });
@@ -317,6 +323,42 @@ fn terms(query: &str) -> Vec<String> {
         .collect()
 }
 
+fn has_query_anchor(
+    words: &[String],
+    feature: &DevNode,
+    related: &[&DevEdge],
+    by_id: &BTreeMap<&str, &DevNode>,
+) -> bool {
+    // Feature names start with the language identifier, followed by optional
+    // qualifiers (e.g. "pipe_reg output-port reset"). Roles and paths are not anchors.
+    let feature_terms = terms(&feature.name);
+    if feature_terms
+        .first()
+        .is_some_and(|name| words.contains(name))
+    {
+        return true;
+    }
+    if feature
+        .aliases
+        .iter()
+        .any(|alias| has_named_terms(words, alias))
+    {
+        return true;
+    }
+    related
+        .iter()
+        .filter_map(|edge| by_id.get(edge.to.as_str()))
+        .any(|node| node.kind == "rust_symbol" && has_named_terms(words, &node.name))
+}
+
+fn has_named_terms(words: &[String], name: &str) -> bool {
+    let name_terms = terms(name);
+    !name_terms.is_empty()
+        && words
+            .windows(name_terms.len())
+            .any(|window| window == name_terms)
+}
+
 pub fn query(
     root: &Path,
     index_dir: &Path,
@@ -360,10 +402,14 @@ pub fn query(
             .iter()
             .filter(|edge| edge.from == feature.id)
             .collect();
+        if !has_query_anchor(&words, feature, &related, &by_id) {
+            continue;
+        }
         related.sort_by_key(|edge| (role_priority(&edge.role), edge.to.as_str()));
         let hay = format!(
-            "{} {}",
+            "{} {} {}",
             feature.name,
+            feature.aliases.join(" "),
             related
                 .iter()
                 .filter_map(|edge| by_id
@@ -515,6 +561,33 @@ mod tests {
         assert!(!parser_only.contains("parse_fifo"));
         assert!(!parser_only.contains("emit_pipeline_inst"));
         assert!(!parser_only.contains("mcp_guidance"));
+        for unsupported in [
+            "For ARCH ram, identify its AST type, parser owner, SystemVerilog emitter, and shipped fixture with source paths.",
+            "ram output-port reset AST parser backend fixture",
+            "AST parser backend fixture src/parser.rs src/ast.rs",
+            "pipelines parser",
+        ] {
+            assert_eq!(query(root, &out, unsupported, 30, 200, &[], true).unwrap(),
+                       "(no matches)", "{unsupported}");
+        }
+        for (query_text, expected) in [
+            ("PIPE_REG", "feature pipe_reg"),
+            ("arbitration", "feature arbiter"),
+            ("round-robin arbitration AST parser", "feature arbiter"),
+            ("Where is parse_fifo defined?", "feature fifo"),
+            (
+                "Which feature owns PortRegInfo?",
+                "feature pipe_reg output-port reset",
+            ),
+            ("Find TypeChecker::check", "feature module"),
+        ] {
+            assert!(
+                query(root, &out, query_text, 30, 200, &[], false)
+                    .unwrap()
+                    .contains(expected),
+                "{query_text}"
+            );
+        }
         assert!(query(
             root,
             &out,

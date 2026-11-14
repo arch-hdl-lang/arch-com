@@ -6,6 +6,14 @@ features: module, bus, fifo, thread, fsm, pipeline, pipe_reg declaration,
 pipe_reg output-port reset, tlm_method, and arbiter. Links to Rust symbols are syntax-parsed and
 location-checked; all ownership edges are explicitly curated.
 
+Developer queries must name a feature identifier (the first word of its map
+name), a curated alias, or an exact mapped Rust symbol. Matching is
+case-insensitive and token-bounded; generic roles and shared source paths do
+not establish coverage. A feature can declare `"aliases": ["arbitration"]`
+to support alternate terminology without broad substring matching. Aliases
+are matched as complete token sequences. `(no matches)` means no curated
+match for the query, not absence from the language; use targeted source search.
+
 ## Reproduce
 
 ```sh

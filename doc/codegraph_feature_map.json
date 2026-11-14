@@ -62,7 +62,7 @@
       {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_tlm_method_asserts"},
       {"role": "fixture", "path": "tests/axi_dma_tlm/TlmOneToOne.arch"}
     ]},
-    {"name": "arbiter", "links": [
+    {"name": "arbiter", "aliases": ["arbitration"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "ArbiterDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_arbiter"},
       {"role": "backend", "path": "src/codegen/arbiter.rs", "symbol": "emit_arbiter_round_robin"},
