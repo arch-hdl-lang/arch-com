@@ -446,6 +446,16 @@ pub fn query(
         hits.retain(|hit| hit.1 == words.len());
     }
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.name.cmp(&b.2.name)));
+    let total_lines: usize = hits
+        .iter()
+        .map(|hit| {
+            1 + hit
+                .3
+                .iter()
+                .filter(|edge| by_id.contains_key(edge.to.as_str()))
+                .count()
+        })
+        .sum();
     let mut lines = Vec::new();
     let mut source_lines: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut remaining = limit.max(1);
@@ -492,21 +502,49 @@ pub fn query(
         }
     }
     if lines.is_empty() {
-        return Ok("(no matches)".into());
+        return Ok(bounded_output(
+            &["(no matches)".into()],
+            false,
+            token_budget,
+        ));
     }
-    let max_chars = token_budget.max(1).saturating_mul(4);
+    Ok(bounded_output(
+        &lines,
+        lines.len() < total_lines,
+        token_budget,
+    ))
+}
+
+fn bounded_output(lines: &[String], mut truncated: bool, token_budget: usize) -> String {
+    // Reserve the CLI's trailing newline. Keep whole rows, including UTF-8 source.
+    let max_bytes = token_budget.max(1).saturating_mul(4).saturating_sub(1);
     let mut output = String::new();
     for line in lines {
         let extra = line.len() + usize::from(!output.is_empty());
-        if output.len() + extra > max_chars {
+        if output.len().saturating_add(extra) > max_bytes {
+            truncated = true;
             break;
         }
         if !output.is_empty() {
             output.push('\n');
         }
-        output.push_str(&line);
+        output.push_str(line);
     }
-    Ok(output)
+    if truncated {
+        let marker = if max_bytes >= "(truncated)".len() {
+            "(truncated)"
+        } else {
+            "..."
+        };
+        while !output.is_empty() && output.len() + 1 + marker.len() > max_bytes {
+            output.truncate(output.rfind('\n').unwrap_or(0));
+        }
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(marker);
+    }
+    output
 }
 
 fn role_priority(role: &str) -> usize {
@@ -528,6 +566,32 @@ fn role_priority(role: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_output_marks_omissions_without_splitting_rows() {
+        let lines = vec!["abcd".into(), "xy".into(), "lambda: \u{03bb}".into()];
+        let complete = lines.join("\n");
+        for budget in 1..=40 {
+            for already_truncated in [false, true] {
+                let result = bounded_output(&lines, already_truncated, budget);
+                assert!(result.len() + 1 <= budget * 4, "{budget}: {result}");
+                if already_truncated || complete.len() + 1 > budget * 4 {
+                    assert!(result.ends_with("(truncated)") || result == "...");
+                    for line in result
+                        .lines()
+                        .filter(|line| !["(truncated)", "..."].contains(line))
+                    {
+                        assert!(lines.iter().any(|original| original == line));
+                    }
+                } else {
+                    assert_eq!(result, complete);
+                }
+            }
+        }
+        assert_eq!(bounded_output(&lines[..2], false, 2), "abcd\nxy");
+        assert_eq!(bounded_output(&lines, true, 5), "abcd\nxy\n(truncated)");
+        assert_eq!(bounded_output(&["(no matches)".into()], false, 1), "...");
+    }
 
     #[test]
     fn bundled_feature_map_resolves_all_symbols() {
@@ -561,6 +625,14 @@ mod tests {
         assert!(!parser_only.contains("parse_fifo"));
         assert!(!parser_only.contains("emit_pipeline_inst"));
         assert!(!parser_only.contains("mcp_guidance"));
+        let limited = query(root, &out, "pipeline", 1, 800, &[], true).unwrap();
+        assert_eq!(limited, "feature pipeline\n(truncated)");
+        let complete_parser =
+            query(root, &out, "pipeline", 2, 800, &["parser".into()], true).unwrap();
+        assert!(!complete_parser.contains("(truncated)"));
+        let tight = query(root, &out, "pipe_reg output-port reset", 30, 100, &[], true).unwrap();
+        assert!(tight.ends_with("(truncated)"));
+        assert!(tight.len() + 1 <= 400);
         for unsupported in [
             "For ARCH ram, identify its AST type, parser owner, SystemVerilog emitter, and shipped fixture with source paths.",
             "ram output-port reset AST parser backend fixture",

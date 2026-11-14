@@ -615,6 +615,8 @@ def arch_dev_graph_query(query: str, root: str = ".", index: str = ".archdevgrap
     Name a language feature or an exact Rust symbol. No matches means no
     curated coverage for this query, not that the feature does not exist;
     fall back to targeted source search.
+    A trailing (truncated), or ... at tiny budgets, means output was shortened.
+    Narrow roles or increase the budget when required evidence is missing.
     """
     root_path = _resolve_safe(root)
     index_path = _resolve_safe(str(root_path / index)) if not pathlib.Path(index).is_absolute() else _resolve_safe(index)

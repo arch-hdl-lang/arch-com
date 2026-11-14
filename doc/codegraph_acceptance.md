@@ -14,6 +14,13 @@ to support alternate terminology without broad substring matching. Aliases
 are matched as complete token sequences. `(no matches)` means no curated
 match for the query, not absence from the language; use targeted source search.
 
+Developer-query text ends with `(truncated)` when the result limit or output
+budget omits matching rows. For budgets too small for that marker, it returns
+`...`; a tiny budget can also shorten the no-match status to `...`.
+The marker and CLI newline fit within the approximate four-byte-per-token
+budget; source rows are never split. An unmarked result means no matching rows
+were dropped by these limits, not that the curated map covers every owner.
+
 ## Reproduce
 
 ```sh

@@ -37510,6 +37510,33 @@ fn test_dev_graph_cli_query_and_stale_mapping() {
         String::from_utf8_lossy(&uncovered.stdout).trim(),
         "(no matches)"
     );
+    for (limit, budget) in [(1, 200), (30, 1), (30, 100)] {
+        let bounded = std::process::Command::new(arch_bin)
+            .args(["graph", "dev-query", "pipe_reg output-port reset", "--root"])
+            .arg(root)
+            .arg("--index")
+            .arg(&index)
+            .args([
+                "--include-source",
+                "--limit",
+                &limit.to_string(),
+                "--token-budget",
+                &budget.to_string(),
+            ])
+            .output()
+            .expect("bounded developer graph query");
+        assert!(
+            bounded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&bounded.stderr)
+        );
+        let text = String::from_utf8_lossy(&bounded.stdout);
+        assert!(text.len() <= budget * 4, "{limit}/{budget}: {text}");
+        assert!(
+            text.trim_end().ends_with("(truncated)") || text.trim() == "...",
+            "{text}"
+        );
+    }
 }
 
 #[test]
