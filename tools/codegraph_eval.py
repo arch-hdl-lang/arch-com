@@ -248,6 +248,7 @@ def answer_passes(task: dict, answer: str) -> bool:
 
 def verified_success(record: dict) -> bool:
     return bool(record["success"] and record.get("known_file_source_verified", True)
+                and record.get("known_file_answer_verified", True)
                 and (record["kind"] == "edit" or record.get("tool_calls", 0) > 0
                      or (record["kind"] == "known_file" and record.get("prefetched_source_verified", False))))
 
@@ -292,6 +293,59 @@ def prefetch_source(workspace: Path, source_path: str, byte_budget: int) -> dict
                 "payload_bytes": len(payload.encode("utf-8"))}
     except UnicodeDecodeError:
         return {**result, "status": "non_text"}
+    except (OSError, ValueError, RuntimeError):
+        return result
+
+
+def known_file_answer_evidence(answer: str, workspace: Path, source_path: str) -> dict:
+    """Bind a reported symbol/location to literal source, without an answer key.
+
+    This does not prove that the cited symbol semantically answers the question.
+    """
+    result = {"verified": False, "reason": "invalid_json", "read_calls": 0, "read_bytes": 0}
+    def unique_object(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("duplicate key")
+            obj[key] = value
+        return obj
+
+    try:
+        if len(answer.encode("utf-8")) > 8192:
+            return result
+        citation = json.loads(answer, object_pairs_hook=unique_object)
+        if (not isinstance(citation, dict) or set(citation) != {"symbol", "path", "line", "quote"}
+                or not isinstance(citation["symbol"], str)
+                or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", citation["symbol"])
+                or citation["path"] != source_path
+                or type(citation["line"]) is not int or citation["line"] < 1
+                or not isinstance(citation["quote"], str) or not citation["quote"].strip()):
+            return {**result, "reason": "invalid_citation"}
+        result["reason"] = "unavailable_source"
+        root = workspace.resolve()
+        target = (root / source_path).resolve()
+        if (Path(source_path).is_absolute() or ".." in Path(source_path).parts
+                or not target.is_relative_to(root) or not target.is_file()
+                or any(part in (".archgraph", ".archdevgraph", ".git") for part in
+                       (*Path(source_path).parts, *target.relative_to(root).parts))):
+            return {**result, "reason": "unavailable_source"}
+        result["read_calls"] = 1
+        with target.open("rb") as source:
+            raw = source.read(1024 * 1024 + 1)
+        result["read_bytes"] = len(raw)
+        if len(raw) > 1024 * 1024 or b"\0" in raw:
+            return {**result, "reason": "unsupported_source"}
+        result["reason"] = "unsupported_source"
+        lines = raw.decode("utf-8").split("\n")
+        result["sha256"] = hashlib.sha256(raw).hexdigest()
+        line = citation["line"]
+        if line > len(lines) or lines[line - 1].strip() != citation["quote"]:
+            return {**result, "reason": "quote_mismatch"}
+        if not re.search(rf"(?<!\w){re.escape(citation['symbol'])}(?!\w)", citation["quote"]):
+            return {**result, "reason": "symbol_mismatch"}
+        return {**result, "verified": True, "reason": "source_bound",
+                "graded_answer": f"{citation['symbol']} {source_path}:{line}"}
     except (OSError, ValueError, RuntimeError):
         return result
 
@@ -424,7 +478,7 @@ def make_mcp_config(workspace: Path, arch_bin: Path, mcp_python: Path) -> str:
 
 def prompt_for(task: dict, condition: str, arch_command: str = "arch",
                graph_token_budget: int = 100, include_source: bool = False,
-               source_payload: str = "") -> str:
+               source_payload: str = "", verify_known_file_answer: bool = False) -> str:
     if condition == "source_prefetch":
         condition = "no_graph"
     prompt = task["prompt"] + " " + VERIFY
@@ -458,6 +512,17 @@ def prompt_for(task: dict, condition: str, arch_command: str = "arch",
                    "Do not run graph CLI commands. Verify only missing details from source.")
     if task["kind"] == "edit":
         prompt += " Work only inside this checkout."
+    if verify_known_file_answer:
+        if task["kind"] != "known_file" or condition not in ("no_graph", "default") or task.get("verdict"):
+            raise ValueError("answer evidence supports positive known-file controls only")
+        prompt += (
+            " Return only a JSON object with exactly these fields: symbol (the exact identifier), "
+            "path (the named repository-relative file), line (a positive integer), and quote "
+            "(the complete declaration line with surrounding whitespace removed). "
+            "Copy these from the observed source, not memory. Check all matching declarations "
+            "before concluding none exists. If you cannot support an answer, return null; "
+            "that is an unverified result, not a verified absence claim."
+        )
     if source_payload:
         if task["kind"] != "known_file" or condition not in ("no_graph", "default"):
             raise ValueError("source prefetch supports only no_graph/default known-file controls")
@@ -469,8 +534,10 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
                 arch_bin: Path, mcp_python: Path, model: str, timeout: int,
                 ignore_user_config: bool, graph_token_budget: int = 100,
                 include_source: bool = False, recover_known_file: bool = False,
-                prefetch_known_file: bool = False, prefetch_byte_budget: int = 8192) -> dict:
-    recovery_enabled = recover_known_file and task["kind"] == "known_file"
+                prefetch_known_file: bool = False, prefetch_byte_budget: int = 8192,
+                verify_known_file_answer: bool = False) -> dict:
+    answer_gate = verify_known_file_answer and task["kind"] == "known_file"
+    recovery_enabled = (recover_known_file or answer_gate) and task["kind"] == "known_file"
     if condition == "source_prefetch" and task["kind"] != "known_file":
         raise ValueError("source_prefetch requires known-file controls")
     prefetch_enabled = (prefetch_known_file or condition == "source_prefetch") and task["kind"] == "known_file"
@@ -501,7 +568,7 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
             (output / f"{label}-prefetch.json").write_text(json.dumps(prefetch, indent=2) + "\n")
         supplied = bool(prefetch and prefetch["status"] == "ready")
         prompt = prompt_for(task, condition, str(arch_bin), graph_token_budget, include_source,
-                            prefetch["payload"] if supplied else "")
+                            prefetch["payload"] if supplied else "", answer_gate)
         command = [
             "codex", "exec", "--json", "--approve-for-me", "-m", model,
             "-c", 'model_reasoning_effort="low"',
@@ -517,6 +584,8 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         all_events, stages = [], []
         elapsed = 0.0
         source_verified = False
+        answer_evidence = None
+        answer_evidence_seconds = 0.0
         for stage in range(2 if recovery_enabled else 1):
             start = time.monotonic()
             process = subprocess.Popen(command, cwd=workspace, env=env, stdout=subprocess.PIPE,
@@ -547,15 +616,29 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
             events = parse_events(raw)
             stage_trace = trace_result(events)
             all_events.extend(events)
+            if answer_gate:
+                start = time.monotonic()
+                answer_evidence = known_file_answer_evidence(stage_trace["answer"], workspace, task["source_path"])
+                answer_evidence_seconds += time.monotonic() - start
             if source_gate:
                 source_verified = supplied or known_file_source_read(events, workspace, task["source_path"])
                 stages.append({"trace": f"{stage_label}.jsonl", "exit_code": exit_code,
                                "source_verified": source_verified, "agent_seconds": stage_seconds,
                                **{k: stage_trace[k] for k in ("usage_present", "input_tokens", "cached_input_tokens", "output_tokens")}})
-            if (not recovery_enabled or source_verified or exit_code != 0
+                if answer_gate:
+                    stages[-1]["answer_evidence"] = answer_evidence
+            verified = source_verified and (not answer_gate or answer_evidence["verified"])
+            if (not recovery_enabled or verified or exit_code != 0
                     or not stage_trace["usage_present"]
                     or (condition in ("no_graph", "source_prefetch") and stage_trace["graph_calls"] > 0)):
                 break
+            if answer_gate and source_verified:
+                command[-1] = prompt + (
+                    " The previous attempt did not provide a source-bound answer in the required JSON format. "
+                    "Read the named file again, inspect matching declarations, and copy the identifier, "
+                    "line number, and declaration quote exactly. Do not guess or use graph tools."
+                )
+                continue
             command[-1] = prompt + (
                 f" Your previous attempt did not provide a recognized successful direct read of {task['source_path']}. "
                 "Before answering, run a simple `rg -n PATTERN FILE` or `sed -n 'START,ENDp' FILE` "
@@ -584,7 +667,9 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
                 subprocess.check_output(["git", "diff"], cwd=workspace, text=True)
             )
         else:
-            outcome, note = answer_passes(task, trace["answer"]), "answer rubric"
+            grading_answer = (answer_evidence["graded_answer"]
+                              if answer_gate and answer_evidence["verified"] else trace["answer"])
+            outcome, note = answer_passes(task, grading_answer), "answer rubric"
         valid_method = (
             (condition not in ("no_graph", "source_prefetch") or trace["graph_calls"] == 0)
             and (condition != "graph_cli" or
@@ -616,6 +701,10 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         if source_gate:
             record.update(known_file_source_verified=source_verified, recovery_attempts=len(stages) - 1,
                           model_attempts=len(stages), stages=stages)
+        if answer_gate:
+            record.update(known_file_answer_verified=answer_evidence["verified"],
+                          answer_evidence_seconds=round(answer_evidence_seconds, 6))
+            record["success"] = record["success"] and answer_evidence["verified"]
         if prefetch_enabled:
             record.update(prefetched_source_verified=prefetched_source_verified,
                           prefetch_seconds=round(prefetch_seconds, 6),
@@ -659,6 +748,13 @@ def summarize(records: list[dict]) -> dict:
                     host_source_reads=sum(r.get("prefetch", {}).get("read_calls", 0) for r in arm),
                     prefetch_payload_bytes=sum(r.get("prefetch", {}).get("payload_bytes", 0) for r in arm),
                     prefetch_seconds=round(sum(r.get("prefetch_seconds", 0) for r in arm), 6),
+                )
+            if any("known_file_answer_verified" in r for r in records):
+                arms[condition].update(
+                    answer_verified_controls=sum(r.get("known_file_answer_verified", False) for r in arm),
+                    answer_evidence_reads=sum(s.get("answer_evidence", {}).get("read_calls", 0)
+                                              for r in arm for s in r.get("stages", [])),
+                    answer_evidence_seconds=round(sum(r.get("answer_evidence_seconds", 0) for r in arm), 6),
                 )
         paired = {(r["task_id"], r["repeat"]): r for r in subset if r["condition"] == "no_graph"}
         pairs = [(base, r) for r in subset if r["condition"] == "default"
@@ -758,6 +854,8 @@ def main() -> None:
     run.add_argument("--prefetch-known-file", action="store_true",
                      help="supply complete bounded source before known-file model calls; otherwise require direct reads")
     run.add_argument("--prefetch-byte-budget", type=int, default=8192)
+    run.add_argument("--verify-known-file-answer", action="store_true",
+                     help="require source-bound JSON answers for positive known-file controls; retry at most once")
     analyze = sub.add_parser("analyze")
     analyze.add_argument("records", type=Path)
     args = p.parse_args()
@@ -785,7 +883,7 @@ def main() -> None:
             p.error("do not combine source_prefetch with --prefetch-known-file; keep the baseline unprefetched")
         if any(task["kind"] != "known_file" for task in tasks):
             p.error("source_prefetch requires only known-file controls")
-    if args.recover_known_file or args.prefetch_known_file or "source_prefetch" in conditions:
+    if args.recover_known_file or args.verify_known_file_answer or args.prefetch_known_file or "source_prefetch" in conditions:
         if any(condition not in ("no_graph", "default", "source_prefetch") for condition in conditions):
             p.error("known-file policies support only no_graph/default or source_prefetch conditions")
         for task in tasks:
@@ -794,7 +892,9 @@ def main() -> None:
             source = (repo / task.get("source_path", "")).resolve()
             if not task.get("source_path") or not source.is_relative_to(repo):
                 p.error(f"known-file policies require an in-repository source_path: {task['id']}")
-            if args.recover_known_file and not source.is_file():
+            if args.verify_known_file_answer and task.get("verdict"):
+                p.error("answer evidence supports positive known-file controls only")
+            if (args.recover_known_file or args.verify_known_file_answer) and not source.is_file():
                 p.error(f"known-file recovery requires an existing in-repository source_path: {task['id']}")
     args.output.mkdir(parents=True, exist_ok=True)
     records_path = args.output / "records.jsonl"
@@ -809,10 +909,12 @@ def main() -> None:
         "ignore_user_config": args.ignore_user_config, "approval_mode": "approve-for-me",
         "conditions": conditions,
         "recover_known_file": args.recover_known_file,
+        "verify_known_file_answer": args.verify_known_file_answer,
         "prefetch_known_file": args.prefetch_known_file,
         "prefetch_byte_budget": args.prefetch_byte_budget,
         "max_model_attempts": args.repeats * len(conditions) * (
-            len(tasks) + sum(args.recover_known_file and task["kind"] == "known_file" for task in tasks)),
+            len(tasks) + sum((args.recover_known_file or args.verify_known_file_answer)
+                             and task["kind"] == "known_file" for task in tasks)),
         "graph_token_budget": args.graph_token_budget,
         "include_source": args.include_source,
         "codex_version": subprocess.check_output(["codex", "--version"], text=True).strip(),
@@ -836,7 +938,8 @@ def main() -> None:
                                  args.model, args.timeout, args.ignore_user_config,
                                  args.graph_token_budget, args.include_source, args.recover_known_file,
                                  prefetch_known_file=args.prefetch_known_file,
-                                 prefetch_byte_budget=args.prefetch_byte_budget)
+                                 prefetch_byte_budget=args.prefetch_byte_budget,
+                                 verify_known_file_answer=args.verify_known_file_answer)
             records.write(json.dumps(record) + "\n")
             records.flush()
             print(f"{task['id']} r{repeat} {condition}: correct={record['success']} "

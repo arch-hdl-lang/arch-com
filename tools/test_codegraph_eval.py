@@ -8,7 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from codegraph_eval import answer_passes, graph_command_kind, is_graph_command, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, summarize, trace_result, verified_success, workspace_env
+from codegraph_eval import answer_passes, graph_command_kind, is_graph_command, known_file_answer_evidence, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, summarize, trace_result, verified_success, workspace_env
 from codegraph_direct_eval import CROSS_RELATIONS, PIPE_REG_OWNERS, grade_pipe_reg_owners, grade_relations
 
 
@@ -352,13 +352,13 @@ class CodegraphEvalTests(unittest.TestCase):
             self.assertFalse(known_file_source_read(events("cat link.arch"), root / "nested", "link.arch"))
 
     def run_mock_recovery(self, stages, enabled=True, condition="default", kind="known_file",
-                          prefetch=False, byte_budget=8192):
+                          prefetch=False, byte_budget=8192, verify_answer=False, answer_groups=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "engine.rs").write_text("// Engine\nfn emit_ready_body() {}\n")
             task = {"id": "held_out", "kind": kind, "cohort": "compiler",
                     "prompt": "In engine.rs, identify the function that emits the ready body.",
-                    "source_path": "engine.rs", "answer_any": [["emit_ready_body"]]}
+                    "source_path": "engine.rs", "answer_any": answer_groups or [["emit_ready_body"]]}
             processes = []
             for stage in stages:
                 events = []
@@ -385,13 +385,152 @@ class CodegraphEvalTests(unittest.TestCase):
             with patch("codegraph_eval.subprocess.Popen", side_effect=popen):
                 result = run_attempt(task, condition, 1, root, root, root / "arch", root / "python",
                                      "test-model", 10, True, recover_known_file=enabled,
-                                     prefetch_known_file=prefetch, prefetch_byte_budget=byte_budget)
+                                     prefetch_known_file=prefetch, prefetch_byte_budget=byte_budget,
+                                     verify_known_file_answer=verify_answer)
             if (prefetch or condition == "source_prefetch") and kind == "known_file":
                 receipt = json.loads((root / result["prefetch"]["artifact"]).read_text())
                 self.assertEqual({k: v for k, v in receipt.items() if k != "payload"},
                                  {k: v for k, v in result["prefetch"].items() if k != "artifact"})
             files = {p.name: p.read_text() for p in root.glob("*.jsonl")}
             return result, commands, files
+
+    @staticmethod
+    def ready_citation(**changes):
+        return json.dumps({"symbol": "emit_ready_body", "path": "engine.rs", "line": 2,
+                           "quote": "fn emit_ready_body() {}", **changes})
+
+    def test_answer_evidence_binds_name_path_line_and_quote_without_gold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "engine.rs").write_bytes(b"// Engine\r\n  fn emit_ready_body() {}\r\n")
+            result = known_file_answer_evidence(self.ready_citation(), root, "engine.rs")
+            self.assertTrue(result["verified"])
+            self.assertEqual(result["graded_answer"], "emit_ready_body engine.rs:2")
+            self.assertEqual(result["read_calls"], 1)
+            for answer in ("No function exists", "null", "[]", self.ready_citation(line=True),
+                           self.ready_citation(line=0), self.ready_citation(line=1),
+                           self.ready_citation(line=999), self.ready_citation(path="other.rs"),
+                           self.ready_citation(symbol="emit_body_ready"), self.ready_citation(symbol="emit"),
+                           self.ready_citation(quote="fn emit_ready_body() { changed() }"),
+                           self.ready_citation(explanation="No matching function exists"),
+                           self.ready_citation()[:-1] + ', "symbol": "emit_ready_body"}',
+                           " " * 8193 + self.ready_citation()):
+                with self.subTest(answer=answer):
+                    self.assertFalse(known_file_answer_evidence(answer, root, "engine.rs")["verified"])
+
+    def test_answer_evidence_rejects_unavailable_oversized_and_external_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for content in (b"\xff", b"\0", b" " * (1024 * 1024 + 1)):
+                (root / "engine.rs").write_bytes(content)
+                self.assertFalse(known_file_answer_evidence(self.ready_citation(), root, "engine.rs")["verified"])
+            (root / "engine.rs").unlink()
+            self.assertFalse(known_file_answer_evidence(self.ready_citation(), root, "engine.rs")["verified"])
+            (root / "outside.rs").write_text("// Engine\nfn emit_ready_body() {}\n")
+            (root / "repo").mkdir()
+            (root / "repo/engine.rs").symlink_to(root / "outside.rs")
+            self.assertFalse(known_file_answer_evidence(self.ready_citation(), root / "repo", "engine.rs")["verified"])
+            (root / ".git").mkdir()
+            (root / ".git/source").write_text("// Engine\nfn emit_ready_body() {}\n")
+            self.assertFalse(known_file_answer_evidence(self.ready_citation(path=".git/source"), root, ".git/source")["verified"])
+
+    def test_answer_evidence_recovers_false_absence_after_successful_source_read(self):
+        for condition in ("no_graph", "default", "source_prefetch"):
+            result, commands, files = self.run_mock_recovery([
+                {"command": "rg -n ready engine.rs", "answer": "No matching function exists in engine.rs."},
+                {"command": "cat engine.rs", "answer": self.ready_citation()},
+            ], enabled=False, condition=condition, verify_answer=True)
+            self.assertTrue(result["success"])
+            self.assertEqual([s["source_verified"] for s in result["stages"]], [True, True])
+            self.assertEqual([s["answer_evidence"]["verified"] for s in result["stages"]], [False, True])
+            self.assertTrue(result["known_file_answer_verified"])
+            self.assertEqual(result["model_attempts"], 2)
+            self.assertEqual(result["input_tokens"], 200)
+            self.assertEqual(result["tool_calls"], 2)
+            self.assertEqual(len(files), 2)
+            self.assertIn("did not provide a source-bound answer", commands[1][-1])
+            self.assertNotIn("emit_ready_body", commands[1][-1].split("Source evidence")[0])
+            arm = summarize([result])["all"]["arms"][condition]
+            self.assertEqual(arm["answer_verified_controls"], 1)
+            self.assertEqual(arm["answer_evidence_reads"], 1)
+            self.assertEqual((arm["tokens"], arm["uncached_tokens"]), (220, 100))
+
+    def test_answer_evidence_never_retries_a_valid_but_semantically_wrong_citation(self):
+        result, commands, _ = self.run_mock_recovery([
+            {"command": "cat engine.rs", "answer": self.ready_citation(symbol="other", line=3, quote="fn other() { emit_ready_body(); }"),
+             "source_after": "// Engine\nfn emit_ready_body() {}\nfn other() { emit_ready_body(); }\n"},
+        ], verify_answer=True)
+        self.assertTrue(result["known_file_answer_verified"])
+        self.assertFalse(result["success"])
+        self.assertEqual(len(commands), 1)
+
+    def test_answer_evidence_grades_location_and_does_not_change_discovery(self):
+        result, commands, _ = self.run_mock_recovery([
+            {"command": "cat engine.rs", "answer": self.ready_citation()}],
+            verify_answer=True, answer_groups=[["engine.rs:2"]])
+        self.assertTrue(result["success"])
+        self.assertEqual(len(commands), 1)
+        result, commands, _ = self.run_mock_recovery([
+            {"command": "cat engine.rs", "answer": "emit_ready_body"}],
+            kind="discovery", verify_answer=True)
+        self.assertTrue(result["success"])
+        self.assertNotIn("known_file_answer_verified", result)
+        self.assertNotIn("Return only a JSON object", commands[0][-1])
+
+    def test_answer_evidence_keeps_retry_bound_and_infrastructure_guards(self):
+        for last in ({"command": "cat engine.rs", "answer": "null"},
+                     {"command": "cat engine.rs", "answer": self.ready_citation(), "usage": False},
+                     {"answer": self.ready_citation()}):
+            result, commands, _ = self.run_mock_recovery([
+                {"command": "cat engine.rs", "answer": "No function exists"}, last,
+            ], verify_answer=True)
+            self.assertFalse(result["success"])
+            self.assertEqual(len(commands), 2)
+        for first in ({"answer": "null", "exit": 1}, {"answer": "null", "exit": 124},
+                      {"answer": "null", "usage": False},
+                      {"command": "arch graph dev-query ready", "answer": "null"}):
+            result, commands, _ = self.run_mock_recovery([first], condition="no_graph", verify_answer=True)
+            self.assertFalse(result["success"])
+            self.assertEqual(len(commands), 1)
+
+    def test_answer_evidence_accepts_first_pass_prefetch_and_is_opt_in(self):
+        result, commands, _ = self.run_mock_recovery([
+            {"answer": self.ready_citation()}], prefetch=True, verify_answer=True)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["tool_calls"], 0)
+        self.assertEqual(len(commands), 1)
+        result["known_file_answer_verified"] = False
+        self.assertFalse(verified_success(result))
+        result, commands, _ = self.run_mock_recovery([
+            {"command": "cat engine.rs", "answer": "No matching function exists"}])
+        self.assertNotIn("known_file_answer_verified", result)
+        self.assertEqual(len(commands), 1)
+
+    def test_answer_evidence_cli_rejects_invalid_policy_before_model_launch(self):
+        for changes, condition, message in (
+                ({}, "graph_cli", "known-file policies support only"),
+                ({"source_path": "absent.rs"}, "default", "requires an existing"),
+                ({"verdict": "no", "symbol": "missing"}, "default", "positive known-file")):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "engine.rs").write_text("fn ready() {}\n")
+                exe = root / "fake-bin"
+                exe.touch()
+                task = {"id": "control", "kind": "known_file", "cohort": "compiler",
+                        "source_path": "engine.rs", "prompt": "Identify a function in engine.rs.", **changes}
+                manifest = root / "tasks.json"
+                manifest.write_text(json.dumps({"schema_version": 1, "tasks": [task]}))
+                argv = ["codegraph_eval.py", "run", "--repo", str(root), "--tasks", str(manifest),
+                        "--output", str(root / "output"), "--arch-bin", str(exe),
+                        "--mcp-python", str(exe), "--condition", condition, "--verify-known-file-answer"]
+                err = io.StringIO()
+                with patch("sys.argv", argv), patch("codegraph_eval.subprocess.Popen") as launch, \
+                        redirect_stderr(err), self.assertRaises(SystemExit) as raised:
+                    main()
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn(message, err.getvalue())
+                launch.assert_not_called()
+                self.assertFalse((root / "output").exists())
 
     def test_recovery_counts_both_stages_and_does_not_supply_answer_key(self):
         for condition in ("no_graph", "default"):
@@ -497,8 +636,10 @@ class CodegraphEvalTests(unittest.TestCase):
     def test_recovery_cli_records_maximum_model_budget_and_keeps_schedule(self):
         template, _, _ = self.run_mock_recovery([
             {"command": "cat engine.rs", "answer": "emit_ready_body"}], enabled=False)
-        for enabled, prefetched, maximum in ((False, False, 28), (False, True, 28),
-                                             (True, False, 36), (True, True, 36)):
+        for enabled, prefetched, evidence, maximum in (
+                (False, False, False, 28), (False, True, False, 28),
+                (True, False, False, 36), (True, True, False, 36),
+                (False, False, True, 36), (True, False, True, 36), (False, True, True, 36)):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 exe = root / "fake-bin"
@@ -511,6 +652,8 @@ class CodegraphEvalTests(unittest.TestCase):
                     argv.append("--recover-known-file")
                 if prefetched:
                     argv.append("--prefetch-known-file")
+                if evidence:
+                    argv.append("--verify-known-file-answer")
                 def attempt(task, condition, repeat, *args, **kwargs):
                     return {**template, "task_id": task["id"], "condition": condition,
                             "repeat": repeat, "kind": task["kind"], "cohort": task["cohort"]}
@@ -523,10 +666,12 @@ class CodegraphEvalTests(unittest.TestCase):
                 self.assertEqual(metadata["max_model_attempts"], maximum)
                 self.assertEqual(metadata["recover_known_file"], enabled)
                 self.assertEqual(metadata["prefetch_known_file"], prefetched)
+                self.assertEqual(metadata["verify_known_file_answer"], evidence)
                 self.assertEqual(metadata["prefetch_byte_budget"], 8192)
                 self.assertEqual(run.call_count, 28)
                 self.assertTrue(all(call.args[-1] == enabled for call in run.call_args_list))
                 self.assertTrue(all(call.kwargs["prefetch_known_file"] == prefetched for call in run.call_args_list))
+                self.assertTrue(all(call.kwargs["verify_known_file_answer"] == evidence for call in run.call_args_list))
 
     def test_prefetch_preserves_whole_source_and_lf_line_numbers(self):
         with tempfile.TemporaryDirectory() as directory:

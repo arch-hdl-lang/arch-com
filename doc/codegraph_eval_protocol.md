@@ -166,6 +166,54 @@ with recovery (eight known-file rows may each retry once). Obtain approval for
 that maximum, not merely 28 calls. Never present recovered successes without
 their initial token cost, or silently rescore earlier evidence under this policy.
 
+## Opt-in source-bound answers
+
+The source-prefetch live run exposed a different failure: a successful direct
+read included the correct function, but the model said no such function existed.
+The read-only recovery gate intentionally does not detect that. The new
+`--verify-known-file-answer` policy requires a structured answer and independently
+binds it to source. It applies identically to positive known-file controls in
+`no_graph`, `default`, and `source_prefetch`; discovery/edit tasks stay unchanged.
+Absence-verdict controls and guided graph arms are rejected for this policy.
+
+The model must return only a JSON object with `symbol`, `path`, `line`, and
+`quote`. The verifier requires the exact named path, a positive integer line,
+the complete source line with surrounding whitespace removed, and the symbol
+as a whole identifier in that quote. It rejects duplicate/extra fields, prose
+or null answers, mismatched locations/quotes, external or metadata paths, and
+missing, binary, invalid UTF-8, or over-1-MiB source files. Answers are bounded
+to 8192 UTF-8 bytes. Source lines are LF-delimited. The verifier reads source
+locally; it neither injects source into the model nor accepts an answer key.
+
+A successful exit with usage but without both source-read evidence and a
+source-bound answer permits one fresh recovery call. This flag enables that
+same two-call maximum even without `--recover-known-file`; combining the flags
+does not permit a third call. A format/evidence reminder replaces the read-only
+reminder when the first attempt already read source. No previous answer, gold
+symbol, expected line, or rubric result is supplied. Infrastructure failures,
+missing usage, and forbidden graph calls retain the existing stop rules. A
+second unsupported answer fails closed. Fresh prefetch evidence can still
+satisfy the read requirement without a model tool call.
+
+The independent answer rubric remains necessary. It grades only the verified
+`symbol path:line`, not incidental symbols in the quote. A citation to an
+existing but semantically wrong function does **not** trigger recovery based
+on the gold answer; it fails the rubric. Literal source binding is not proof
+of declaration syntax, semantic relevance, complete absence, or that the
+model's own read included the cited line. This is a bounded evidence contract,
+not a general semantic verifier or a production default.
+
+Each stage records `answer_evidence` with its result, reason, source-read count,
+bytes read, and source hash when available. Records add
+`known_file_answer_verified` and `answer_evidence_seconds`; summaries add
+`answer_verified_controls`, `answer_evidence_reads`, and evidence-check time.
+These host reads are separate from prefetch reads and model tool calls. All
+model stages, including failed answers, retain their full token/latency cost.
+Metadata records the flag and the maximum model-call count. Legacy records,
+prompts with the flag disabled, frozen task rubrics, and old results are not
+rewritten. No live effectiveness or savings claim follows from mocked retries;
+a new, explicitly approved paired run is still required.
+
 ## First-pass source prefetch experiment
 
 The focused recovery live check restored 4/4 default correctness after two
@@ -195,9 +243,10 @@ prefetched evidence fails the trial, even if the answer matches the rubric.
 A fresh complete source payload can satisfy the retrieval requirement without
 an agent tool call, but it cannot bypass the answer rubric, usage requirement,
 process status, or graph prohibition. An incorrect answer after a supplied
-read does not trigger recovery. Large-file fallbacks use the existing bounded
-recovery policy when enabled. This does not guarantee the model will use the
-source correctly or avoid redundant retrieval.
+read does not trigger read-only recovery. The separately enabled source-bound
+answer policy above also checks the final answer contract. Large-file fallbacks
+use the existing bounded recovery policy when enabled. This does not guarantee
+the model will use the source correctly or avoid redundant retrieval.
 
 Use a dedicated paired comparison, with both arms subject to the same recovery
 policy and graph prohibition:
