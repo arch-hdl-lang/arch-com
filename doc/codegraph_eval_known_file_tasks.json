@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "tasks": [
+    {
+      "id": "user_ram_known_file",
+      "cohort": "user",
+      "kind": "known_file",
+      "source_path": "examples/single_port_ram.arch",
+      "prompt": "In examples/single_port_ram.arch, report the declaration line of SimpleMem as path:line.",
+      "answer_any": [["examples/single_port_ram.arch:14"]]
+    },
+    {
+      "id": "user_synchronizer_known_file",
+      "cohort": "user",
+      "kind": "known_file",
+      "source_path": "examples/synchronizer_basic.arch",
+      "prompt": "In examples/synchronizer_basic.arch, give the FlagSync declaration location as path:line.",
+      "answer_any": [["examples/synchronizer_basic.arch:20"]]
+    },
+    {
+      "id": "compiler_index_width_known_file",
+      "cohort": "compiler",
+      "kind": "known_file",
+      "source_path": "src/width.rs",
+      "prompt": "In src/width.rs, name the function that computes array index width with a one-bit minimum. Include the source path.",
+      "answer_any": [["index_width"], ["src/width.rs"]]
+    },
+    {
+      "id": "compiler_python_runtime_known_file",
+      "cohort": "compiler",
+      "kind": "known_file",
+      "source_path": "src/embedded_python.rs",
+      "prompt": "In src/embedded_python.rs, name the function that writes the embedded Python runtime into a build directory. Include the source path.",
+      "answer_any": [["materialize"], ["src/embedded_python.rs"]]
+    },
+    {
+      "id": "user_large_source_known_file",
+      "cohort": "user",
+      "kind": "known_file",
+      "source_path": "examples/lz4_decomp.arch",
+      "prompt": "In examples/lz4_decomp.arch, report the Lz4Decomp module declaration location as path:line.",
+      "answer_any": [["examples/lz4_decomp.arch:67"]]
+    },
+    {
+      "id": "compiler_large_source_known_file",
+      "cohort": "compiler",
+      "kind": "known_file",
+      "source_path": "src/diagnostics.rs",
+      "prompt": "In src/diagnostics.rs, name the function that converts a lexer Span into a miette SourceSpan. Include the source path.",
+      "answer_any": [["span_to_source_span"], ["src/diagnostics.rs"]]
+    }
+  ]
+}

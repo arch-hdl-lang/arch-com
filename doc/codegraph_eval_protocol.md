@@ -121,8 +121,9 @@ The 2026-11-13 live check still produced two incorrect default known-file
 answers without a source read, despite explicit prompting. To test an
 orchestration remedy, add `--recover-known-file` to a separately approved run.
 This is a new workflow policy, not a graph retrieval improvement or a change to
-the frozen scoring rubric. It applies identically to `no_graph` and `default`;
-guided graph conditions are rejected when this flag is enabled.
+the frozen scoring rubric. It applies identically to `no_graph`, `default`,
+and the direct-source `source_prefetch` condition; guided graph conditions are
+rejected when this flag is enabled.
 
 Known-file tasks provide a `source_path` field naming the already-known file,
 not a gold symbol or line number. Both checked-in manifests add only this
@@ -164,3 +165,78 @@ two-repeat paired suite has 28 scheduled rows and **up to 36 model invocations**
 with recovery (eight known-file rows may each retry once). Obtain approval for
 that maximum, not merely 28 calls. Never present recovered successes without
 their initial token cost, or silently rescore earlier evidence under this policy.
+
+## First-pass source prefetch experiment
+
+The focused recovery live check restored 4/4 default correctness after two
+retries, but used 25.75% more total and 36.35% more uncached tokens than
+search-only. A separate opt-in experiment now tests whether supplying source
+before the first model invocation avoids that recovery cost. It is not enabled
+by default and has no new live token result yet.
+
+The `source_prefetch` condition reads the exact `source_path` supplied by a
+known-file task, before starting Codex. It provides the **complete file** as
+JSON containing numbered lines, a SHA-256 digest, and a trailing-newline flag.
+It does not inspect the task prompt, rubric, symbol names, or graph to select
+lines. For identical file bytes, path, and budget, the payload is independent
+of the question.
+Comments and strings are explicitly labeled as source data, not instructions.
+
+`--prefetch-byte-budget` defaults to 8192 bytes and accepts 1 through 65536.
+Both the raw read and rendered JSON are bounded. A file that does not fit is
+not partially supplied: the prompt retains the ordinary direct-read workflow.
+Missing, unreadable, empty, or non-UTF-8 files also fall back. Sources outside
+the workspace and graph-index/Git metadata paths are never prefetched. Existing
+recovery-mode startup validation still rejects missing or external source
+paths when `--recover-known-file` is enabled.
+
+After the model finishes, the runner rechecks a supplied file's hash. Stale
+prefetched evidence fails the trial, even if the answer matches the rubric.
+A fresh complete source payload can satisfy the retrieval requirement without
+an agent tool call, but it cannot bypass the answer rubric, usage requirement,
+process status, or graph prohibition. An incorrect answer after a supplied
+read does not trigger recovery. Large-file fallbacks use the existing bounded
+recovery policy when enabled. This does not guarantee the model will use the
+source correctly or avoid redundant retrieval.
+
+Use a dedicated paired comparison, with both arms subject to the same recovery
+policy and graph prohibition:
+
+```sh
+python3 tools/codegraph_eval.py run \
+  --repo . --arch-bin target/debug/arch --mcp-python /path/to/mcp/.venv/bin/python3 \
+  --tasks doc/codegraph_eval_known_file_tasks.json \
+  --condition no_graph --condition source_prefetch \
+  --recover-known-file --prefetch-byte-budget 8192 \
+  --model gpt-6-luna --repeats 1 --seed 55 --ignore-user-config \
+  --output /tmp/arch-known-file-prefetch-eval
+```
+
+This requires separate approval for **up to 24 model invocations**: six tasks,
+two conditions, one repeat, and at most one recovery per scheduled trial.
+The randomized schedule interleaves both conditions. The six new controls use
+different files from the previous live known-file controls: four small ARCH/Rust files
+and two larger fallback files. They are budget-coverage cases, not a statistically
+representative sample; additional repeats and held-out tasks remain necessary.
+No selection rules are tuned from their answer keys.
+
+For a feasibility run applying prefetch to both existing arms, use
+`--prefetch-known-file` instead of the `source_prefetch` condition. That flag
+must not be combined with the dedicated condition, to prevent accidentally
+prefetching the comparison baseline. A default-versus-search comparison with
+the flag on both arms does not measure the effect of prefetch itself.
+
+Every prefetch attempt writes a `-prefetch.json` receipt, including the exact
+payload sent (or fallback status), source hash when available, and freshness
+result. Records keep the receipt path, `prefetched_source_verified`, source
+read counts, payload bytes, and host read/check time. `tool_calls` still counts
+only model-issued calls; host reads are reported separately, including the
+freshness check and failed/oversized reads. Provider usage already includes
+the injected source, and recovery costs remain included. Do not subtract an
+estimated source-token cost from provider totals.
+
+Summary arms include `host_source_reads`, `prefetch_payload_bytes`, and
+`prefetch_seconds`; `source_prefetch_vs_search` reports only pairs with valid
+answers in both arms. Raw arm totals retain failures. Direct-source prefetch
+is not classified as graph use or graph savings. Historical records without
+prefetch fields retain their previous analysis.

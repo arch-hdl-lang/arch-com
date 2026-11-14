@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -7,7 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from codegraph_eval import answer_passes, graph_command_kind, is_graph_command, known_file_source_read, load_tasks, main, parse_events, prompt_for, run_attempt, summarize, trace_result, verified_success, workspace_env
+from codegraph_eval import answer_passes, graph_command_kind, is_graph_command, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, summarize, trace_result, verified_success, workspace_env
 from codegraph_direct_eval import CROSS_RELATIONS, PIPE_REG_OWNERS, grade_pipe_reg_owners, grade_relations
 
 
@@ -350,7 +351,8 @@ class CodegraphEvalTests(unittest.TestCase):
             (root / "nested/link.arch").symlink_to(root / "design.arch")
             self.assertFalse(known_file_source_read(events("cat link.arch"), root / "nested", "link.arch"))
 
-    def run_mock_recovery(self, stages, enabled=True, condition="default", kind="known_file"):
+    def run_mock_recovery(self, stages, enabled=True, condition="default", kind="known_file",
+                          prefetch=False, byte_budget=8192):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "engine.rs").write_text("// Engine\nfn emit_ready_body() {}\n")
@@ -377,10 +379,17 @@ class CodegraphEvalTests(unittest.TestCase):
             commands = []
             def popen(command, **kwargs):
                 commands.append(list(command))
+                if "source_after" in stages[len(commands) - 1]:
+                    (root / "engine.rs").write_text(stages[len(commands) - 1]["source_after"])
                 return processes[len(commands) - 1]
             with patch("codegraph_eval.subprocess.Popen", side_effect=popen):
                 result = run_attempt(task, condition, 1, root, root, root / "arch", root / "python",
-                                     "test-model", 10, True, recover_known_file=enabled)
+                                     "test-model", 10, True, recover_known_file=enabled,
+                                     prefetch_known_file=prefetch, prefetch_byte_budget=byte_budget)
+            if (prefetch or condition == "source_prefetch") and kind == "known_file":
+                receipt = json.loads((root / result["prefetch"]["artifact"]).read_text())
+                self.assertEqual({k: v for k, v in receipt.items() if k != "payload"},
+                                 {k: v for k, v in result["prefetch"].items() if k != "artifact"})
             files = {p.name: p.read_text() for p in root.glob("*.jsonl")}
             return result, commands, files
 
@@ -488,7 +497,8 @@ class CodegraphEvalTests(unittest.TestCase):
     def test_recovery_cli_records_maximum_model_budget_and_keeps_schedule(self):
         template, _, _ = self.run_mock_recovery([
             {"command": "cat engine.rs", "answer": "emit_ready_body"}], enabled=False)
-        for enabled, maximum in ((False, 28), (True, 36)):
+        for enabled, prefetched, maximum in ((False, False, 28), (False, True, 28),
+                                             (True, False, 36), (True, True, 36)):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 exe = root / "fake-bin"
@@ -499,7 +509,9 @@ class CodegraphEvalTests(unittest.TestCase):
                         "--mcp-python", str(exe), "--repeats", "2"]
                 if enabled:
                     argv.append("--recover-known-file")
-                def attempt(task, condition, repeat, *args):
+                if prefetched:
+                    argv.append("--prefetch-known-file")
+                def attempt(task, condition, repeat, *args, **kwargs):
                     return {**template, "task_id": task["id"], "condition": condition,
                             "repeat": repeat, "kind": task["kind"], "cohort": task["cohort"]}
                 with patch("sys.argv", argv), redirect_stdout(io.StringIO()), \
@@ -510,8 +522,230 @@ class CodegraphEvalTests(unittest.TestCase):
                 metadata = json.loads((root / "output/metadata.json").read_text())
                 self.assertEqual(metadata["max_model_attempts"], maximum)
                 self.assertEqual(metadata["recover_known_file"], enabled)
+                self.assertEqual(metadata["prefetch_known_file"], prefetched)
+                self.assertEqual(metadata["prefetch_byte_budget"], 8192)
                 self.assertEqual(run.call_count, 28)
                 self.assertTrue(all(call.args[-1] == enabled for call in run.call_args_list))
+                self.assertTrue(all(call.kwargs["prefetch_known_file"] == prefetched for call in run.call_args_list))
+
+    def test_prefetch_preserves_whole_source_and_lf_line_numbers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for raw in (b"// comment\r\nfn answer() {}\r\n", "// \u03bb\u2028text\nfn answer() {}".encode(), b"first\n\n"):
+                (root / "small.rs").write_bytes(raw)
+                result = prefetch_source(root, "small.rs", 8192)
+                self.assertEqual(result["status"], "ready")
+                self.assertEqual(result["sha256"], hashlib.sha256(raw).hexdigest())
+                self.assertEqual(result["read_calls"], 1)
+                data = json.loads(result["payload"])
+                reconstructed = "\n".join(line for _, line in data["lines"])
+                if data["ends_with_newline"]:
+                    reconstructed += "\n"
+                self.assertEqual(reconstructed.encode(), raw)
+                self.assertEqual(data["lines"][1][0], 2)
+                self.assertTrue(data["complete"])
+                self.assertLessEqual(result["payload_bytes"], 8192)
+
+    def test_prefetch_never_supplies_partial_or_nontext_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for raw, budget, status in ((b"x" * 100, 99, "over_budget"),
+                                        (b"fn a() {}", 32, "over_budget"),
+                                        (b"\xff", 8192, "non_text"), (b"\0", 8192, "non_text"),
+                                        (b" \n", 8192, "empty")):
+                (root / "small.rs").write_bytes(raw)
+                result = prefetch_source(root, "small.rs", budget)
+                self.assertEqual(result["status"], status)
+                self.assertEqual(result["payload"], "")
+                self.assertEqual(result["payload_bytes"], 0)
+            for budget in (0, 65537):
+                with self.assertRaises(ValueError):
+                    prefetch_source(root, "small.rs", budget)
+            self.assertEqual(prefetch_source(root, "absent.rs", 8192)["status"], "unavailable")
+            with patch.object(Path, "open", side_effect=PermissionError):
+                result = prefetch_source(root, "small.rs", 8192)
+            self.assertEqual(result["status"], "unavailable")
+            self.assertEqual(result["payload"], "")
+
+    def test_prefetch_rejects_escape_and_graph_index_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "repo").mkdir()
+            (root / "outside.rs").write_text("fn secret() {}")
+            (root / "repo/link.rs").symlink_to(root / "outside.rs")
+            for name in ("link.rs", "../outside.rs"):
+                self.assertEqual(prefetch_source(root / "repo", name, 8192)["status"], "outside_workspace")
+            for folder in (".archgraph", ".archdevgraph", ".git"):
+                (root / "repo" / folder).mkdir()
+                (root / "repo" / folder / "nodes").write_text("index data")
+                self.assertEqual(prefetch_source(root / "repo", f"{folder}/nodes", 8192)["status"], "excluded_path")
+            (root / "repo/alias.rs").symlink_to(root / "repo/.archgraph/nodes")
+            self.assertEqual(prefetch_source(root / "repo", "alias.rs", 8192)["status"], "excluded_path")
+
+    def test_prefetched_answer_requires_no_model_tool_but_counts_host_reads(self):
+        for condition in ("no_graph", "default"):
+            result, commands, _ = self.run_mock_recovery([
+                {"answer": "emit_ready_body"}], condition=condition, prefetch=True)
+            self.assertTrue(result["success"])
+            self.assertTrue(verified_success(result))
+            self.assertTrue(result["prefetched_source_verified"])
+            self.assertEqual(result["tool_calls"], 0)
+            self.assertEqual(result["graph_calls"], 0)
+            self.assertEqual(len(commands), 1)
+            self.assertIn("already read the complete", commands[0][-1])
+            self.assertIn("fn emit_ready_body() {}", commands[0][-1])
+            self.assertNotIn("execute one targeted source read", commands[0][-1])
+            arm = summarize([result])["all"]["arms"][condition]
+            self.assertEqual(arm["host_source_reads"], 2)
+            self.assertEqual(arm["prefetched_controls"], 1)
+            self.assertEqual(arm["tokens"], 110)
+            self.assertEqual(arm["uncached_tokens"], 50)
+            self.assertGreater(arm["prefetch_payload_bytes"], 0)
+
+    def test_prefetch_does_not_accept_stale_incorrect_or_usage_free_answers(self):
+        for stage in ({"answer": "emit_ready_body", "source_after": "fn changed() {}"},
+                      {"answer": "emit_body_ready"},
+                      {"answer": "emit_ready_body", "usage": False},
+                      {"answer": "emit_ready_body", "exit": 1}):
+            result, commands, _ = self.run_mock_recovery([stage], prefetch=True)
+            self.assertFalse(result["success"])
+            self.assertFalse(verified_success(result))
+            self.assertEqual(len(commands), 1)
+            if "source_after" in stage:
+                self.assertFalse(result["prefetch"]["fresh"])
+                self.assertFalse(result["known_file_source_verified"])
+
+    def test_prefetch_budget_miss_falls_back_and_can_use_bounded_recovery(self):
+        result, commands, _ = self.run_mock_recovery([
+            {"answer": "emit_body_ready"},
+            {"command": "cat engine.rs", "answer": "emit_ready_body"}], prefetch=True, byte_budget=1)
+        self.assertTrue(result["success"])
+        self.assertFalse(result["prefetched_source_verified"])
+        self.assertEqual(result["prefetch"]["status"], "over_budget")
+        self.assertEqual(result["prefetch"]["payload_bytes"], 0)
+        self.assertNotIn("Source evidence", commands[0][-1])
+        self.assertEqual(result["recovery_attempts"], 1)
+        self.assertEqual(result["input_tokens"], 200)
+        result, commands, _ = self.run_mock_recovery([
+            {"answer": "emit_ready_body"}], enabled=False, prefetch=True, byte_budget=1)
+        self.assertFalse(result["success"])
+        self.assertEqual(len(commands), 1)
+
+    def test_prefetch_has_no_answer_key_dependency_or_discovery_side_effects(self):
+        task = {"kind": "known_file", "cohort": "compiler", "prompt": "Find the declaration in a.rs.", "answer_any": [["gold"]]}
+        original = prompt_for(task, "default", source_payload='{"lines": [[1, "fn actual() {}"]]}')
+        task["answer_any"] = [["different secret"]]
+        self.assertEqual(original, prompt_for(task, "default", source_payload='{"lines": [[1, "fn actual() {}"]]}'))
+        self.assertNotIn("gold", original)
+        result, commands, _ = self.run_mock_recovery([
+            {"answer": "emit_ready_body"}], kind="discovery", prefetch=True)
+        self.assertNotIn("prefetch", result)
+        self.assertNotIn("Source evidence", commands[0][-1])
+        for condition in ("graph_cli", "graph_mcp"):
+            with self.assertRaises(ValueError):
+                prompt_for(task, condition, source_payload="source")
+
+    def test_new_known_file_manifest_covers_small_sources_and_large_fallbacks(self):
+        tasks = load_tasks(ROOT / "doc/codegraph_eval_known_file_tasks.json")
+        self.assertEqual(len(tasks), 6)
+        self.assertEqual({t["kind"] for t in tasks}, {"known_file"})
+        previous_paths = {t.get("source_path") for t in load_tasks(ROOT / "doc/codegraph_eval_cross_file_tasks.json")}
+        self.assertTrue(all(t["source_path"] not in previous_paths for t in tasks))
+        for task in tasks:
+            receipt = prefetch_source(ROOT, task["source_path"], 8192)
+            self.assertEqual(receipt["status"], "over_budget" if "large_source" in task["id"] else "ready")
+            if receipt["status"] == "ready":
+                self.assertLessEqual(receipt["payload_bytes"], 8192)
+            source = (ROOT / task["source_path"]).read_text()
+            if task["cohort"] == "user":
+                _, number = task["answer_any"][0][0].rsplit(":", 1)
+                self.assertRegex(source.splitlines()[int(number) - 1], r"^(ram|synchronizer|module) ")
+            else:
+                self.assertIn("fn " + task["answer_any"][0][0] + "(", source)
+
+    def test_prefetch_budget_includes_json_rendering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.rs").write_text("fn a() {}\n")
+            receipt = prefetch_source(root, "a.rs", 8192)
+            exact = receipt["payload_bytes"]
+            self.assertEqual(prefetch_source(root, "a.rs", exact)["status"], "ready")
+            self.assertEqual(prefetch_source(root, "a.rs", exact - 1)["status"], "over_budget")
+
+    def test_paired_source_arm_is_not_graph_savings_and_requires_both_correct(self):
+        baseline, _, _ = self.run_mock_recovery([
+            {"command": "cat engine.rs", "answer": "emit_ready_body"}], condition="no_graph")
+        prefetched, commands, _ = self.run_mock_recovery([
+            {"answer": "emit_ready_body"}], condition="source_prefetch")
+        self.assertTrue(prefetched["success"])
+        self.assertIn("Graph commands, graph MCP tools", commands[0][-1])
+        baseline.update(input_tokens=200, cached_input_tokens=120)
+        result = summarize([baseline, prefetched])["all"]
+        self.assertEqual(result["source_prefetch_vs_search"]["pairs"], 1)
+        self.assertEqual(result["source_prefetch_vs_search"]["search_tokens"], 210)
+        self.assertEqual(result["source_prefetch_vs_search"]["prefetch_tokens"], 110)
+        self.assertEqual(result["graph_used_successful_pairs"], 0)
+        self.assertIsNone(result["graph_used_pair_saving_pct"])
+        self.assertEqual(result["arms"]["source_prefetch"]["prefetched_controls"], 1)
+        baseline["success"] = False
+        result = summarize([baseline, prefetched])["all"]["source_prefetch_vs_search"]
+        self.assertEqual(result["pairs"], 0)
+        self.assertIsNone(result["total_saving_pct"])
+
+    def test_source_arm_rejects_forbidden_graph_and_non_known_tasks(self):
+        result, commands, _ = self.run_mock_recovery([
+            {"command": "arch graph dev-query ready", "answer": "emit_ready_body"}], condition="source_prefetch")
+        self.assertFalse(result["success"])
+        self.assertFalse(result["valid_method"])
+        self.assertEqual(len(commands), 1)
+        with self.assertRaisesRegex(ValueError, "requires known-file"):
+            self.run_mock_recovery([], condition="source_prefetch", kind="discovery")
+
+    def test_prefetch_cli_prevents_invalid_budget_and_prefetched_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe = root / "bin"
+            exe.touch()
+            base = ["codegraph_eval.py", "run", "--repo", str(ROOT),
+                    "--tasks", str(ROOT / "doc/codegraph_eval_known_file_tasks.json"),
+                    "--output", str(root / "out"), "--arch-bin", str(exe), "--mcp-python", str(exe)]
+            for extra, message in ((["--prefetch-byte-budget", "0"], "between 1 and 65536"),
+                                   (["--condition", "source_prefetch", "--prefetch-known-file"], "keep the baseline unprefetched"),
+                                   (["--condition", "source_prefetch", "--tasks", str(ROOT / "doc/codegraph_eval_cross_file_tasks.json")], "only known-file")):
+                err = io.StringIO()
+                with patch("sys.argv", base + extra), redirect_stderr(err), \
+                        patch("codegraph_eval.subprocess.Popen") as launch, \
+                        self.assertRaises(SystemExit) as raised:
+                    main()
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn(message, err.getvalue())
+                launch.assert_not_called()
+
+    def test_source_prefetch_cli_schedules_a_paired_bounded_experiment(self):
+        template, _, _ = self.run_mock_recovery([
+            {"command": "cat engine.rs", "answer": "emit_ready_body"}])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe = root / "bin"
+            exe.touch()
+            argv = ["codegraph_eval.py", "run", "--repo", str(ROOT),
+                    "--tasks", str(ROOT / "doc/codegraph_eval_known_file_tasks.json"),
+                    "--output", str(root / "out"), "--arch-bin", str(exe), "--mcp-python", str(exe),
+                    "--condition", "no_graph", "--condition", "source_prefetch", "--recover-known-file"]
+            def attempt(task, condition, repeat, *args, **kwargs):
+                return {**template, "task_id": task["id"], "kind": task["kind"],
+                        "cohort": task["cohort"], "condition": condition, "repeat": repeat}
+            with patch("sys.argv", argv), redirect_stdout(io.StringIO()), \
+                    patch("codegraph_eval.subprocess.check_output", side_effect=["abc", "", "codex test", "arch test"]), \
+                    patch("codegraph_eval.prepare_indexes", return_value=0), \
+                    patch("codegraph_eval.run_attempt", side_effect=attempt) as run:
+                main()
+            meta = json.loads((root / "out/metadata.json").read_text())
+            self.assertEqual(meta["conditions"], ["no_graph", "source_prefetch"])
+            self.assertEqual(meta["max_model_attempts"], 24)
+            self.assertFalse(meta["prefetch_known_file"])
+            self.assertEqual(run.call_count, 12)
+            self.assertEqual(sum(call.args[1] == "source_prefetch" for call in run.call_args_list), 6)
 
 
 if __name__ == "__main__":
