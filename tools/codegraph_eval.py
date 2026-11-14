@@ -254,8 +254,51 @@ def verified_success(record: dict) -> bool:
                      or (record["kind"] == "known_file" and record.get("prefetched_source_verified", False))))
 
 
-def prefetch_source(workspace: Path, source_path: str, byte_budget: int) -> dict:
-    """Supply a whole small file, never a task- or rubric-selected excerpt."""
+def source_windows(lines: list[str], query: str, source_path: str,
+                   digest: str, byte_budget: int) -> dict:
+    """Rank literal source windows by query overlap, not declaration or answer keys."""
+    stop = set("a an and as at before declaration file find for from function give in include into "
+               "is it line location name of on or path report source that the this to which with".split())
+    if len(query) > 8192 or len(lines) > 32768:
+        return {"status": "excerpt_limit"}
+    exact_terms = {word for word in re.findall(r"[A-Za-z_][A-Za-z_0-9]*", query.replace(source_path, " "))
+                   if len(word) > 1 and word.casefold() not in stop}
+    if len(exact_terms) > 64:
+        return {"status": "excerpt_limit"}
+    terms = {word.casefold() for word in exact_terms}
+    tokens = [set(re.findall(r"[A-Za-z_][A-Za-z_0-9]*", line)) for line in lines]
+    hits = [terms.intersection(word.casefold() for word in row) for row in tokens]
+    frequency = {term: sum(term in row for row in hits) for term in terms}
+    # Preserve case-sensitive type/symbol matches; rarity only breaks overlap ties.
+    ranked = sorted(((-len(exact_terms & tokens[i]), -len(row),
+                      -sum(1 / frequency[term] for term in sorted(row)), i)
+                     for i, row in enumerate(hits) if row))[:64]
+    selected = set()
+    payload = ""
+    windows = 0
+    for *_, center in ranked:
+        if center in selected:
+            continue
+        candidate = selected | set(range(max(0, center - 2), min(len(lines), center + 3)))
+        rendered = json.dumps({"path": source_path, "sha256": digest, "complete": False,
+                               "total_lines": len(lines), "selection": "query-windows-v1",
+                               "lines": [[i + 1, lines[i]] for i in sorted(candidate)]}, separators=(",", ":"))
+        if len(rendered.encode("utf-8")) > byte_budget:
+            continue
+        selected, payload = candidate, rendered
+        windows += 1
+        if windows == 4:
+            break
+    if not selected:
+        return {"status": "no_excerpt"}
+    return {"status": "ready", "complete": False, "sha256": digest,
+            "selected_lines": [i + 1 for i in sorted(selected)], "payload": payload,
+            "payload_bytes": len(payload.encode("utf-8"))}
+
+
+def prefetch_source(workspace: Path, source_path: str, byte_budget: int,
+                    query: str | None = None) -> dict:
+    """Supply a whole small file, or opt-in question-selected source windows."""
     if not 1 <= byte_budget <= 65536:
         raise ValueError("prefetch byte budget must be between 1 and 65536")
     result = {"path": source_path, "status": "unavailable", "read_calls": 0,
@@ -271,9 +314,14 @@ def prefetch_source(workspace: Path, source_path: str, byte_budget: int) -> dict
         if not target.is_file():
             return result
         result["read_calls"] = 1
+        read_limit = 1024 * 1024 if query is not None else byte_budget
         with target.open("rb") as source:
-            raw = source.read(byte_budget + 1)
-        if len(raw) > byte_budget:
+            raw = source.read(read_limit + 1)
+        if query is not None:
+            result.update(read_bytes=len(raw), policy="query-windows-v1")
+        if len(raw) > read_limit:
+            if query is not None:
+                return {**result, "status": "source_too_large"}
             return {**result, "status": "over_budget"}
         if b"\0" in raw:
             return {**result, "status": "non_text"}
@@ -285,10 +333,14 @@ def prefetch_source(workspace: Path, source_path: str, byte_budget: int) -> dict
         if text.endswith("\n"):
             lines.pop()
         digest = hashlib.sha256(raw).hexdigest()
+        if query is not None and len(raw) > byte_budget:
+            return {**result, **source_windows(lines, query, source_path, digest, byte_budget)}
         payload = json.dumps({"path": source_path, "sha256": digest, "complete": True,
                               "ends_with_newline": text.endswith("\n"),
                               "lines": list(enumerate(lines, 1))}, separators=(",", ":"))
-        if len(payload.encode("utf-8")) > byte_budget:
+        if len(raw) > byte_budget or len(payload.encode("utf-8")) > byte_budget:
+            if query is not None:
+                return {**result, **source_windows(lines, query, source_path, digest, byte_budget)}
             return {**result, "status": "over_budget"}
         return {**result, "status": "ready", "sha256": digest, "payload": payload,
                 "payload_bytes": len(payload.encode("utf-8"))}
@@ -488,13 +540,20 @@ def make_mcp_config(workspace: Path, arch_bin: Path, mcp_python: Path) -> str:
 
 def prompt_for(task: dict, condition: str, arch_command: str = "arch",
                graph_token_budget: int = 100, include_source: bool = False,
-               source_payload: str = "", verify_known_file_answer: bool = False) -> str:
+               source_payload: str = "", verify_known_file_answer: bool = False,
+               partial_source: bool = False) -> str:
     if condition == "source_prefetch":
         condition = "no_graph"
     prompt = task["prompt"] + " " + VERIFY
     if task["kind"] == "known_file" and condition in ("no_graph", "default"):
         if source_payload:
-            prompt += (" The runner has already read the complete named source file below. "
+            if partial_source:
+                prompt += (" The runner supplies selected numbered windows from the named file, NOT the complete file. "
+                           "Gaps are omitted source, not evidence of absence. Cite only a supplied line, "
+                           "or perform a targeted direct read for missing context or ambiguous matches. ")
+            else:
+                prompt += " The runner has already read the complete named source file below. "
+            prompt += (
                        "Use its numbered lines to verify your answer; do not repeat the read "
                        "when the supplied source answers the question. If evidence is missing "
                        "or ambiguous, use a targeted direct read, not graph. "
@@ -548,12 +607,16 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
                 ignore_user_config: bool, graph_token_budget: int = 100,
                 include_source: bool = False, recover_known_file: bool = False,
                 prefetch_known_file: bool = False, prefetch_byte_budget: int = 8192,
-                verify_known_file_answer: bool = False) -> dict:
+                verify_known_file_answer: bool = False, prefetch_excerpts: bool = False) -> dict:
     answer_gate = verify_known_file_answer and task["kind"] == "known_file"
     recovery_enabled = (recover_known_file or answer_gate) and task["kind"] == "known_file"
     if condition == "source_prefetch" and task["kind"] != "known_file":
         raise ValueError("source_prefetch requires known-file controls")
     prefetch_enabled = (prefetch_known_file or condition == "source_prefetch") and task["kind"] == "known_file"
+    if prefetch_excerpts and (not answer_gate or prefetch_known_file
+                             or condition not in ("no_graph", "source_prefetch")):
+        raise ValueError("excerpt prefetch requires verified known-file search/source_prefetch arms")
+    prefetch_query = task["prompt"] if prefetch_excerpts and condition == "source_prefetch" else None
     source_gate = recovery_enabled or prefetch_enabled
     if source_gate and (condition not in ("no_graph", "default", "source_prefetch") or not task.get("source_path")):
         raise ValueError("known-file policies require source_path and search/default/source_prefetch conditions")
@@ -576,12 +639,13 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         prefetch_seconds = 0.0
         if prefetch_enabled:
             start = time.monotonic()
-            prefetch = prefetch_source(workspace, task["source_path"], prefetch_byte_budget)
+            prefetch = prefetch_source(workspace, task["source_path"], prefetch_byte_budget, prefetch_query)
             prefetch_seconds = time.monotonic() - start
             (output / f"{label}-prefetch.json").write_text(json.dumps(prefetch, indent=2) + "\n")
         supplied = bool(prefetch and prefetch["status"] == "ready")
+        partial = supplied and prefetch.get("complete") is False
         prompt = prompt_for(task, condition, str(arch_bin), graph_token_budget, include_source,
-                            prefetch["payload"] if supplied else "", answer_gate)
+                            prefetch["payload"] if supplied else "", answer_gate, partial_source=partial)
         command = [
             "codex", "exec", "--json", "--approve-for-me", "-m", model,
             "-c", 'model_reasoning_effort="low"',
@@ -634,12 +698,22 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
                 answer_evidence = known_file_answer_evidence(stage_trace["answer"], workspace, task["source_path"])
                 answer_evidence_seconds += time.monotonic() - start
             if source_gate:
-                source_verified = supplied or known_file_source_read(events, workspace, task["source_path"])
+                covered = supplied
+                if partial:
+                    covered = False
+                    if answer_evidence["verified"] and answer_evidence["sha256"] == prefetch["sha256"]:
+                        citation = json.loads(stage_trace["answer"])
+                        supplied_lines = dict(json.loads(prefetch["payload"])["lines"])
+                        line = supplied_lines.get(citation["line"])
+                        covered = line is not None and line.strip().startswith(citation["quote"])
+                source_verified = covered or known_file_source_read(events, workspace, task["source_path"])
                 stages.append({"trace": f"{stage_label}.jsonl", "exit_code": exit_code,
                                "source_verified": source_verified, "agent_seconds": stage_seconds,
                                **{k: stage_trace[k] for k in ("usage_present", "input_tokens", "cached_input_tokens", "output_tokens")}})
                 if answer_gate:
                     stages[-1]["answer_evidence"] = answer_evidence
+                if partial:
+                    stages[-1]["prefetch_answer_covered"] = covered
             verified = source_verified and (not answer_gate or answer_evidence["verified"])
             if (not recovery_enabled or verified or exit_code != 0
                     or not stage_trace["usage_present"]
@@ -666,10 +740,14 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
         prefetched_source_verified = False
         if supplied:
             start = time.monotonic()
-            current = prefetch_source(workspace, task["source_path"], prefetch_byte_budget)
+            current = prefetch_source(workspace, task["source_path"], prefetch_byte_budget, prefetch_query)
             prefetch_seconds += time.monotonic() - start
             prefetched_source_verified = current["status"] == "ready" and current["sha256"] == prefetch["sha256"]
+            if answer_gate and answer_evidence["verified"]:
+                prefetched_source_verified &= answer_evidence["sha256"] == prefetch["sha256"]
             prefetch["read_calls"] += current["read_calls"]
+            if "read_bytes" in prefetch:
+                prefetch["read_bytes"] += current.get("read_bytes", 0)
             prefetch["fresh"] = prefetched_source_verified
             if not prefetched_source_verified:
                 source_verified = False
@@ -769,6 +847,17 @@ def summarize(records: list[dict]) -> dict:
                                               for r in arm for s in r.get("stages", [])),
                     answer_evidence_seconds=round(sum(r.get("answer_evidence_seconds", 0) for r in arm), 6),
                 )
+            if any("policy" in r.get("prefetch", {}) for r in records):
+                evidence_bytes = sum(s.get("answer_evidence", {}).get("read_bytes", 0)
+                                     for r in arm for s in r.get("stages", []))
+                prefetch_bytes = sum(r.get("prefetch", {}).get("read_bytes", 0) for r in arm)
+                arms[condition].update(
+                    excerpt_prefetched_controls=sum(r.get("prefetched_source_verified", False)
+                                                     and r.get("prefetch", {}).get("complete") is False for r in arm),
+                    prefetch_read_bytes=prefetch_bytes,
+                    answer_evidence_read_bytes=evidence_bytes,
+                    host_read_bytes=prefetch_bytes + evidence_bytes,
+                )
         paired = {(r["task_id"], r["repeat"]): r for r in subset if r["condition"] == "no_graph"}
         pairs = [(base, r) for r in subset if r["condition"] == "default"
                  if (base := paired.get((r["task_id"], r["repeat"]))) is not None
@@ -867,6 +956,8 @@ def main() -> None:
     run.add_argument("--prefetch-known-file", action="store_true",
                      help="supply complete bounded source before known-file model calls; otherwise require direct reads")
     run.add_argument("--prefetch-byte-budget", type=int, default=8192)
+    run.add_argument("--prefetch-excerpts", action="store_true",
+                     help="supply bounded question-selected windows for oversized treatment files; requires answer verification")
     run.add_argument("--verify-known-file-answer", action="store_true",
                      help="require source-bound JSON answers for positive known-file controls; retry at most once")
     analyze = sub.add_parser("analyze")
@@ -891,6 +982,10 @@ def main() -> None:
     if not 1 <= args.prefetch_byte_budget <= 65536:
         p.error("--prefetch-byte-budget must be between 1 and 65536")
     conditions = args.condition or ["no_graph", "default"]
+    if args.prefetch_excerpts and (not args.verify_known_file_answer or args.prefetch_known_file
+                                  or len(conditions) != 2
+                                  or set(conditions) != {"no_graph", "source_prefetch"}):
+        p.error("--prefetch-excerpts requires --verify-known-file-answer and paired no_graph/source_prefetch conditions")
     if "source_prefetch" in conditions:
         if args.prefetch_known_file:
             p.error("do not combine source_prefetch with --prefetch-known-file; keep the baseline unprefetched")
@@ -926,6 +1021,9 @@ def main() -> None:
         "answer_evidence_policy": ANSWER_EVIDENCE_POLICY if args.verify_known_file_answer else None,
         "prefetch_known_file": args.prefetch_known_file,
         "prefetch_byte_budget": args.prefetch_byte_budget,
+        "prefetch_policy": ("query-windows-v1" if args.prefetch_excerpts else "complete-file-v1")
+        if args.prefetch_known_file or "source_prefetch" in conditions else None,
+        "prefetch_excerpt_condition": "source_prefetch" if args.prefetch_excerpts else None,
         "max_model_attempts": args.repeats * len(conditions) * (
             len(tasks) + sum((args.recover_known_file or args.verify_known_file_answer)
                              and task["kind"] == "known_file" for task in tasks)),
@@ -953,7 +1051,8 @@ def main() -> None:
                                  args.graph_token_budget, args.include_source, args.recover_known_file,
                                  prefetch_known_file=args.prefetch_known_file,
                                  prefetch_byte_budget=args.prefetch_byte_budget,
-                                 verify_known_file_answer=args.verify_known_file_answer)
+                                 verify_known_file_answer=args.verify_known_file_answer,
+                                 prefetch_excerpts=args.prefetch_excerpts)
             records.write(json.dumps(record) + "\n")
             records.flush()
             print(f"{task['id']} r{repeat} {condition}: correct={record['success']} "

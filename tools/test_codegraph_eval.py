@@ -352,10 +352,11 @@ class CodegraphEvalTests(unittest.TestCase):
             self.assertFalse(known_file_source_read(events("cat link.arch"), root / "nested", "link.arch"))
 
     def run_mock_recovery(self, stages, enabled=True, condition="default", kind="known_file",
-                          prefetch=False, byte_budget=8192, verify_answer=False, answer_groups=None):
+                          prefetch=False, byte_budget=8192, verify_answer=False, answer_groups=None,
+                          excerpts=False, source="// Engine\nfn emit_ready_body() {}\n"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "engine.rs").write_text("// Engine\nfn emit_ready_body() {}\n")
+            (root / "engine.rs").write_text(source)
             task = {"id": "held_out", "kind": kind, "cohort": "compiler",
                     "prompt": "In engine.rs, identify the function that emits the ready body.",
                     "source_path": "engine.rs", "answer_any": answer_groups or [["emit_ready_body"]]}
@@ -366,7 +367,7 @@ class CodegraphEvalTests(unittest.TestCase):
                     events.append({"type": "item.completed", "item": {
                         "type": "command_execution", "command": stage["command"],
                         "exit_code": stage.get("tool_exit", 0),
-                        "aggregated_output": "2:fn emit_ready_body() {}"}})
+                        "aggregated_output": stage.get("tool_output", "2:fn emit_ready_body() {}")}})
                 if "answer" in stage:
                     events.append({"type": "item.completed", "item": {
                         "type": "agent_message", "text": stage["answer"]}})
@@ -381,12 +382,14 @@ class CodegraphEvalTests(unittest.TestCase):
                 commands.append(list(command))
                 if "source_after" in stages[len(commands) - 1]:
                     (root / "engine.rs").write_text(stages[len(commands) - 1]["source_after"])
+                if stages[len(commands) - 1].get("remove_source"):
+                    (root / "engine.rs").unlink()
                 return processes[len(commands) - 1]
             with patch("codegraph_eval.subprocess.Popen", side_effect=popen):
                 result = run_attempt(task, condition, 1, root, root, root / "arch", root / "python",
                                      "test-model", 10, True, recover_known_file=enabled,
                                      prefetch_known_file=prefetch, prefetch_byte_budget=byte_budget,
-                                     verify_known_file_answer=verify_answer)
+                                     verify_known_file_answer=verify_answer, prefetch_excerpts=excerpts)
             if (prefetch or condition == "source_prefetch") and kind == "known_file":
                 receipt = json.loads((root / result["prefetch"]["artifact"]).read_text())
                 self.assertEqual({k: v for k, v in receipt.items() if k != "payload"},
@@ -956,6 +959,239 @@ class CodegraphEvalTests(unittest.TestCase):
             self.assertFalse(meta["prefetch_known_file"])
             self.assertEqual(run.call_count, 12)
             self.assertEqual(sum(call.args[1] == "source_prefetch" for call in run.call_args_list), 6)
+
+    def test_excerpts_are_numbered_literal_bounded_and_query_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = ["// unrelated padding " * 4] * 100
+            lines[50] = "pub fn adapt(input: WireSpan) -> ReportRange {\r"
+            raw = ("\n".join(lines) + "\n").encode()
+            (root / "sample.rs").write_bytes(raw)
+            query = "In sample.rs, find the function from WireSpan to ReportRange."
+            result = prefetch_source(root, "sample.rs", 2048, query)
+            self.assertEqual(result["status"], "ready")
+            self.assertFalse(result["complete"])
+            payload = json.loads(result["payload"])
+            self.assertFalse(payload["complete"])
+            self.assertEqual(payload["total_lines"], 100)
+            self.assertEqual(payload["sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(dict(payload["lines"])[51], lines[50])
+            self.assertTrue(all(lines[n - 1] == text for n, text in payload["lines"]))
+            self.assertLessEqual(len(payload["lines"]), 20)
+            self.assertLessEqual(result["payload_bytes"], 2048)
+            self.assertEqual(result["read_bytes"], len(raw))
+            self.assertEqual(result, prefetch_source(root, "sample.rs", 2048, query))
+            self.assertEqual(prefetch_source(root, "sample.rs", 2048)["status"], "over_budget")
+            self.assertEqual(prefetch_source(root, "sample.rs", 2048, "In sample.rs find absent_marker")["status"], "no_excerpt")
+            self.assertEqual(prefetch_source(root, "sample.rs", 1, query)["status"], "no_excerpt")
+
+    def test_excerpts_do_not_starve_exact_type_pairs_with_common_variables(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = ["let wire = ReportRange::new(0); // repeated"] * 100
+            lines[70] = "fn adapter(wire: Wire) -> ReportRange {"
+            (root / "a.rs").write_text("\n".join(lines))
+            result = prefetch_source(root, "a.rs", 1500, "Convert Wire into ReportRange in a.rs")
+            self.assertIn(71, result["selected_lines"])
+
+    def test_excerpt_limits_nontext_and_path_guards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            query = "In a.rs find target"
+            for content, status in ((b"x" * (1024 * 1024 + 2), "source_too_large"),
+                                    (b"target\n" * 32769, "excerpt_limit"),
+                                    (b"target\0", "non_text"), (b"\xff", "non_text")):
+                (root / "a.rs").write_bytes(content)
+                receipt = prefetch_source(root, "a.rs", 512, query)
+                self.assertEqual(receipt["status"], status)
+                self.assertFalse(receipt["payload"])
+                self.assertLessEqual(receipt["read_bytes"], 1024 * 1024 + 1)
+            (root / "a.rs").write_text("target\n" * 100)
+            for oversized_query in ("target " * 2000, " ".join(f"term{i}" for i in range(65))):
+                self.assertEqual(prefetch_source(root, "a.rs", 512, oversized_query)["status"], "excerpt_limit")
+            (root / "nested").mkdir()
+            (root / "nested/link.rs").symlink_to(root / "a.rs")
+            self.assertEqual(prefetch_source(root / "nested", "link.rs", 512, query)["status"], "outside_workspace")
+            (root / ".git").mkdir()
+            (root / ".git/source").write_text("target\n")
+            self.assertEqual(prefetch_source(root, ".git/source", 512, query)["status"], "excluded_path")
+
+    def test_excerpt_mode_keeps_small_file_payload_and_baseline_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.rs").write_text("fn target() {}\n")
+            original = prefetch_source(root, "a.rs", 8192)
+            current = prefetch_source(root, "a.rs", 8192, "target")
+            self.assertEqual(original["payload"], current["payload"])
+        stage = {"command": "cat engine.rs", "answer": self.ready_citation()}
+        original, original_commands, _ = self.run_mock_recovery([stage], condition="no_graph", verify_answer=True)
+        current, current_commands, _ = self.run_mock_recovery([stage], condition="no_graph", verify_answer=True, excerpts=True)
+        self.assertEqual([c[-1] for c in original_commands], [c[-1] for c in current_commands])
+        self.assertNotIn("prefetch", current)
+        self.assertEqual(current["success"], original["success"])
+
+    @staticmethod
+    def excerpt_source():
+        return "// Engine ready body\nfn emit_ready_body() {}\n" + "// filler\n" * 120 + "fn unseen() {}\n"
+
+    def test_excerpt_citation_can_avoid_tool_call_without_gold_selection(self):
+        result, commands, _ = self.run_mock_recovery([
+            {"answer": self.ready_citation()}], condition="source_prefetch", verify_answer=True,
+            excerpts=True, source=self.excerpt_source(), byte_budget=512)
+        self.assertTrue(result["success"])
+        self.assertFalse(result["prefetch"]["complete"])
+        self.assertTrue(result["stages"][0]["prefetch_answer_covered"])
+        self.assertEqual(result["tool_calls"], 0)
+        self.assertEqual(result["prefetch"]["read_calls"], 2)
+        self.assertIn("NOT the complete file", commands[0][-1])
+        self.assertNotIn("read the complete named source", commands[0][-1])
+        changed, altered_commands, _ = self.run_mock_recovery([
+            {"answer": self.ready_citation()}], condition="source_prefetch", verify_answer=True,
+            excerpts=True, source=self.excerpt_source(), byte_budget=512, answer_groups=[["wrong_gold"]])
+        self.assertEqual([c[-1] for c in commands], [c[-1] for c in altered_commands])
+        self.assertEqual(result["prefetch"], changed["prefetch"])
+        self.assertFalse(changed["success"])
+        self.assertEqual(changed["model_attempts"], 1)
+        arm = summarize([result])["all"]["arms"]["source_prefetch"]
+        self.assertEqual(arm["excerpt_prefetched_controls"], 1)
+        self.assertEqual(arm["prefetch_read_bytes"], 2 * len(self.excerpt_source().encode()))
+        self.assertEqual(arm["answer_evidence_read_bytes"], len(self.excerpt_source().encode()))
+        self.assertEqual(arm["host_read_bytes"], 3 * len(self.excerpt_source().encode()))
+
+    def test_unseen_source_bound_answer_needs_real_read_or_fails(self):
+        answer = self.ready_citation(symbol="unseen", line=123, quote="fn unseen() {}")
+        for recovery, success in (({"answer": answer}, False),
+                                  ({"command": "sed -n '123p' engine.rs", "tool_output": "fn unseen() {}", "answer": answer}, True)):
+            result, commands, _ = self.run_mock_recovery([
+                {"answer": answer}, recovery], condition="source_prefetch", verify_answer=True,
+                excerpts=True, source=self.excerpt_source(), byte_budget=512, answer_groups=[["unseen"]])
+            self.assertTrue(result["known_file_answer_verified"])
+            self.assertFalse(result["stages"][0]["prefetch_answer_covered"])
+            self.assertFalse(result["stages"][0]["source_verified"])
+            self.assertEqual(result["success"], success)
+            self.assertEqual(len(commands), 2)
+            self.assertEqual(result["input_tokens"], 200)
+
+    def test_stale_or_removed_excerpt_source_fails_closed(self):
+        for change in ({"source_after": self.excerpt_source() + "// altered outside excerpt\n"},
+                       {"remove_source": True}):
+            stages = [{"answer": self.ready_citation(), **change}, {"answer": self.ready_citation()}]
+            result, _, _ = self.run_mock_recovery(stages, condition="source_prefetch", verify_answer=True,
+                                                excerpts=True, source=self.excerpt_source(), byte_budget=512)
+            self.assertFalse(result["success"])
+            self.assertFalse(result["prefetch"]["fresh"])
+
+    def test_excerpts_require_verified_paired_treatment(self):
+        for options in ({"verify_answer": False}, {"verify_answer": True, "prefetch": True},
+                        {"verify_answer": True, "condition": "default"}):
+            with self.assertRaisesRegex(ValueError, "excerpt prefetch"):
+                self.run_mock_recovery([], excerpts=True, **options)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe = root / "bin"
+            exe.touch()
+            argv = ["codegraph_eval.py", "run", "--output", str(root / "out"), "--arch-bin", str(exe),
+                    "--mcp-python", str(exe), "--prefetch-excerpts"]
+            for extra in ([], ["--verify-known-file-answer"], ["--condition", "no_graph", "--condition", "source_prefetch"],
+                          ["--verify-known-file-answer", "--condition", "no_graph", "--condition", "source_prefetch",
+                           "--condition", "source_prefetch"]):
+                with patch("sys.argv", argv + extra), redirect_stderr(io.StringIO()), \
+                        patch("codegraph_eval.subprocess.Popen") as launch, self.assertRaises(SystemExit):
+                    main()
+                launch.assert_not_called()
+
+    def test_excerpt_failures_keep_usage_and_method_gates(self):
+        for change in ({"usage": False}, {"exit": 1}, {"command": "arch graph dev-query ready"}):
+            result, commands, _ = self.run_mock_recovery([
+                {"answer": self.ready_citation(), **change}], condition="source_prefetch", verify_answer=True,
+                excerpts=True, source=self.excerpt_source(), byte_budget=512)
+            self.assertFalse(result["success"])
+            self.assertEqual(len(commands), 1)
+        result, commands, _ = self.run_mock_recovery([
+            {"answer": "null"}, {"answer": self.ready_citation()}], condition="source_prefetch", verify_answer=True,
+            excerpts=True, source=self.excerpt_source(), byte_budget=512)
+        self.assertTrue(result["success"])
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(result["input_tokens"], 200)
+
+    def test_excerpt_cli_records_policy_and_does_not_increase_call_cap(self):
+        template, _, _ = self.run_mock_recovery([
+            {"command": "cat engine.rs", "answer": self.ready_citation()}], verify_answer=True)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe = root / "bin"
+            exe.touch()
+            argv = ["codegraph_eval.py", "run", "--repo", str(ROOT),
+                    "--tasks", str(ROOT / "doc/codegraph_eval_known_file_tasks.json"),
+                    "--output", str(root / "out"), "--arch-bin", str(exe), "--mcp-python", str(exe),
+                    "--condition", "no_graph", "--condition", "source_prefetch", "--prefetch-excerpts",
+                    "--verify-known-file-answer"]
+            with patch("sys.argv", argv), redirect_stdout(io.StringIO()), \
+                    patch("codegraph_eval.subprocess.check_output", side_effect=["abc", "", "codex test", "arch test"]), \
+                    patch("codegraph_eval.prepare_indexes", return_value=0), \
+                    patch("codegraph_eval.run_attempt", return_value=template) as run:
+                main()
+            meta = json.loads((root / "out/metadata.json").read_text())
+            self.assertEqual(meta["prefetch_policy"], "query-windows-v1")
+            self.assertEqual(meta["prefetch_excerpt_condition"], "source_prefetch")
+            self.assertEqual(meta["answer_evidence_policy"], ANSWER_EVIDENCE_POLICY)
+            self.assertEqual(meta["max_model_attempts"], 24)
+            self.assertEqual(run.call_count, 12)
+            self.assertTrue(all(call.kwargs["prefetch_excerpts"] for call in run.call_args_list))
+
+    def test_excerpt_selection_does_not_clip_oversized_lines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.rs").write_text("target " + "x" * 4000 + "\n" + "padding\n" * 8 + "fn target() {}\n")
+            receipt = prefetch_source(root, "a.rs", 512, "target")
+            payload = json.loads(receipt["payload"])
+            self.assertNotIn(1, dict(payload["lines"]))
+            self.assertEqual(dict(payload["lines"])[10], "fn target() {}")
+            self.assertLessEqual(receipt["payload_bytes"], 512)
+
+    def test_excerpt_quote_must_match_supplied_snapshot_even_after_restoration(self):
+        original = self.excerpt_source()
+        altered = original.replace("fn emit_ready_body() {}", "fn emit_ready_body() { changed(); }")
+        answer = self.ready_citation(quote="fn emit_ready_body() { changed(); }")
+        def change_and_restore(answer, workspace, source_path):
+            path = workspace / source_path
+            path.write_text(altered)
+            result = known_file_answer_evidence(answer, workspace, source_path)
+            path.write_text(original)
+            return result
+        with patch("codegraph_eval.known_file_answer_evidence", side_effect=change_and_restore):
+            result, commands, _ = self.run_mock_recovery([
+                {"answer": answer}, {"answer": answer}], condition="source_prefetch", verify_answer=True,
+                excerpts=True, source=original, byte_budget=512)
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(result["known_file_answer_verified"])
+        self.assertFalse(result["success"])
+        self.assertFalse(result["prefetch"]["fresh"])
+        self.assertTrue(all(not stage["prefetch_answer_covered"] for stage in result["stages"]))
+
+    def test_comment_witness_is_not_a_semantic_declaration_proof(self):
+        source = self.excerpt_source().replace("// Engine ready body", "// ready body emit_ready_body")
+        answer = self.ready_citation(line=1, quote="// ready body emit_ready_body")
+        result, commands, _ = self.run_mock_recovery([
+            {"answer": answer}], condition="source_prefetch", verify_answer=True,
+            excerpts=True, source=source, byte_budget=512, answer_groups=[["engine.rs:2"]])
+        self.assertTrue(result["known_file_answer_verified"])
+        self.assertFalse(result["success"])
+        self.assertEqual(len(commands), 1)  # No answer-key-guided retry.
+
+    def test_existing_controls_have_bounded_source_coverage_without_changing_small_payloads(self):
+        for task in load_tasks(ROOT / "doc/codegraph_eval_known_file_tasks.json"):
+            original = prefetch_source(ROOT, task["source_path"], 8192)
+            current = prefetch_source(ROOT, task["source_path"], 8192, task["prompt"])
+            self.assertEqual(current["status"], "ready", task["id"])
+            self.assertLessEqual(current["payload_bytes"], 8192)
+            if original["status"] == "ready":
+                self.assertEqual(current["payload"], original["payload"])
+            else:
+                rows = json.loads(current["payload"])["lines"]
+                self.assertFalse(current["complete"])
+                observed = "\n".join(f"{task['source_path']}:{n} {line}" for n, line in rows)
+                self.assertTrue(answer_passes(task, observed))
 
 
 if __name__ == "__main__":

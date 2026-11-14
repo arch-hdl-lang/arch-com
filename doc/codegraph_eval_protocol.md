@@ -301,3 +301,74 @@ Summary arms include `host_source_reads`, `prefetch_payload_bytes`, and
 answers in both arms. Raw arm totals retain failures. Direct-source prefetch
 is not classified as graph use or graph savings. Historical records without
 prefetch fields retain their previous analysis.
+
+### Bounded source windows for oversized files
+
+`--prefetch-excerpts` is an additional opt-in experiment. It requires
+`--verify-known-file-answer` and the paired `no_graph` / `source_prefetch`
+conditions; it cannot be combined with global `--prefetch-known-file`.
+Search-only prompts and small-file source payloads are unchanged. Production
+compiler/MCP defaults are unchanged. No live token result exists for this mode.
+
+When a complete file exceeds the payload budget, treatment can supply up to
+four windows of five whole source lines each. Selection uses only source,
+path, byte budget, and the task question, never the answer rubric or expected
+symbol. It removes the named path and generic question words, then ranks
+literal lexical overlap: case-sensitive term count first, case-folded count
+second, inverse line-frequency weight for ties, then source order. Case is
+useful for distinguishing a type such as `Wire` from a variable `wire`.
+Only the first 64 ranked centers are considered. Each accepted window adds
+two neighboring lines on either side when present, deduplicates overlaps,
+and must fit the serialized UTF-8 JSON budget. Long lines are never clipped.
+
+This is lexical retrieval, not parsing or proof of declaration ownership.
+Comments, strings, imports, and duplicate names can match; the model must
+inspect the context, and ambiguity or missing evidence requires a direct
+read. The selector can miss paraphrases and identifiers not present in the
+question. Its ranking was developed against the existing controls and
+synthetic cases, so held-out tasks are needed before making general claims.
+The v2 source-bound verifier is not an AST declaration checker: a comment or
+string containing the expected name can be a valid literal witness. A
+symbol/path-only answer rubric can therefore accept a misleading citation.
+Future quality confirmation should use frozen declaration-line rubrics or an
+independent semantic check; do not treat literal-witness validation as that
+check or retroactively change the earlier manifests/results.
+
+Read size is bounded at 1 MiB plus one overflow-detection byte; excerpt
+selection additionally caps source lines at 32,768, question length at 8,192
+characters, and distinct question terms at 64. Non-text, oversized, unmatched,
+or unrenderable input supplies no excerpt and retains direct-read fallback.
+Workspace and metadata-path exclusions apply as in whole-file mode.
+
+The payload declares `complete=false`, total source lines, numbered literal
+source rows, and the full-source hash. The prompt explicitly says omitted
+content is unknown, not evidence of absence. A partial payload waives the
+model tool-read requirement only when the source-bound answer verifier passes
+and the citation line is among the supplied rows. A valid citation to an
+omitted line still requires a recognized successful direct read. Otherwise
+the same single recovery invocation is available, independent of the answer
+key. Both invocations' costs are counted. Changes anywhere in the source,
+including outside selected windows, fail the final freshness check.
+The evidence-read hash must also match the supplied snapshot and the quote
+must match the serialized row, preventing a changed-then-restored file from
+validating an excerpt quote the model never received.
+
+Run metadata pins `prefetch_policy=query-windows-v1`; ordinary runs record
+`complete-file-v1` when prefetch is enabled, otherwise null; metadata separately
+identifies `source_prefetch` as the excerpt-enabled condition. Receipts identify selected lines, completeness, read bytes,
+and policy. Partial-source stages record `prefetch_answer_covered`; summaries
+add `excerpt_prefetched_controls` and `prefetch_read_bytes` only for records
+with the new policy, plus `answer_evidence_read_bytes` and their sum,
+`host_read_bytes`. `prefetched_source_verified` means the supplied payload
+is fresh; it does not by itself prove the answer is covered or correct.
+Host reads include full-source rereads for freshness, separate from the
+answer-verification reads. Historical records and summaries are unchanged.
+Path guards reject stable escapes but are not a security sandbox against a
+concurrent adversarial filesystem replacement; run in the controlled checkout.
+
+For a new approved experiment, add `--prefetch-excerpts
+--verify-known-file-answer` to the paired command above and use a fresh output
+directory. The six-task, one-repeat schedule remains 12 trials, at most 24
+model invocations. Payload size reductions are not measured model-token
+savings; quality parity and provider-reported total/uncached usage remain
+necessary. Extra trials or a new live run require fresh approval.
