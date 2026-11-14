@@ -1,0 +1,185 @@
+{
+  "user": {
+    "arms": {
+      "no_graph": {
+        "attempts": 8,
+        "successes": 8,
+        "tokens": 475109,
+        "uncached_tokens": 68837,
+        "graph_calls": 0,
+        "successful_graph_calls": 0,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 85.043,
+        "index_seconds": 0.0
+      },
+      "default": {
+        "attempts": 8,
+        "successes": 8,
+        "tokens": 365749,
+        "uncached_tokens": 79413,
+        "graph_calls": 3,
+        "successful_graph_calls": 3,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 92.834,
+        "index_seconds": 0.0
+      }
+    },
+    "successful_pairs": 8,
+    "paired_default_vs_search_pct": 23.02,
+    "graph_used_successful_pairs": 3,
+    "graph_used_pair_saving_pct": 40.76,
+    "default_discovery_graph_uses": 3,
+    "default_discovery_attempts": 6,
+    "known_file_graph_uses": 0,
+    "guided_arms": {
+      "graph_cli": {
+        "attempts": 0,
+        "successes": 0,
+        "tokens": 0,
+        "uncached_tokens": 0,
+        "successful_graph_calls": 0
+      },
+      "graph_mcp": {
+        "attempts": 0,
+        "successes": 0,
+        "tokens": 0,
+        "uncached_tokens": 0,
+        "successful_graph_calls": 0
+      }
+    },
+    "guided_pairs": 0,
+    "cli_vs_mcp_saving_pct": null,
+    "cli_vs_search": {
+      "pairs": 0,
+      "search_tokens": 0,
+      "graph_tokens": 0,
+      "search_uncached_tokens": 0,
+      "graph_uncached_tokens": 0,
+      "total_saving_pct": null,
+      "uncached_saving_pct": null
+    },
+    "cli_vs_search_by_task": {}
+  },
+  "compiler": {
+    "arms": {
+      "no_graph": {
+        "attempts": 6,
+        "successes": 2,
+        "tokens": 569147,
+        "uncached_tokens": 100155,
+        "graph_calls": 0,
+        "successful_graph_calls": 0,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 112.658,
+        "index_seconds": 0.0
+      },
+      "default": {
+        "attempts": 6,
+        "successes": 3,
+        "tokens": 510081,
+        "uncached_tokens": 96513,
+        "graph_calls": 0,
+        "successful_graph_calls": 0,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 103.486,
+        "index_seconds": 0.0
+      }
+    },
+    "successful_pairs": 2,
+    "paired_default_vs_search_pct": 0.16,
+    "graph_used_successful_pairs": 0,
+    "graph_used_pair_saving_pct": null,
+    "default_discovery_graph_uses": 0,
+    "default_discovery_attempts": 4,
+    "known_file_graph_uses": 0,
+    "guided_arms": {
+      "graph_cli": {
+        "attempts": 0,
+        "successes": 0,
+        "tokens": 0,
+        "uncached_tokens": 0,
+        "successful_graph_calls": 0
+      },
+      "graph_mcp": {
+        "attempts": 0,
+        "successes": 0,
+        "tokens": 0,
+        "uncached_tokens": 0,
+        "successful_graph_calls": 0
+      }
+    },
+    "guided_pairs": 0,
+    "cli_vs_mcp_saving_pct": null,
+    "cli_vs_search": {
+      "pairs": 0,
+      "search_tokens": 0,
+      "graph_tokens": 0,
+      "search_uncached_tokens": 0,
+      "graph_uncached_tokens": 0,
+      "total_saving_pct": null,
+      "uncached_saving_pct": null
+    },
+    "cli_vs_search_by_task": {}
+  },
+  "all": {
+    "arms": {
+      "no_graph": {
+        "attempts": 14,
+        "successes": 10,
+        "tokens": 1044256,
+        "uncached_tokens": 168992,
+        "graph_calls": 0,
+        "successful_graph_calls": 0,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 197.701,
+        "index_seconds": 0.0
+      },
+      "default": {
+        "attempts": 14,
+        "successes": 11,
+        "tokens": 875830,
+        "uncached_tokens": 175926,
+        "graph_calls": 3,
+        "successful_graph_calls": 3,
+        "failed_mcp_calls": 0,
+        "agent_seconds": 196.32,
+        "index_seconds": 0.0
+      }
+    },
+    "successful_pairs": 10,
+    "paired_default_vs_search_pct": 19.54,
+    "graph_used_successful_pairs": 3,
+    "graph_used_pair_saving_pct": 40.76,
+    "default_discovery_graph_uses": 3,
+    "default_discovery_attempts": 10,
+    "known_file_graph_uses": 0,
+    "guided_arms": {
+      "graph_cli": {
+        "attempts": 0,
+        "successes": 0,
+        "tokens": 0,
+        "uncached_tokens": 0,
+        "successful_graph_calls": 0
+      },
+      "graph_mcp": {
+        "attempts": 0,
+        "successes": 0,
+        "tokens": 0,
+        "uncached_tokens": 0,
+        "successful_graph_calls": 0
+      }
+    },
+    "guided_pairs": 0,
+    "cli_vs_mcp_saving_pct": null,
+    "cli_vs_search": {
+      "pairs": 0,
+      "search_tokens": 0,
+      "graph_tokens": 0,
+      "search_uncached_tokens": 0,
+      "graph_uncached_tokens": 0,
+      "total_saving_pct": null,
+      "uncached_saving_pct": null
+    },
+    "cli_vs_search_by_task": {}
+  }
+}

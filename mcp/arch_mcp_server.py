@@ -610,7 +610,14 @@ def arch_dev_graph_index(root: str = ".", out: str = ".archdevgraph") -> str:
 def arch_dev_graph_query(query: str, root: str = ".", index: str = ".archdevgraph",
                          limit: int = 30, token_budget: int = 400,
                          roles: list[str] | None = None, include_source: bool = False) -> str:
-    """Return bounded compiler owner/test context; refresh stale indexes."""
+    """Return bounded compiler owner/test context; refresh stale indexes.
+
+    Name a language feature or an exact Rust symbol. No matches means no
+    curated coverage for this query, not that the feature does not exist;
+    fall back to targeted source search.
+    A trailing (truncated), or ... at tiny budgets, means output was shortened.
+    Narrow roles or increase the budget when required evidence is missing.
+    """
     root_path = _resolve_safe(root)
     index_path = _resolve_safe(str(root_path / index)) if not pathlib.Path(index).is_absolute() else _resolve_safe(index)
     command = [ARCH_BIN, "graph", "dev-query", query, "--root", str(root_path),

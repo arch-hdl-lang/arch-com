@@ -16,16 +16,25 @@ Choose retrieval based on what is known before searching. When the question
 names an exact file and asks for a declaration line, function, or other fact
 inside that file, make one targeted `rg -n` or source read of that file before
 answering, even if the answer seems familiar; do not query a graph.
-The user `.archgraph` is not for Rust compiler source. For an unknown ARCH
-instance target, import, caller, or other cross-file relationship, run one
-focused query before other retrieval:
+When an exact ARCH import or declaration symbol is given and a bounded search of
+likely source roots can identify its declaration, use targeted `rg -n` with a
+source-file glob (for ARCH, `-g '*.arch'`) first; do not query the graph just
+because the declaration is in another file. If that search is ambiguous or
+expands across many files, use graph context.
+The user `.archgraph` is not for Rust compiler source. For uncertain ARCH
+instance targets, callers, impact, or other multi-file relationships, run one
+focused graph query before other retrieval:
 
 ```sh
 ./target/debug/arch graph context "<task wording>" --index .archgraph --token-budget 200 --include-source
 ```
 
-This applies even when the starting file is named but the answer is declared
-elsewhere. For unknown compiler ownership, use:
+This applies even when the starting file is named but the targets or ownership
+are uncertain. A compiler question asking for the AST, parser, emitter, or
+fixture of a named ARCH syntax feature is still an ownership question; run one
+developer-graph query before broad Rust search, even when the syntax token is
+known. This does not override direct reads for facts inside a named Rust file.
+For compiler ownership, use:
 
 ```sh
 ./target/debug/arch graph dev-query "<feature>" --root . --index .archdevgraph --token-budget 200 --include-source
