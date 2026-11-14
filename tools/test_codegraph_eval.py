@@ -445,12 +445,13 @@ class CodegraphEvalTests(unittest.TestCase):
             self.assertNotIn("recovery_attempts", result)
             self.assertNotIn("model_attempts", summarize([result])["all"]["arms"]["default"])
 
-    def test_recovery_does_not_allow_earlier_forbidden_graph_use(self):
-        result, _, _ = self.run_mock_recovery([
+    def test_recovery_does_not_spend_another_call_on_forbidden_graph_use(self):
+        result, commands, _ = self.run_mock_recovery([
             {"command": "arch graph dev-query ready", "answer": "emit_ready_body"},
-            {"command": "cat engine.rs", "answer": "emit_ready_body"},
         ], condition="no_graph")
-        self.assertTrue(result["known_file_source_verified"])
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(result["recovery_attempts"], 0)
+        self.assertFalse(result["known_file_source_verified"])
         self.assertFalse(result["valid_method"])
         self.assertFalse(result["success"])
 

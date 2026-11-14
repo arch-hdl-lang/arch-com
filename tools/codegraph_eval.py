@@ -480,7 +480,8 @@ def run_attempt(task: dict, condition: str, repeat: int, repo: Path, output: Pat
                                "source_verified": source_verified, "agent_seconds": stage_seconds,
                                **{k: stage_trace[k] for k in ("usage_present", "input_tokens", "cached_input_tokens", "output_tokens")}})
             if (not recovery_enabled or source_verified or exit_code != 0
-                    or not stage_trace["usage_present"]):
+                    or not stage_trace["usage_present"]
+                    or (condition == "no_graph" and stage_trace["graph_calls"] > 0)):
                 break
             command[-1] = prompt + (
                 f" Your previous attempt did not provide a recognized successful direct read of {task['source_path']}. "

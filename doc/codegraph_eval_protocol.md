@@ -142,8 +142,9 @@ remains independently required.
 If the model exits normally with usage but lacks that read, the runner permits
 one fresh ephemeral recovery invocation with the original task and a reminder
 to perform a simple bounded read. It supplies neither the previous answer nor
-the answer key. It does not retry infrastructure failures, missing usage, or
-incorrect answers that already have recognized source evidence. A second
+the answer key. It does not retry infrastructure failures, missing usage,
+forbidden graph use in search-only attempts, or incorrect answers that already
+have recognized source evidence. A second
 unverified response fails closed; there is no retry loop. Discovery/edit tasks
 are unchanged. This policy has deterministic/mock coverage only until a new
 live test is approved; it does not guarantee recovery or token savings.
