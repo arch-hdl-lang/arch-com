@@ -1,0 +1,23 @@
+// Purely combinational: widening multiply, nested ternaries, slices,
+// comparisons against literals, logical operators, and wrap-around ops.
+module CombDatapath
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port sel: in UInt<2>;
+  port prod: out UInt<16>;
+  port pick: out UInt<8>;
+  port hi_nib: out UInt<4>;
+  port flags: out Bool;
+  port wrap: out UInt<8>;
+  port diff: out UInt<9>;
+  let p: UInt<16> = a * b;
+  let lo: UInt<4> = b[3:0];
+  comb
+    prod = p;
+    pick = sel == 0 ? a : (sel == 1 ? b : (sel == 2 ? (a & b) : (a | b)));
+    hi_nib = a[7:4] ^ lo;
+    flags = (a >= b) or ((a != 0) and not (b < 16));
+    wrap = (a *% b) -% (a +% 1);
+    diff = a - b;
+  end comb
+end module CombDatapath

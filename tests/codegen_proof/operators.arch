@@ -1,0 +1,43 @@
+module Ops
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, Low>;
+  port en: in Bool;
+  port a: in UInt<8>;
+  port b: in UInt<4>;
+  port o1: out UInt<9>;
+  port o2: out UInt<8>;
+  port o3: out UInt<8>;
+  port o4: out Bool;
+  port o5: out UInt<8>;
+  port o6: out UInt<4>;
+  port o7: out Bool;
+  port o8: out UInt<8>;
+  reg cnt: UInt<8> reset rst => 3;
+  reg flag: Bool reset rst => false;
+  wire w: UInt<8>;
+  comb
+    o1 = a - b;
+    o2 = (a + b).trunc<8>();
+    o3 = a & b.zext<8>();
+    o4 = (a < b.zext<8>()) and not en;
+    o5 = ~a;
+    o6 = a[7:4];
+    o7 = flag or (b != 0);
+    if en
+      w = a;
+    else
+      w = 0x5A;
+    end if
+    o8 = w;
+  end comb
+  seq on clk rising
+    if en
+      cnt <= cnt +% 1;
+      flag <= true;
+    elsif flag
+      cnt <= cnt -% 2;
+    else
+      flag <= cnt == 255;
+    end if
+  end seq
+end module Ops

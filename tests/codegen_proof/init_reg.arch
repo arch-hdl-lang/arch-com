@@ -1,0 +1,14 @@
+// Register declaration initializer (`init`), next to a combinational wire.
+module InitReg
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg r: UInt<8> init 7 reset rst => 0;
+  wire w: UInt<8>;
+  let w = r +% 1;
+  let q = w;
+  seq on clk rising
+    r <= d;
+  end seq
+end module InitReg

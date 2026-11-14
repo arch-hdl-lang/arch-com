@@ -1,0 +1,26 @@
+// Concatenation, constant and dynamic bit select, and non-widening shifts
+// (including a shift inside a wider expression).
+module CatIdx
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port b: in UInt<4>;
+  port i: in UInt<3>;
+  port sh: in UInt<3>;
+  port cat: out UInt<12>;
+  port bit_c: out Bool;
+  port bit_d: out Bool;
+  port shl: out UInt<8>;
+  port shr: out UInt<8>;
+  port mix: out UInt<10>;
+  reg r: UInt<8> reset rst => 0;
+  let cat = {a, b};
+  let bit_c = a[2];
+  let bit_d = a[i];
+  let shl = a << sh;
+  let shr = a >> 2;
+  let mix = (a << 1).zext<9>() + b.zext<9>();
+  seq on clk rising
+    r <= {r[6:0], b[0]};
+  end seq
+end module CatIdx
