@@ -523,3 +523,42 @@ No new live run has been made for these repairs. A confirmation on these six
 tasks would be a regression run, not fresh held-out evidence; either that run
 or a new held-out experiment requires separate approval and must retain all
 attempt costs and quality failures.
+
+### Source-backed discovery roles
+
+New discovery manifests may opt into `role-citations-v1` instead of the legacy
+substring rubric. `citation_roles` lists public answer slots (for example
+`ast`, `parser`, `backend`, or paired instance/target slots).
+`expected_citations` maps each slot to an exact symbol/path/line triple;
+`source_pins` maps every referenced file to its SHA-256. The loader rejects
+missing, extra, duplicate or malformed roles and unpinned paths. Source pins
+are checked before setup or any model call and again through answer witnesses.
+
+The answer is a JSON object keyed by the public roles, each containing exactly
+`symbol`, `path`, `line`, and `quote`. Duplicate JSON keys, wrong role assignments,
+wrong source locations, stale source, missing roles and fabricated quotes fail.
+Each quote follows the existing bounded literal-prefix source policy and must
+also be visible in successful retrieval output: a recognized direct-file read,
+a numbered directory/multi-file `rg` source row, or a graph CLI/MCP row containing
+its exact path and line. Directory search witnesses are discovery-only; the
+known-file read policy is unchanged. Chained graph shell
+commands, failed commands, MCP errors, and unrelated tool output do not count.
+This is a conservative trace recognizer plus curated answer oracle, not an AST
+relationship proof or adversarial command-execution sandbox.
+
+Expected citations and source pins never enter the model prompt or retry
+feedback. Only public roles, the task question and the common evidence contract
+do. Discovery has one model invocation and **no answer-key-driven recovery**;
+known-file recovery behavior is unchanged. The record includes the evidence
+policy, per-role witnesses, host read count/bytes/time and the verified verdict.
+Historical manifests, records and summaries retain their old grading behavior.
+
+Keep new experiment manifests outside the model checkout. Both arms must avoid
+benchmark oracles/artifacts, memory and Git metadata; do not read the curated
+feature-map file directly. The same restrictions now also appear in exact-citation
+known-file prompts. Prompt restrictions do not prove isolation: audit command
+outputs as well as commands for leakage before claiming savings.
+Freeze tasks before live execution, retain preflight misses, disclose local
+development exposure, and do not tune graph retrieval on the confirmation set.
+Report all-arm quality and costs, graph adoption, fallback and known-file routing
+separately. A source-citation benchmark does not establish code-edit correctness.

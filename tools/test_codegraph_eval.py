@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import io
 import json
@@ -10,9 +11,188 @@ from unittest.mock import Mock, patch
 
 from codegraph_eval import ANSWER_EVIDENCE_POLICY, PREFETCH_POLICY, SOURCE_READ_POLICY, answer_passes, graph_command_kind, is_graph_command, known_file_answer_evidence, known_file_source_read, load_tasks, main, parse_events, prefetch_source, prompt_for, run_attempt, source_windows, summarize, trace_result, validate_source_pins, verified_success, workspace_env
 from codegraph_direct_eval import CROSS_RELATIONS, PIPE_REG_OWNERS, grade_pipe_reg_owners, grade_relations
+from codegraph_eval import DISCOVERY_EVIDENCE_POLICY, discovery_answer_evidence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class DiscoveryCitationTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.sources = {"ast.rs": "pub struct Engine {\n", "parser.rs": "fn parse_engine() {\n"}
+        for path, source in self.sources.items():
+            (self.root / path).write_text(source)
+        self.answer = {"ast": {"symbol": "Engine", "path": "ast.rs", "line": 1,
+                               "quote": "pub struct Engine {"},
+                       "parser": {"symbol": "parse_engine", "path": "parser.rs", "line": 1,
+                                  "quote": "fn parse_engine() {"}}
+        self.task = {"id": "owners", "cohort": "compiler", "kind": "discovery",
+                     "prompt": "Find the engine AST and parser.", "citation_roles": ["ast", "parser"],
+                     "expected_citations": {role: {key: value for key, value in citation.items() if key != "quote"}
+                                            for role, citation in self.answer.items()},
+                     "source_pins": {path: hashlib.sha256(source.encode()).hexdigest()
+                                     for path, source in self.sources.items()}}
+        self.output = "\n".join(f"{a['path']}:{a['line']} {a['symbol']} | {a['quote']}"
+                                for a in self.answer.values())
+        self.graph = self.command("arch graph dev-query engine --include-source", self.output)
+
+    def command(self, command, output, exit_code=0):
+        return {"type": "item.completed", "item": {"type": "command_execution", "command": command,
+                "aggregated_output": output, "exit_code": exit_code}}
+
+    def grade(self, answer=None, events=None, task=None):
+        return discovery_answer_evidence(task or self.task, json.dumps(self.answer if answer is None else answer),
+                                         self.root, [self.graph] if events is None else events)
+
+    def test_exact_roles_and_observed_graph_source_pass(self):
+        evidence = self.grade()
+        self.assertTrue(evidence["verified"])
+        self.assertEqual(evidence["policy"], DISCOVERY_EVIDENCE_POLICY)
+        self.assertEqual(evidence["read_calls"], 2)
+        self.assertEqual(evidence["read_bytes"], sum(len(source.encode()) for source in self.sources.values()))
+
+    def test_direct_reads_pass_without_graph(self):
+        events = [self.command("rg -n Engine ast.rs", "1:pub struct Engine {"),
+                  self.command("sed -n '1p' parser.rs", "fn parse_engine() {")]
+        self.assertTrue(self.grade(events=events)["verified"])
+
+    def test_numbered_directory_and_multi_file_searches_pass(self):
+        output = "ast.rs:1:pub struct Engine {\nparser.rs:1:fn parse_engine() {"
+        for command in ("rg -n 'Engine|parse_engine' .", "rg -n 'Engine|parse_engine'",
+                        "rg -n -g '*.rs' -g '!ignored.rs' 'Engine|parse_engine' .",
+                        "rg -n 'Engine|parse_engine' ast.rs parser.rs"):
+            with self.subTest(command=command):
+                self.assertTrue(self.grade(events=[self.command(command, output)])["verified"])
+        for command in ("rg --files .", "rg -n --replace fake Engine .", "rg -n --pre cat Engine .",
+                        "rg -n Engine . --pre cat", "rg -n Engine . --replace fake",
+                        "rg -n --no-filename Engine .", "echo rg -n Engine ."):
+            self.assertFalse(self.grade(events=[self.command(command, output)])["verified"])
+        self.assertFalse(self.grade(events=[self.command("rg -n Engine .", output.replace("ast.rs:1:", "wrong-ast.rs:1:"))])["verified"])
+        self.assertFalse(self.grade(events=[self.command("rg -n Engine .", "ast.rs:1:unrelated\nparser.rs:1:pub struct Engine { fn parse_engine() {")])["verified"])
+        self.assertFalse(known_file_source_read([self.command("rg -n Engine .", output)], self.root, "ast.rs"))
+        unrelated = "ast.rs:1:unrelated\nother/ast.rs:1:pub struct Engine {\nparser.rs:1:fn parse_engine() {"
+        events = [self.command("rg -n -g ast.rs Engine .", unrelated),
+                  self.command("sed -n '1p' parser.rs", self.sources["parser.rs"])]
+        self.assertFalse(self.grade(events=events)["verified"])
+        embedded = "ast.rs:1:unrelated\nother.rs:7:// ast.rs:1 pub struct Engine {\nparser.rs:1:fn parse_engine() {"
+        for command in ("rg -n Engine .", "rg -n -g ast.rs Engine ."):
+            self.assertFalse(self.grade(events=[self.command(command, embedded)])["verified"])
+        misleading_graph = "wrong.rs:1 node | // ast.rs:1 pub struct Engine {\nparser.rs:1 parse_engine | fn parse_engine() {"
+        self.assertFalse(self.grade(events=[self.command("arch graph dev-query engine", misleading_graph)])["verified"])
+        for prefix in ("./", str(self.root) + "/"):
+            located = f"{prefix}ast.rs-1-pub struct Engine {{\n{prefix}parser.rs:1:fn parse_engine() {{"
+            self.assertTrue(self.grade(events=[self.command("rg -n -C 1 Engine .", located)])["verified"])
+
+    def test_missing_wrong_swapped_extra_and_boolean_citations_fail(self):
+        wrong_line = copy.deepcopy(self.answer)
+        wrong_line["ast"]["line"] = 2
+        boolean_line = copy.deepcopy(self.answer)
+        boolean_line["ast"]["line"] = True
+        wrong_quote = copy.deepcopy(self.answer)
+        wrong_quote["ast"]["quote"] = "pub struct EngineMissing"
+        wrong_path = copy.deepcopy(self.answer)
+        wrong_path["ast"]["path"] = "parser.rs"
+        for answer in ({"ast": self.answer["ast"]}, {**self.answer, "other": self.answer["ast"]},
+                       {"ast": self.answer["parser"], "parser": self.answer["ast"]}, wrong_line,
+                       boolean_line, wrong_quote, wrong_path, {}, []):
+            with self.subTest(answer=answer):
+                self.assertFalse(self.grade(answer)["verified"])
+
+    def test_duplicate_keys_and_oversized_answers_fail(self):
+        for raw in ('{"ast":null,"ast":null,"parser":null}',
+                    json.dumps(self.answer).replace('"symbol": "Engine"', '"symbol": "Engine", "symbol": "Engine"'),
+                    json.dumps(self.answer) + " " * 32768, "not json"):
+            self.assertFalse(discovery_answer_evidence(self.task, raw, self.root, [self.graph])["verified"])
+
+    def test_unobserved_failed_fabricated_or_unrelated_retrieval_fails(self):
+        for events in ([], [self.command("echo source", self.output)],
+                       [self.command("arch graph dev-query engine", self.output, 1)],
+                       [self.command("arch graph dev-query engine; echo source", self.output)],
+                       [self.command("arch graph dev-query engine", self.output.replace("ast.rs:1", "ast.rs:10"))],
+                       [self.command("arch graph dev-query engine", self.output.replace("pub struct Engine {", "missing"))],
+                       [self.command("rg -n Engine parser.rs", "1:fn parse_engine() {")]):
+            with self.subTest(events=events):
+                self.assertFalse(self.grade(events=events)["verified"])
+
+    def test_source_hash_and_symlink_changes_fail(self):
+        (self.root / "ast.rs").write_text(self.sources["ast.rs"] + "// changed\n")
+        self.assertFalse(self.grade()["verified"])
+        (self.root / "ast.rs").unlink()
+        with tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / "ast.rs"
+            target.write_text(self.sources["ast.rs"])
+            (self.root / "ast.rs").symlink_to(target)
+            self.assertFalse(self.grade()["verified"])
+
+    def test_mcp_source_witness_and_error_results(self):
+        event = {"type": "item.completed", "item": {"type": "mcp_tool_call",
+                 "tool": "arch_dev_graph_query", "status": "completed",
+                 "result": {"content": [{"type": "text", "text": "[OK]\n" + self.output}]}}}
+        self.assertTrue(self.grade(events=[event])["verified"])
+        for result in (None, {}, {"content": None}, {"content": [{"type": "text", "text": self.output}]},
+                       {"content": [{"type": "text", "text": "[OK]\n" + self.output}], "isError": True},
+                       {"content": [{"type": "text", "text": "[OK]\n[ERROR tool failure]\n" + self.output}]}):
+            changed = copy.deepcopy(event)
+            changed["item"]["result"] = result
+            self.assertFalse(self.grade(events=[changed])["verified"])
+        event["item"]["error"] = {"message": "failed"}
+        self.assertFalse(self.grade(events=[event])["verified"])
+
+    def test_manifest_schema_and_source_preflight(self):
+        path = self.root / "tasks.json"
+        def load(task):
+            path.write_text(json.dumps({"schema_version": 1, "tasks": [task]}))
+            return load_tasks(path)
+        self.assertEqual(load(self.task), [self.task])
+        self.assertEqual(set(validate_source_pins([self.task], self.root)["owners"]), set(self.sources))
+        mutations = [{"citation_roles": ["ast", "ast"]}, {"citation_roles": [1]},
+                     {"citation_roles": []}, {"source_pins": {}}, {"source_pins": {"ast.rs": "bad"}},
+                     {"expected_citations": {}}, {"kind": "known_file"}, {"answer_any": [["Engine"]]}]
+        for change in mutations:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                load({**self.task, **change})
+        (self.root / "parser.rs").write_text("changed")
+        with self.assertRaises(ValueError):
+            validate_source_pins([self.task], self.root)
+
+    def test_oracle_fields_do_not_change_prompt(self):
+        changed = copy.deepcopy(self.task)
+        changed["expected_citations"]["ast"] = {"symbol": "SecretAnswer", "path": "secret.rs", "line": 999}
+        changed["source_pins"] = {"secret.rs": "0" * 64}
+        for arm in ("no_graph", "default", "graph_cli", "graph_mcp"):
+            self.assertEqual(prompt_for(self.task, arm), prompt_for(changed, arm))
+            self.assertNotIn("SecretAnswer", prompt_for(changed, arm))
+        with self.assertRaises(ValueError):
+            answer_passes(self.task, json.dumps(self.answer))
+        control = {"kind": "known_file", "cohort": "compiler", "prompt": "Find Engine in ast.rs.",
+                   "source_path": "ast.rs", "expected_citation": self.task["expected_citations"]["ast"]}
+        for arm in ("no_graph", "default"):
+            self.assertIn("Do not read benchmark manifests", prompt_for(control, arm, verify_known_file_answer=True))
+
+    def test_run_attempt_grades_without_oracle_retry(self):
+        for correct in (True, False):
+            answer = self.answer if correct else {"ast": self.answer["parser"], "parser": self.answer["ast"]}
+            events = [self.graph, {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(answer)}},
+                      {"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 20}}]
+            process = Mock(returncode=0)
+            process.communicate.return_value = ("\n".join(json.dumps(event) for event in events), "")
+            with patch("codegraph_eval.subprocess.Popen", return_value=process) as popen:
+                record = run_attempt(self.task, "default", 1, self.root, self.root,
+                                     self.root / "arch", self.root / "python", "test-model", 10, True,
+                                     recover_known_file=True, verify_known_file_answer=True)
+            self.assertEqual(popen.call_count, 1)
+            self.assertEqual(record["success"], correct)
+            self.assertEqual(record["discovery_answer_verified"], correct)
+            self.assertEqual(record["model_attempts"], 1)
+            self.assertEqual(record["recovery_attempts"], 0)
+            self.assertEqual(record["input_tokens"] + record["output_tokens"], 120)
+            self.assertEqual(summarize([record])["all"]["arms"]["default"]["successes"], int(correct))
+            record["success"] = True
+            record["discovery_answer_verified"] = False
+            self.assertFalse(verified_success(record))
 
 
 class CodegraphEvalTests(unittest.TestCase):
