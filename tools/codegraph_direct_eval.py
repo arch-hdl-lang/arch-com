@@ -50,6 +50,14 @@ CASES = (
                      ("src/codegen/module.rs", "emit_pipe_reg")),
         "max_rank": 4,
     },
+    {
+        "id": "compiler_pipeline_declaration_owners",
+        "query": "pipeline declaration AST parser whole-declaration SystemVerilog backend",
+        "kind": "dev-query",
+        "expected": (("src/ast.rs", "PipelineDecl"), ("src/parser.rs", "parse_pipeline"),
+                     ("src/codegen/pipeline.rs", "emit_pipeline")),
+        "max_rank": 4,
+    },
 )
 TOKEN_BUDGET = 100
 SOURCE_TOKEN_BUDGET = 200

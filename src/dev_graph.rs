@@ -611,6 +611,15 @@ mod tests {
         assert!(port.contains("Prob047_dff8ar.arch"));
         assert!(!sourced.contains(" | **ARCH**"));
         assert!(!sourced.contains(" | ---"));
+        let pipeline_backend = query(root, &out, "pipeline backend", 20, 200, &[], true).unwrap();
+        assert!(
+            pipeline_backend.contains("emit_pipeline [curated] | pub(crate) fn emit_pipeline("),
+            "{pipeline_backend}"
+        );
+        assert!(
+            !pipeline_backend.contains("emit_pipeline_inst"),
+            "{pipeline_backend}"
+        );
         let parser_only = query(
             root,
             &out,

@@ -89,10 +89,19 @@ session loads the server and exposes the MCP resources and tools.
 | `write_arch_file` | Write a .arch file to the project |
 | `list_arch_files` | List all .arch files in a directory |
 | `arch_graph_query` | Query an existing `.archgraph` index for symbols, paths, or doc text |
-| `arch_graph_context` | Return a bounded graph context slice for a task description |
+| `arch_graph_context` | Return a bounded, source-backed graph context slice (default budget 200) |
 | `arch_graph_impact` | Return a bounded impact neighborhood for a graph symbol |
 | `arch_dev_graph_index` | Build the reviewed compiler-development graph |
-| `arch_dev_graph_query` | Query compiler owners, tests, and docs; refresh stale indexes |
+| `arch_dev_graph_query` | Query source-backed compiler owners, tests, and docs (default budget 200); refresh stale indexes |
+
+Both context tools include source lines by default. Set `include_source=False`
+for location-only responses. A fresh, unambiguous source row can answer a
+location question without a separate file read; retrieve missing details when
+the result is incomplete or marked truncated. Instance sites and target
+declarations are different facts and need separate citations.
+Budgets use a byte-based token estimate, not the model's tokenizer. The default
+is 200; explicit budgets are accepted up to 2,000. Source excerpts can normalize
+whitespace or truncate long lines, so exact quotes may require a targeted read.
 
 ## Environment Variables
 

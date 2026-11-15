@@ -41,10 +41,21 @@ For compiler ownership, use:
 ```
 
 The `arch_graph_context` and `arch_dev_graph_query` MCP tools are equivalent
-when available. These commands give the needed syntax; skip a separate
-`--help` call. A fresh, unambiguous source-backed graph result is enough for a
-source-location answer; read files only when a detail is missing, the index is
-stale, or code will be changed. If the local binary is absent, build it or use
+when available and include source evidence by default. These commands give the
+needed syntax; skip a separate `--help` call. Collect all requested roles from
+the first result before retrieving again. A fresh, unambiguous source-backed
+graph result is enough for a source-location answer; do not re-read each returned
+declaration separately. Search only for missing roles, grouping related symbols
+and files into one bounded `rg -n` call when practical. An `inst name: Target`
+line establishes the instance site, not the target declaration: the latter needs
+its own declaration location and quote. If the task explicitly selects target
+files, search those files together with the parent rather than repeatedly reading
+the parent. Avoid tiny `rg -m` limits that stop on comments before declarations.
+Read more source when evidence is missing, ambiguous, stale, or code will change.
+Excerpts can normalize whitespace or truncate long lines. When an exact quote
+is required, read only the affected lines if the excerpt changes interior
+whitespace or cuts through the identifier; never invent the omitted text.
+If the local binary is absent, build it or use
 the MCP tools. Do not assume bare `arch` resolves to the ARCH HDL compiler
 (`/usr/bin/arch` is a different utility on macOS). Use targeted search if the
 graph result is incomplete or the index cannot be refreshed.

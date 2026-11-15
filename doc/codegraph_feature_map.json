@@ -41,7 +41,7 @@
     {"name": "pipeline", "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "PipelineDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_pipeline"},
-      {"role": "backend", "path": "src/codegen/pipeline.rs", "symbol": "emit_pipeline_inst"},
+      {"role": "backend", "path": "src/codegen/pipeline.rs", "symbol": "emit_pipeline"},
       {"role": "fixture", "path": "examples/simple_pipeline.arch"}
     ]},
     {"name": "pipe_reg declaration", "links": [
