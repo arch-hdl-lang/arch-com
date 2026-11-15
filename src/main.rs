@@ -3690,7 +3690,11 @@ fn run_graph_context(
         ));
     }
     let graph = arch::graph::load_index(index).into_diagnostic()?;
-    let hits = arch::graph::context(&graph, task, limit);
+    let hits = if include_source {
+        arch::graph::context_with_source(&graph, task, limit)
+    } else {
+        arch::graph::context(&graph, task, limit)
+    };
     if json {
         println!("{}", serde_json::to_string_pretty(&hits).into_diagnostic()?);
     } else {

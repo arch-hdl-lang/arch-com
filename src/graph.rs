@@ -483,6 +483,19 @@ pub fn impact(index: &GraphIndex, symbol: &str, depth: usize, limit: usize) -> V
 }
 
 pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
+    context_impl(index, task, limit, false)
+}
+
+pub fn context_with_source(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
+    context_impl(index, task, limit, true)
+}
+
+fn context_impl(
+    index: &GraphIndex,
+    task: &str,
+    limit: usize,
+    include_source: bool,
+) -> Vec<QueryHit> {
     let terms = tokenize(task);
     let task_lower = task.to_ascii_lowercase();
     let mut direct = query(index, task, index.nodes.len());
@@ -535,6 +548,14 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
             .cmp(&a.score)
             .then_with(|| a.node.id.cmp(&b.node.id))
     });
+    if include_source {
+        if let Some(focused) = focused_instance_targets(index, &direct, &task_lower, limit) {
+            return focused;
+        }
+        if let Some(focused) = focused_import_target(index, &direct, &task_lower) {
+            return focused;
+        }
+    }
     direct.truncate(limit.max(8));
     let node_by_id = node_map(index);
     let mut ids: BTreeSet<String> = direct.iter().map(|h| h.node.id.clone()).collect();
@@ -569,6 +590,135 @@ pub fn context(index: &GraphIndex, task: &str, limit: usize) -> Vec<QueryHit> {
     });
     direct.truncate(limit);
     direct
+}
+
+fn focused_instance_targets(
+    index: &GraphIndex,
+    hits: &[QueryHit],
+    task_lower: &str,
+    limit: usize,
+) -> Option<Vec<QueryHit>> {
+    if !(task_lower.contains("instantiat")
+        || (task_lower.contains("instance") && task_lower.contains("target")))
+    {
+        return None;
+    }
+    let named_files: BTreeSet<_> = index
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.kind == "instance" && task_lower.contains(&node.file.to_ascii_lowercase())
+        })
+        .map(|node| node.file.as_str())
+        .collect();
+    let file = named_files
+        .iter()
+        .next()
+        .filter(|_| named_files.len() == 1)?;
+    let instance_names: BTreeSet<_> = index
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "instance" && node.file == **file)
+        .map(|node| node.name.to_ascii_lowercase())
+        .collect();
+    let list_task = task_lower
+        .replace(&file.to_ascii_lowercase(), " ")
+        .replace(',', " and ");
+    // Unlike search tokens, list operands must retain one-character names.
+    let terms: Vec<_> = list_task
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|term| !term.is_empty())
+        .map(str::to_string)
+        .collect();
+    // Keep unknown identifier-like names in the request so a partial match cannot
+    // suppress the wider context. Only compact a single, fully resolved list.
+    let positions: Vec<_> = terms
+        .iter()
+        .enumerate()
+        .filter(|(_, term)| term.contains('_') || instance_names.contains(*term))
+        .map(|(position, _)| position)
+        .collect();
+    let first = *positions.first()?;
+    let last = *positions.last()?;
+    let names: BTreeSet<_> = positions.iter().map(|&position| &terms[position]).collect();
+    if names.len() < 2
+        || names.len() > limit
+        || names.len() != positions.len()
+        || positions.windows(2).any(|pair| pair[1] == pair[0] + 1)
+        || (first > 0 && terms[first - 1] == "and")
+        || terms.get(last + 1).is_some_and(|term| term == "and")
+        || terms[first..=last]
+            .iter()
+            .any(|term| term != "and" && !names.contains(term))
+    {
+        return None;
+    }
+    let by_id = node_map(index);
+    let focused: Vec<_> = hits
+        .iter()
+        .filter(|hit| {
+            hit.node.kind == "instance"
+                && hit.node.file == **file
+                && names
+                    .iter()
+                    .any(|name| name.as_str() == hit.node.name.to_ascii_lowercase())
+        })
+        .cloned()
+        .collect();
+    for name in names {
+        let mut matches = focused
+            .iter()
+            .filter(|hit| hit.node.name.to_ascii_lowercase() == *name);
+        let hit = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        let mut targets = index
+            .edges
+            .iter()
+            .filter(|edge| edge.src == hit.node.id && edge.kind == "instantiates");
+        let target = targets.next()?;
+        if targets.next().is_some() || !by_id.contains_key(&target.dst) {
+            return None;
+        }
+    }
+    Some(focused)
+}
+
+fn focused_import_target(
+    index: &GraphIndex,
+    hits: &[QueryHit],
+    task_lower: &str,
+) -> Option<Vec<QueryHit>> {
+    if !task_lower.contains("import")
+        || !task_lower.contains("package")
+        || !(task_lower.contains("file") || task_lower.contains("path"))
+    {
+        return None;
+    }
+    let by_id = node_map(index);
+    let focused: Vec<_> = hits
+        .iter()
+        .filter(|hit| {
+            hit.node.kind == "use"
+                && task_lower.contains(&hit.node.file.to_ascii_lowercase())
+                && tokenize(&task_lower.replace(&hit.node.file.to_ascii_lowercase(), " "))
+                    .iter()
+                    .any(|term| term == &hit.node.name.to_ascii_lowercase())
+                && index
+                    .edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.src == hit.node.id
+                            && edge.kind == "imports"
+                            && by_id.contains_key(&edge.dst)
+                    })
+                    .count()
+                    == 1
+        })
+        .cloned()
+        .collect();
+    (focused.len() == 1).then_some(focused)
 }
 
 #[cfg(test)]
@@ -682,6 +832,178 @@ mod context_ranking_tests {
         assert!(!ids.contains("other_ar"));
         assert!(!ids.contains("unqueried"));
     }
+
+    #[test]
+    fn complete_named_instance_targets_omit_unrelated_context() {
+        let mut ar = node("ar", "instance", "ar_fifo");
+        ar.file = "examples/nic400/Nic400CdcAxi4.arch".into();
+        let mut r = node("r", "instance", "r_fifo");
+        r.file = ar.file.clone();
+        let mut unrelated = node("unrelated", "instance", "control_inst");
+        unrelated.file = ar.file.clone();
+        let edges = [("ar", "ar_target"), ("r", "r_target")]
+            .into_iter()
+            .map(|(src, dst)| EdgeRecord {
+                src: src.into(),
+                dst: dst.into(),
+                kind: "instantiates".into(),
+                span: None,
+                attrs: BTreeMap::new(),
+                confidence: "resolved".into(),
+            })
+            .collect();
+        let mut index = GraphIndex {
+            index_root: String::new(),
+            files: Vec::new(),
+            edges,
+            nodes: vec![
+                ar,
+                r,
+                unrelated,
+                node("ar_target", "module", "Nic400ArCdcFifo"),
+                node("r_target", "module", "Nic400RCdcFifo"),
+            ],
+        };
+        let task = "In examples/nic400/Nic400CdcAxi4.arch, which separate FIFO declarations do ar_fifo and r_fifo instantiate?";
+        let hits = context_with_source(&index, task, 8);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].node.name, "ar_fifo");
+        assert_eq!(hits[1].node.name, "r_fifo");
+        assert!(context(&index, task, 8).len() > 2);
+
+        for list in [
+            "ar_fifo, r_fifo",
+            "`ar_fifo`, `r_fifo`",
+            "ar_fifo, and r_fifo",
+        ] {
+            let paraphrase = task.replace("ar_fifo and r_fifo", list);
+            let hits = context_with_source(&index, &paraphrase, 8);
+            assert_eq!(hits.len(), 2, "{paraphrase}");
+            assert_eq!(hits[0].node.name, "ar_fifo");
+            assert_eq!(hits[1].node.name, "r_fifo");
+        }
+        for list in [
+            "ar_fifo, missing_fifo",
+            "ar_fifo, missing, r_fifo",
+            "ar_fifo, x, r_fifo",
+            "missing and ar_fifo and r_fifo",
+            "x and ar_fifo and r_fifo",
+            "ar_fifo, r_fifo and missing",
+            "ar_fifo, r_fifo and x",
+            "ar_fifo r_fifo",
+            "ar_fifo and ar_fifo",
+            "ar_fifo and r_fifo and ar_fifo",
+        ] {
+            let incomplete = task.replace("ar_fifo and r_fifo", list);
+            assert!(
+                context_with_source(&index, &incomplete, 8).len() > 2,
+                "{incomplete}"
+            );
+        }
+
+        let mut plain = index.clone();
+        plain.nodes[0].name = "ingress".into();
+        plain.nodes[1].name = "egress".into();
+        assert_eq!(
+            context_with_source(
+                &plain,
+                &task.replace("ar_fifo and r_fifo", "ingress, egress"),
+                8
+            )
+            .len(),
+            2
+        );
+        let mut short = plain.clone();
+        short.nodes[0].name = "a".into();
+        short.nodes[1].name = "b".into();
+        let short_hits =
+            context_with_source(&short, &task.replace("ar_fifo and r_fifo", "a, b"), 8);
+        assert_eq!(short_hits.len(), 2);
+        assert!(short_hits.iter().all(|hit| hit.node.kind == "instance"));
+        plain.nodes[2].name = "bridge".into();
+        plain.edges.push(EdgeRecord {
+            src: "unrelated".into(),
+            dst: "ar_target".into(),
+            ..plain.edges[0].clone()
+        });
+        let three = task.replace("ar_fifo and r_fifo", "ingress, egress, and bridge");
+        let hits = context_with_source(&plain, &three, 8);
+        assert_eq!(hits.len(), 3);
+        assert!(hits.iter().all(|hit| hit.node.kind == "instance"));
+        let direct = query(&plain, &three, plain.nodes.len());
+        assert!(
+            focused_instance_targets(&plain, &direct, &three.to_ascii_lowercase(), 2).is_none()
+        );
+
+        let mut ambiguous = index.clone();
+        let mut duplicate = ambiguous.nodes[0].clone();
+        duplicate.id = "duplicate_ar".into();
+        ambiguous.nodes.push(duplicate);
+        assert!(context_with_source(&ambiguous, task, 8).len() > 2);
+        let mut dangling = index.clone();
+        dangling.edges.push(EdgeRecord {
+            dst: "missing_target".into(),
+            ..dangling.edges[0].clone()
+        });
+        assert!(context_with_source(&dangling, task, 8).len() > 2);
+
+        let incomplete = context_with_source(&index, &task.replace("r_fifo", "missing_fifo"), 8);
+        assert!(incomplete.len() > 2);
+        let unnamed = context_with_source(
+            &index,
+            "Which declarations do ar_fifo and r_fifo instantiate?",
+            8,
+        );
+        assert!(unnamed.len() > 2);
+        index.edges.push(index.edges[0].clone());
+        assert!(context_with_source(&index, task, 8).len() > 2);
+        index.edges.pop();
+        index.edges.pop();
+        assert!(context_with_source(&index, task, 8).len() > 2);
+    }
+
+    #[test]
+    fn complete_named_import_omits_unrelated_context() {
+        let mut import = node("import", "use", "TestPkg");
+        import.file = "examples/pkg_user.arch".into();
+        let mut index = GraphIndex {
+            index_root: String::new(),
+            files: Vec::new(),
+            edges: vec![EdgeRecord {
+                src: "import".into(),
+                dst: "package".into(),
+                kind: "imports".into(),
+                span: None,
+                attrs: BTreeMap::new(),
+                confidence: "resolved".into(),
+            }],
+            nodes: vec![
+                import,
+                node("package", "package", "TestPkg"),
+                node("other", "module", "OtherDatapath"),
+            ],
+        };
+        let task = "Which package file satisfies the TestPkg import in examples/pkg_user.arch? Give the declaration path.";
+        let hits = context_with_source(&index, task, 8);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].node.id, "import");
+        assert!(context(&index, task, 8).len() > 1);
+        assert!(context_with_source(&index, &task.replace("TestPkg", "MissingPkg"), 8).len() > 1);
+        assert!(
+            context_with_source(
+                &index,
+                "Which package file satisfies the TestPkg import?",
+                8
+            )
+            .len()
+                > 1
+        );
+        index.edges.push(index.edges[0].clone());
+        assert!(context_with_source(&index, task, 8).len() > 1);
+        index.edges.pop();
+        index.edges.clear();
+        assert!(context_with_source(&index, task, 8).len() > 1);
+    }
 }
 
 pub fn format_query_hits(hits: &[QueryHit]) -> String {
@@ -725,7 +1047,7 @@ pub fn format_query_hits_with_source(
             }
         }
     }
-    let mut source_lines: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut source_lines: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for hit in hits {
         let mut line = format!(
             "{}  {}  {}  score={}",
@@ -734,36 +1056,14 @@ pub fn format_query_hits_with_source(
             hit.node.name,
             hit.score
         );
-        if let (Some(file), Some(span)) = (files.get(hit.node.file.as_str()), &hit.node.span) {
-            if span.line_start == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("{} has no source line", hit.node.file),
-                ));
-            }
-            if !source_lines.contains_key(hit.node.file.as_str()) {
-                source_lines.insert(
-                    hit.node.file.as_str(),
-                    fs::read_to_string(&file.abs_path)?
-                        .lines()
-                        .map(str::to_string)
-                        .collect(),
-                );
-            }
-            let excerpt = source_lines[hit.node.file.as_str()]
-                .get(span.line_start.saturating_sub(1))
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("{}:{} is unavailable", hit.node.file, span.line_start),
-                    )
-                })?;
-            let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
-            let excerpt: String = excerpt.chars().take(120).collect();
+        if let Some(excerpt) = source_excerpt(&hit.node, &files, &mut source_lines)? {
             line.push_str(&format!(" | {excerpt}"));
         }
         if let Some(target) = targets.get(hit.node.id.as_str()) {
             line.push_str(&format!(" -> {} {}", location_label(target), target.name));
+            if let Some(excerpt) = source_excerpt(target, &files, &mut source_lines)? {
+                line.push_str(&format!(" | decl {excerpt}"));
+            }
         }
         lines.push(line);
     }
@@ -772,6 +1072,41 @@ pub fn format_query_hits_with_source(
     } else {
         lines.join("\n")
     })
+}
+
+fn source_excerpt(
+    node: &NodeRecord,
+    files: &BTreeMap<&str, &FileRecord>,
+    source_lines: &mut BTreeMap<String, Vec<String>>,
+) -> std::io::Result<Option<String>> {
+    let (Some(file), Some(span)) = (files.get(node.file.as_str()), &node.span) else {
+        return Ok(None);
+    };
+    if span.line_start == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} has no source line", node.file),
+        ));
+    }
+    if !source_lines.contains_key(node.file.as_str()) {
+        source_lines.insert(
+            node.file.clone(),
+            fs::read_to_string(&file.abs_path)?
+                .lines()
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    let excerpt = source_lines[node.file.as_str()]
+        .get(span.line_start - 1)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{}:{} is unavailable", node.file, span.line_start),
+            )
+        })?;
+    let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+    Ok(Some(excerpt.chars().take(120).collect()))
 }
 
 pub fn format_callers(hits: &[(EdgeRecord, NodeRecord)]) -> String {

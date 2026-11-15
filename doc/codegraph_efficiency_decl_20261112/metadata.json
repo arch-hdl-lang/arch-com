@@ -1,0 +1,27 @@
+{
+  "repo_sha": "10b14b99d1fce18e066f6a0c9c9ccc4e1f0b0b88",
+  "repo_status": "",
+  "tasks_sha256": "a4638cfa6ca4bf6af7d93f443c6f78c16c837548835d149c428092f05f263c26",
+  "selected_task_ids": [
+    "user_axi_dma_instance_targets",
+    "user_package_import_target",
+    "user_nic400_cdc_fifo_targets"
+  ],
+  "model": "gpt-6-luna",
+  "seed": 55,
+  "repeats": 2,
+  "ignore_user_config": false,
+  "approval_mode": "approve-for-me",
+  "conditions": [
+    "no_graph",
+    "default"
+  ],
+  "graph_token_budget": 200,
+  "include_source": true,
+  "codex_version": "codex-cli 0.159.2",
+  "arch_version": "arch 0.74.2 (git 10b14b99d1fc)",
+  "arch_stdlib_path": "/Users/shuqingzhao/Documents/Codex/2026-06-19/do-you-have-a-statistic-my/arch-com-codegraph-efficiency/stdlib",
+  "shared_index_seconds": {
+    "user": 30.979
+  }
+}

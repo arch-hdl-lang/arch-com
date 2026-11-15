@@ -526,9 +526,15 @@ def arch_graph_index(
 
 @mcp.tool()
 def arch_graph_context(task: str, index: str = ".archgraph", limit: int = 30,
-                       token_budget: int = 400, source_paths: list[str] | None = None,
-                       root: str | None = None, include_source: bool = False) -> str:
-    """Return bounded context; rebuild a missing or stale index from source_paths."""
+                       token_budget: int = 200, source_paths: list[str] | None = None,
+                       root: str | None = None, include_source: bool = True) -> str:
+    """Return bounded source-backed context; refresh from source_paths when stale.
+
+    Instance sites and their target declarations have distinct locations.
+    Reuse complete source evidence; retrieve only missing or ambiguous facts.
+    Set include_source=False for a location-only response. Truncation requires
+    a narrower query or larger budget when requested facts are missing.
+    """
     index_path = _resolve_safe(index)
     _validate_graph_sources(index_path)
     capped = max(1, min(limit, 100))
@@ -608,9 +614,18 @@ def arch_dev_graph_index(root: str = ".", out: str = ".archdevgraph") -> str:
 
 @mcp.tool()
 def arch_dev_graph_query(query: str, root: str = ".", index: str = ".archdevgraph",
-                         limit: int = 30, token_budget: int = 400,
-                         roles: list[str] | None = None, include_source: bool = False) -> str:
-    """Return bounded compiler owner/test context; refresh stale indexes."""
+                         limit: int = 30, token_budget: int = 200,
+                         roles: list[str] | None = None, include_source: bool = True) -> str:
+    """Return source-backed compiler owners/tests; refresh stale indexes.
+
+    Name a language feature or an exact Rust symbol. No matches means no
+    curated coverage for this query, not that the feature does not exist;
+    fall back to targeted source search.
+    A trailing (truncated), or ... at tiny budgets, means output was shortened.
+    Narrow roles or increase the budget when required evidence is missing.
+    Reuse complete source evidence without re-reading each declaration.
+    Set include_source=False for a location-only response.
+    """
     root_path = _resolve_safe(root)
     index_path = _resolve_safe(str(root_path / index)) if not pathlib.Path(index).is_absolute() else _resolve_safe(index)
     command = [ARCH_BIN, "graph", "dev-query", query, "--root", str(root_path),

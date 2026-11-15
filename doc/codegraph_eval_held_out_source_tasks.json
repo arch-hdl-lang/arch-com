@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "tasks": [
+    {
+      "id": "held_out_rom_declaration",
+      "cohort": "user",
+      "kind": "known_file",
+      "source_path": "examples/rom_lut.arch",
+      "source_sha256": "5d8255fe8d4fe4e90550e0b8cfa10a9931269cbe76aaf08463635ee6d05a286d",
+      "prompt": "In examples/rom_lut.arch, report the declaration location of RomLut as path:line, not an end marker or a reference.",
+      "expected_citation": {"symbol": "RomLut", "path": "examples/rom_lut.arch", "line": 2}
+    },
+    {
+      "id": "held_out_block_decoder_declaration",
+      "cohort": "user",
+      "kind": "known_file",
+      "source_path": "examples/lz4_block_decoder.arch",
+      "source_sha256": "a3a88c5df74742c6464bfc15d7d0201815206985f3b2ed3222d1f34c01ab5feb",
+      "prompt": "In examples/lz4_block_decoder.arch, report the module declaration location of Lz4BlockDecoder as path:line, not an end marker or a reference.",
+      "expected_citation": {"symbol": "Lz4BlockDecoder", "path": "examples/lz4_block_decoder.arch", "line": 44}
+    },
+    {
+      "id": "held_out_mesh_declaration",
+      "cohort": "user",
+      "kind": "known_file",
+      "source_path": "examples/mesh_noc_4x4/mesh4x4.arch",
+      "source_sha256": "33bb08d8da3db56383298ac8657f9703d9f1804ff47bcd8d4de0eced65eb8c1b",
+      "prompt": "In examples/mesh_noc_4x4/mesh4x4.arch, report the module declaration location of Mesh4x4 as path:line, not an instance or end marker.",
+      "expected_citation": {"symbol": "Mesh4x4", "path": "examples/mesh_noc_4x4/mesh4x4.arch", "line": 275}
+    },
+    {
+      "id": "held_out_clock_gate_emitter",
+      "cohort": "compiler",
+      "kind": "known_file",
+      "source_path": "src/codegen/clkgate.rs",
+      "source_sha256": "59715af228e8f0dd60eeb95634d18b505d239bfe3ddc6812d4ca49191a353166",
+      "prompt": "In src/codegen/clkgate.rs, identify the method that emits SystemVerilog for a clock-gate declaration. Give its identifier and declaration path:line, not the module documentation.",
+      "expected_citation": {"symbol": "emit_clkgate", "path": "src/codegen/clkgate.rs", "line": 7}
+    },
+    {
+      "id": "held_out_format_tag_lookup",
+      "cohort": "compiler",
+      "kind": "known_file",
+      "source_path": "src/fp_format.rs",
+      "source_sha256": "fc869e9a629279c27de498067c02f353c3f6f6b5f5a16d7a2e8f8c47801e58cc",
+      "prompt": "In src/fp_format.rs, identify the function that returns a floating-point format descriptor for an operator-dispatch tag, or None for an unknown tag. Give its identifier and declaration path:line.",
+      "expected_citation": {"symbol": "by_tag", "path": "src/fp_format.rs", "line": 248}
+    },
+    {
+      "id": "held_out_async_fifo_detection",
+      "cohort": "compiler",
+      "kind": "known_file",
+      "source_path": "src/resolve.rs",
+      "source_sha256": "63f109b71455f1a9cfcb43619a7af568881382d4c91dca506d026fa57283cdeb",
+      "prompt": "In src/resolve.rs, identify the function that decides whether a FIFO is asynchronous by comparing the domain names of its Clock ports. Give its identifier and declaration path:line.",
+      "expected_citation": {"symbol": "detect_async_fifo", "path": "src/resolve.rs", "line": 1258}
+    }
+  ]
+}

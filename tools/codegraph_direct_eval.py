@@ -50,6 +50,14 @@ CASES = (
                      ("src/codegen/module.rs", "emit_pipe_reg")),
         "max_rank": 4,
     },
+    {
+        "id": "compiler_pipeline_declaration_owners",
+        "query": "pipeline declaration AST parser whole-declaration SystemVerilog backend",
+        "kind": "dev-query",
+        "expected": (("src/ast.rs", "PipelineDecl"), ("src/parser.rs", "parse_pipeline"),
+                     ("src/codegen/pipeline.rs", "emit_pipeline")),
+        "max_rank": 4,
+    },
 )
 TOKEN_BUDGET = 100
 SOURCE_TOKEN_BUDGET = 200
@@ -75,6 +83,16 @@ RELATION_MAX_RANK = {"user_axi_dma_instance_targets": 2,
 NIC400_AGENT_QUERY = (
     "In Nic400CdcAxi4, trace instances ar_fifo and r_fifo to their instantiated FIFO "
     "target names and declaration source paths. Return only relevant source."
+)
+INSTANCE_LIST_QUERIES = (
+    ("axi_dma_comma_list", "user_axi_dma_instance_targets",
+     "In tests/axi_dma/AxiDmaTop.arch, identify the instance targets of mm2s_fsm, mm2s_fifo."),
+    ("axi_dma_quoted_list", "user_axi_dma_instance_targets",
+     "Which declarations do `mm2s_fifo`, `mm2s_fsm` instantiate in tests/axi_dma/AxiDmaTop.arch?"),
+    ("nic400_comma_list", "user_nic400_cdc_fifo_targets",
+     "In examples/nic400/Nic400CdcAxi4.arch, identify the instance targets of ar_fifo, r_fifo."),
+    ("nic400_oxford_list", "user_nic400_cdc_fifo_targets",
+     "Which declarations do ar_fifo, and r_fifo instantiate in examples/nic400/Nic400CdcAxi4.arch?"),
 )
 PIPE_REG_OWNERS = {
     "compiler_pipe_reg_change_map": (
@@ -132,8 +150,9 @@ def grade_relations(output: str, relations: tuple[tuple[str, int, str, str, int,
         target_line = (root / child).read_text().splitlines()[child_line - 1]
         if instance not in source_line or target not in target_line:
             return False
+        target_excerpt = " ".join(target_line.split())[:120]
         if not any(line.startswith(f"{parent}:{parent_line} ") and instance in line and
-                   f"-> {child}:{child_line} {target}" in line
+                   f"-> {child}:{child_line} {target} | decl {target_excerpt}" in line
                    for line in output.splitlines()[:max_rank]):
             return False
     return True
@@ -221,10 +240,11 @@ def main() -> None:
                                    "--include-source"], root)
             passed = grade_relations(output, relations, root, RELATION_MAX_RANK[task_id])
             bounded = len(output) <= CROSS_TOKEN_BUDGET * 4
+            compact = len(output.splitlines()) == len(relations)
             records.append({"id": task_id, "include_source": True,
-                            "pass": passed and bounded, "seconds": seconds,
-                            "output_chars": len(output), "bounded": bounded,
-                            **({"output": output} if not passed else {})})
+                            "pass": passed and bounded and compact, "seconds": seconds,
+                            "output_chars": len(output), "bounded": bounded, "compact": compact,
+                            **({"output": output} if not (passed and compact) else {})})
         output, seconds = run([str(arch_bin), "graph", "context", NIC400_AGENT_QUERY,
                                "--index", str(user_index), "--token-budget", str(SOURCE_TOKEN_BUDGET),
                                "--include-source"], root)
@@ -235,6 +255,19 @@ def main() -> None:
                         "pass": passed and bounded, "seconds": seconds,
                         "output_chars": len(output), "bounded": bounded,
                         **({"output": output} if not passed else {})})
+        for case_id, task_id, query in INSTANCE_LIST_QUERIES:
+            output, seconds = run([str(arch_bin), "graph", "context", query,
+                                   "--index", str(user_index),
+                                   "--token-budget", str(SOURCE_TOKEN_BUDGET),
+                                   "--include-source"], root)
+            relations = CROSS_RELATIONS[task_id]
+            bounded = len(output.encode()) <= SOURCE_TOKEN_BUDGET * 4
+            passed = grade_relations(output, relations, root, max_rank=len(relations))
+            compact = len(output.splitlines()) == len(relations)
+            records.append({"id": case_id, "include_source": True,
+                            "pass": passed and bounded and compact, "seconds": seconds,
+                            "output_chars": len(output), "bounded": bounded, "compact": compact,
+                            **({"output": output} if not (passed and compact) else {})})
         for task_id in ("compiler_pipe_reg_change_map", "compiler_pipe_reg_port_reset_map"):
             compiler_task = cross_tasks[task_id]
             output, seconds = run([str(arch_bin), "graph", "dev-query", compiler_task["prompt"],

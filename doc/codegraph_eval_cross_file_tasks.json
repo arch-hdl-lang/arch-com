@@ -40,6 +40,7 @@
       "id": "user_known_file_control",
       "cohort": "user",
       "kind": "known_file",
+      "source_path": "examples/fsm_counter.arch",
       "prompt": "In examples/fsm_counter.arch, report the declaration line of FsmCounter as path:line.",
       "answer_any": [["examples/fsm_counter.arch:16"]]
     },
@@ -47,6 +48,7 @@
       "id": "compiler_known_file_control",
       "cohort": "compiler",
       "kind": "known_file",
+      "source_path": "src/codegen/fifo.rs",
       "prompt": "In src/codegen/fifo.rs, name the function that emits the synchronous FIFO body.",
       "answer_any": [["emit_fifo_sync_body"]]
     }
