@@ -37627,6 +37627,86 @@ fn test_dev_graph_cli_query_and_stale_mapping() {
     assert!(output.contains("emit_pipe_reg"), "{output}");
     assert!(!output.contains("parse_module"), "{output}");
     assert!(output.len() <= 400, "{output}");
+    let uncovered = std::process::Command::new(arch_bin)
+        .args([
+            "graph",
+            "dev-query",
+            "missing_construct_zz AST parser emitter fixture",
+            "--root",
+        ])
+        .arg(root)
+        .arg("--index")
+        .arg(&index)
+        .output()
+        .expect("uncovered developer graph query");
+    assert!(
+        uncovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&uncovered.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&uncovered.stdout).trim(),
+        "(no matches)"
+    );
+    for (feature, symbol) in [
+        ("counter", "emit_counter"),
+        ("register file", "emit_regfile"),
+        ("ram", "Codegen::emit_ram"),
+    ] {
+        let queried = std::process::Command::new(arch_bin)
+            .args(["graph", "dev-query", feature, "--root"])
+            .arg(root)
+            .arg("--index")
+            .arg(&index)
+            .args([
+                "--role",
+                "backend",
+                "--include-source",
+                "--token-budget",
+                "200",
+            ])
+            .output()
+            .expect("expanded feature query");
+        let text = String::from_utf8_lossy(&queried.stdout);
+        assert!(
+            queried.status.success(),
+            "{}",
+            String::from_utf8_lossy(&queried.stderr)
+        );
+        assert!(
+            text.contains(&format!(" {symbol} [curated] |")),
+            "{feature}: {text}"
+        );
+        assert!(text.contains("[curated] |"), "{text}");
+        assert!(text.len() <= 800, "{text}");
+    }
+    for (limit, budget) in [(1, 200), (30, 1), (30, 100)] {
+        let bounded = std::process::Command::new(arch_bin)
+            .args(["graph", "dev-query", "pipe_reg output-port reset", "--root"])
+            .arg(root)
+            .arg("--index")
+            .arg(&index)
+            .args([
+                "--include-source",
+                "--limit",
+                &limit.to_string(),
+                "--token-budget",
+                &budget.to_string(),
+            ])
+            .output()
+            .expect("bounded developer graph query");
+        assert!(
+            bounded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&bounded.stderr)
+        );
+        let text = String::from_utf8_lossy(&bounded.stdout);
+        assert!(text.len() <= budget * 4, "{limit}/{budget}: {text}");
+        assert!(
+            text.trim_end().ends_with("(truncated)") || text.trim() == "...",
+            "{text}"
+        );
+    }
 }
 
 #[test]

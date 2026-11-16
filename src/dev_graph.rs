@@ -30,6 +30,10 @@ struct FeatureMap {
 #[derive(Debug, Deserialize)]
 struct Feature {
     name: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
+    covers: Vec<String>,
     links: Vec<Link>,
 }
 
@@ -46,6 +50,10 @@ pub struct DevNode {
     pub id: String,
     pub kind: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<String>,
     pub path: String,
     pub line: usize,
 }
@@ -96,12 +104,11 @@ fn revision(root: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn symbol_line(path: &Path, symbol: &str) -> io::Result<usize> {
-    let source = fs::read_to_string(path)?;
-    let syntax = syn::parse_file(&source)
-        .map_err(|err| invalid(format!("{}: Rust parse failed: {err}", path.display())))?;
-    let mut symbols = BTreeMap::<String, Vec<usize>>::new();
-    collect_symbols(&syntax.items, &mut symbols);
+fn symbol_line(
+    path: &Path,
+    symbol: &str,
+    symbols: &BTreeMap<String, Vec<usize>>,
+) -> io::Result<usize> {
     match symbols.get(symbol).map(Vec::as_slice) {
         Some([line]) => Ok(*line),
         Some(lines) if !lines.is_empty() => Err(invalid(format!(
@@ -113,6 +120,52 @@ fn symbol_line(path: &Path, symbol: &str) -> io::Result<usize> {
             path.display()
         ))),
     }
+}
+
+fn ast_variants(source: &str) -> io::Result<BTreeMap<String, BTreeSet<String>>> {
+    let syntax =
+        syn::parse_file(source).map_err(|err| invalid(format!("AST Rust parse failed: {err}")))?;
+    let mut enums = BTreeMap::new();
+    for item in &syntax.items {
+        if let Item::Enum(value) = item {
+            let mut variants = BTreeSet::new();
+            for variant in &value.variants {
+                let name = format!("{}::{}", value.ident, variant.ident);
+                if !variants.insert(name.clone()) {
+                    return Err(invalid(format!("duplicate AST variant {name}")));
+                }
+            }
+            if enums.insert(value.ident.to_string(), variants).is_some() {
+                return Err(invalid(format!("ambiguous AST enum {}", value.ident)));
+            }
+        }
+    }
+    Ok(enums)
+}
+
+fn validate_coverage(
+    map: &FeatureMap,
+    variants: &BTreeMap<String, BTreeSet<String>>,
+) -> io::Result<()> {
+    let known: BTreeSet<_> = variants.values().flatten().collect();
+    let mut owners = BTreeMap::new();
+    for feature in &map.features {
+        for covered in &feature.covers {
+            if !known.contains(covered) {
+                return Err(invalid(format!(
+                    "{}: unknown AST coverage {covered}",
+                    feature.name
+                )));
+            }
+            if let Some(previous) = owners.insert(covered, &feature.name) {
+                return Err(invalid(format!(
+                    "duplicate AST coverage {covered}: {previous} and {}",
+                    feature.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn add_symbol(symbols: &mut BTreeMap<String, Vec<usize>>, name: String, span: Span) {
@@ -215,7 +268,21 @@ pub fn index(root: &Path, map_path: &Path, out: &Path) -> io::Result<DevStats> {
         .map_err(|_| invalid("feature map must be inside the repository"))?
         .to_string_lossy()
         .to_string();
+    let mut source_cache = BTreeMap::new();
+    source_cache.insert(map_relative.clone(), map_source.clone());
     sources.insert(map_relative, digest(&map_source));
+    if map
+        .features
+        .iter()
+        .any(|feature| !feature.covers.is_empty())
+    {
+        let path = source_path(&root, "src/ast.rs")?;
+        let bytes = fs::read(path)?;
+        let source = std::str::from_utf8(&bytes).map_err(|err| invalid(err.to_string()))?;
+        validate_coverage(&map, &ast_variants(source)?)?;
+        sources.insert("src/ast.rs".into(), digest(&bytes));
+        source_cache.insert("src/ast.rs".into(), bytes);
+    }
     let mut names = BTreeSet::new();
     let mut symbol_cache = BTreeMap::new();
     for feature in &map.features {
@@ -229,23 +296,31 @@ pub fn index(root: &Path, map_path: &Path, out: &Path) -> io::Result<DevStats> {
                 id: feature_id.clone(),
                 kind: "feature".into(),
                 name: feature.name.clone(),
+                aliases: feature.aliases.clone(),
+                covers: feature.covers.clone(),
                 path: String::new(),
                 line: 0,
             },
         );
         for link in feature.links.iter().chain(&map.common_links) {
             let path = source_path(&root, &link.path)?;
-            let bytes = fs::read(&path)?;
-            sources.insert(link.path.clone(), digest(&bytes));
+            if !source_cache.contains_key(&link.path) {
+                source_cache.insert(link.path.clone(), fs::read(&path)?);
+            }
+            let bytes = &source_cache[&link.path];
+            sources.insert(link.path.clone(), digest(bytes));
             let line = if let Some(symbol) = &link.symbol {
-                let key = (link.path.clone(), symbol.clone());
-                if let Some(line) = symbol_cache.get(&key) {
-                    *line
-                } else {
-                    let line = symbol_line(&path, symbol)?;
-                    symbol_cache.insert(key, line);
-                    line
+                if !symbol_cache.contains_key(&link.path) {
+                    let source =
+                        std::str::from_utf8(bytes).map_err(|err| invalid(err.to_string()))?;
+                    let syntax = syn::parse_file(source).map_err(|err| {
+                        invalid(format!("{}: Rust parse failed: {err}", path.display()))
+                    })?;
+                    let mut symbols = BTreeMap::new();
+                    collect_symbols(&syntax.items, &mut symbols);
+                    symbol_cache.insert(link.path.clone(), symbols);
                 }
+                symbol_line(&path, symbol, &symbol_cache[&link.path])?
             } else {
                 1
             };
@@ -259,6 +334,8 @@ pub fn index(root: &Path, map_path: &Path, out: &Path) -> io::Result<DevStats> {
                 id: target.clone(),
                 kind: kind.into(),
                 name,
+                aliases: Vec::new(),
+                covers: Vec::new(),
                 path: link.path.clone(),
                 line,
             });
@@ -304,17 +381,64 @@ fn read_jsonl<T: for<'a> Deserialize<'a>>(path: &Path) -> io::Result<Vec<T>> {
 }
 
 fn terms(query: &str) -> Vec<String> {
-    query
-        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-        .filter(|word| !word.is_empty())
-        .map(str::to_lowercase)
-        .filter(|word| {
-            ![
-                "the", "a", "for", "to", "in", "of", "how", "where", "change",
-            ]
-            .contains(&word.as_str())
+    let words: Vec<_> = query
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_' && ch != ':')
+        .flat_map(|token| {
+            token
+                .split(':')
+                .filter(|word| !word.is_empty())
+                .map(move |word| (word.to_lowercase(), token.contains("::")))
         })
+        .collect();
+    words
+        .iter()
+        .filter(|(word, qualified)| {
+            *qualified
+                || words.len() == 1
+                || ![
+                    "the", "a", "for", "to", "in", "of", "how", "where", "change",
+                ]
+                .contains(&word.as_str())
+        })
+        .map(|(word, _)| word.clone())
         .collect()
+}
+
+fn has_query_anchor(
+    words: &[String],
+    feature: &DevNode,
+    related: &[&DevEdge],
+    by_id: &BTreeMap<&str, &DevNode>,
+) -> bool {
+    // Feature names start with the language identifier, followed by optional
+    // qualifiers (e.g. "pipe_reg output-port reset"). Roles and paths are not anchors.
+    let feature_terms = terms(&feature.name);
+    if feature_terms
+        .first()
+        .is_some_and(|name| words.contains(name))
+    {
+        return true;
+    }
+    if feature
+        .aliases
+        .iter()
+        .chain(&feature.covers)
+        .any(|alias| has_named_terms(words, alias))
+    {
+        return true;
+    }
+    related
+        .iter()
+        .filter_map(|edge| by_id.get(edge.to.as_str()))
+        .any(|node| node.kind == "rust_symbol" && has_named_terms(words, &node.name))
+}
+
+fn has_named_terms(words: &[String], name: &str) -> bool {
+    let name_terms = terms(name);
+    !name_terms.is_empty()
+        && words
+            .windows(name_terms.len())
+            .any(|window| window == name_terms)
 }
 
 pub fn query(
@@ -360,10 +484,31 @@ pub fn query(
             .iter()
             .filter(|edge| edge.from == feature.id)
             .collect();
-        related.sort_by_key(|edge| (role_priority(&edge.role), edge.to.as_str()));
+        if !has_query_anchor(&words, feature, &related, &by_id) {
+            continue;
+        }
+        related.sort_by_key(|edge| {
+            let exact_symbol = by_id
+                .get(edge.to.as_str())
+                .is_some_and(|node| has_named_terms(&words, &node.name));
+            let named_matches = by_id.get(edge.to.as_str()).map_or(0, |node| {
+                node.name
+                    .split(|ch: char| !ch.is_ascii_alphanumeric())
+                    .filter(|word| !word.is_empty() && words.contains(&word.to_lowercase()))
+                    .count()
+            });
+            (
+                role_priority(&edge.role),
+                std::cmp::Reverse(exact_symbol),
+                std::cmp::Reverse(named_matches),
+                edge.to.as_str(),
+            )
+        });
         let hay = format!(
-            "{} {}",
+            "{} {} {} {}",
             feature.name,
+            feature.aliases.join(" "),
+            feature.covers.join(" "),
             related
                 .iter()
                 .filter_map(|edge| by_id
@@ -382,13 +527,22 @@ pub fn query(
         }
         let feature_name = feature.name.to_lowercase();
         let feature_terms = terms(&feature.name);
-        let exact_feature_mention = !feature_terms.is_empty()
+        let exact_feature_mention = (!feature_terms.is_empty()
             && words
                 .windows(feature_terms.len())
-                .any(|window| window == feature_terms.as_slice());
+                .any(|window| window == feature_terms.as_slice()))
+            || feature
+                .aliases
+                .iter()
+                .any(|alias| has_named_terms(&words, alias));
+        let exact_coverage_mention = feature
+            .covers
+            .iter()
+            .any(|covered| has_named_terms(&words, covered));
         let score = matched * 10
             + usize::from(feature_name.contains(&lowered_query)) * 100
             + usize::from(exact_feature_mention) * 100
+            + usize::from(exact_coverage_mention) * 200
             + usize::from(matched == words.len()) * 30;
         related.retain(|edge| roles.is_empty() || roles.iter().any(|role| role == &edge.role));
         if related.is_empty() {
@@ -400,6 +554,16 @@ pub fn query(
         hits.retain(|hit| hit.1 == words.len());
     }
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.name.cmp(&b.2.name)));
+    let total_lines: usize = hits
+        .iter()
+        .map(|hit| {
+            1 + hit
+                .3
+                .iter()
+                .filter(|edge| by_id.contains_key(edge.to.as_str()))
+                .count()
+        })
+        .sum();
     let mut lines = Vec::new();
     let mut source_lines: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut remaining = limit.max(1);
@@ -446,31 +610,59 @@ pub fn query(
         }
     }
     if lines.is_empty() {
-        return Ok("(no matches)".into());
+        return Ok(bounded_output(
+            &["(no matches)".into()],
+            false,
+            token_budget,
+        ));
     }
-    let max_chars = token_budget.max(1).saturating_mul(4);
+    Ok(bounded_output(
+        &lines,
+        lines.len() < total_lines,
+        token_budget,
+    ))
+}
+
+fn bounded_output(lines: &[String], mut truncated: bool, token_budget: usize) -> String {
+    // Reserve the CLI's trailing newline. Keep whole rows, including UTF-8 source.
+    let max_bytes = token_budget.max(1).saturating_mul(4).saturating_sub(1);
     let mut output = String::new();
     for line in lines {
         let extra = line.len() + usize::from(!output.is_empty());
-        if output.len() + extra > max_chars {
+        if output.len().saturating_add(extra) > max_bytes {
+            truncated = true;
             break;
         }
         if !output.is_empty() {
             output.push('\n');
         }
-        output.push_str(&line);
+        output.push_str(line);
     }
-    Ok(output)
+    if truncated {
+        let marker = if max_bytes >= "(truncated)".len() {
+            "(truncated)"
+        } else {
+            "..."
+        };
+        while !output.is_empty() && output.len() + 1 + marker.len() > max_bytes {
+            output.truncate(output.rfind('\n').unwrap_or(0));
+        }
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(marker);
+    }
+    output
 }
 
 fn role_priority(role: &str) -> usize {
     match role {
         "ast" => 0,
         "parser" => 1,
-        "semantic_check" => 2,
-        "lowerer" => 3,
-        "ir" => 4,
-        "backend" => 5,
+        "backend" => 2,
+        "semantic_check" => 3,
+        "lowerer" => 4,
+        "ir" => 5,
         "fixture" | "dut" => 6,
         "spec" => 7,
         "skill" => 8,
@@ -483,12 +675,278 @@ fn role_priority(role: &str) -> usize {
 mod tests {
     use super::*;
 
+    const COVERED_ENUMS: &[&str] = &[
+        "Item",
+        "ModuleBodyItem",
+        "GenItem",
+        "Stmt",
+        "ThreadStmt",
+        "FunctionBodyItem",
+        "TypeExpr",
+        "ExprKind",
+        "BinOp",
+        "UnaryOp",
+    ];
+
+    #[test]
+    fn qualified_variant_names_preserve_language_keywords() {
+        assert_eq!(
+            terms("Find Stmt::For in source"),
+            ["find", "stmt", "for", "source"]
+        );
+        assert_eq!(terms("for"), ["for"]);
+        assert_eq!(terms("for ARCH counter"), ["arch", "counter"]);
+        assert!(has_named_terms(&terms("Locate Stmt::For"), "Stmt::For"));
+        assert!(!has_named_terms(&terms("Locate Stmt"), "Stmt::For"));
+    }
+
+    fn complete_coverage(map: &FeatureMap, source: &str, required: &[&str]) -> io::Result<()> {
+        let variants = ast_variants(source)?;
+        validate_coverage(map, &variants)?;
+        let mut expected = BTreeSet::new();
+        for name in required {
+            expected.extend(
+                variants
+                    .get(*name)
+                    .ok_or_else(|| invalid(format!("missing AST inventory enum {name}")))?
+                    .iter()
+                    .cloned(),
+            );
+        }
+        let covered: BTreeSet<_> = map
+            .features
+            .iter()
+            .flat_map(|feature| &feature.covers)
+            .cloned()
+            .collect();
+        if covered != expected {
+            return Err(invalid(format!(
+                "AST coverage drift: missing {:?}, unexpected {:?}",
+                expected.difference(&covered).collect::<Vec<_>>(),
+                covered.difference(&expected).collect::<Vec<_>>()
+            )));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bundled_map_covers_every_core_ast_variant() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let map: FeatureMap =
+            serde_json::from_slice(&fs::read(root.join("doc/codegraph_feature_map.json")).unwrap())
+                .unwrap();
+        complete_coverage(
+            &map,
+            &fs::read_to_string(root.join("src/ast.rs")).unwrap(),
+            COVERED_ENUMS,
+        )
+        .unwrap();
+        for feature in &map.features {
+            if !feature.covers.is_empty() {
+                assert!(
+                    feature.links.iter().any(|link| link.role == "ast"
+                        && link.path == "src/ast.rs"
+                        && link.symbol.is_some()),
+                    "{} needs a source-bound AST owner",
+                    feature.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_drift_controls_reject_added_removed_renamed_and_duplicate_variants() {
+        let data =
+            r#"{"schema_version":1,"features":[{"name":"old","covers":["Item::Old"],"links":[]}]}"#;
+        let map: FeatureMap = serde_json::from_str(data).unwrap();
+        complete_coverage(&map, "enum Item { Old }", &["Item"]).unwrap();
+        for source in [
+            "enum Item { Old, New }",
+            "enum Item {}",
+            "enum Item { Renamed }",
+            "enum Other { Old }",
+            "enum Item { Old } enum Item { New }",
+            "enum Item { Old, Old }",
+        ] {
+            assert!(
+                complete_coverage(&map, source, &["Item"]).is_err(),
+                "{source}"
+            );
+        }
+        for data in [
+            r#"{"schema_version":1,"features":[{"name":"old","covers":[],"links":[]}]}"#,
+            r#"{"schema_version":1,"features":[{"name":"old","covers":["Item::Old","Item::Old"],"links":[]}]}"#,
+            r#"{"schema_version":1,"features":[{"name":"old","covers":["Item::Old"],"links":[]},{"name":"other","covers":["Item::Old"],"links":[]}]}"#,
+        ] {
+            let map = serde_json::from_str(data).unwrap();
+            assert!(
+                complete_coverage(&map, "enum Item { Old }", &["Item"]).is_err(),
+                "{data}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_partial_coverage_is_validated_and_pinned_without_requiring_completeness() {
+        let root = std::env::temp_dir().join(format!("arch-dev-coverage-{}", std::process::id()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        let ast = root.join("src/ast.rs");
+        fs::write(&ast, "enum Feature { Present, Other }\n").unwrap();
+        let map_path = root.join("map.json");
+        let out = root.join("index");
+        let data = r#"{"schema_version":1,"features":[{"name":"sample","covers":["Feature::Present"],"links":[{"role":"ast","path":"src/ast.rs","symbol":"Feature::Present"}]}]}"#;
+        fs::write(&map_path, data).unwrap();
+        index(&root, &map_path, &out).unwrap();
+        let result = query(&root, &out, "Feature::Present", 10, 100, &[], true).unwrap();
+        assert!(result.contains("feature sample"));
+        assert!(result.contains("Feature::Present [curated]"));
+        assert_eq!(
+            query(&root, &out, "sample", 10, 100, &["backend".into()], false)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        for coverage in ["Feature::Absent", "Feature::Present\",\"Feature::Present"] {
+            fs::write(&map_path, data.replacen("Feature::Present", coverage, 1)).unwrap();
+            assert!(index(&root, &map_path, &out).is_err());
+        }
+        fs::write(root.join("owners.rs"), "fn parse_feature() {}\n").unwrap();
+        let without_ast_link = r#"{"schema_version":1,"features":[{"name":"sample","covers":["Feature::Present"],"links":[{"role":"parser","path":"owners.rs","symbol":"parse_feature"}]}]}"#;
+        fs::write(&map_path, without_ast_link).unwrap();
+        index(&root, &map_path, &out).unwrap();
+        let covered = query(&root, &out, "Feature::Present", 10, 100, &[], false).unwrap();
+        assert!(covered.contains("feature sample"));
+        assert!(covered.contains("parse_feature"));
+        fs::write(&ast, "enum Feature { Present, Other, New }\n").unwrap();
+        assert!(query(&root, &out, "sample", 10, 100, &[], false)
+            .unwrap_err()
+            .to_string()
+            .contains("changed since indexing"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cached_symbols_keep_ambiguity_and_missing_role_checks() {
+        let root =
+            std::env::temp_dir().join(format!("arch-dev-cached-symbols-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("owners.rs"), "struct Alpha; struct Beta;\nimpl Alpha { fn shared() {} }\nimpl Beta { fn shared() {} }\n").unwrap();
+        let map_path = root.join("map.json");
+        let out = root.join("index");
+        let data = r#"{"schema_version":1,"features":[{"name":"alpha","links":[{"role":"ast","path":"owners.rs","symbol":"Alpha"},{"role":"parser","path":"owners.rs","symbol":"Alpha::shared"}]},{"name":"beta","links":[{"role":"backend","path":"owners.rs","symbol":"Beta::shared"}]}]}"#;
+        fs::write(&map_path, data).unwrap();
+        index(&root, &map_path, &out).unwrap();
+        assert_eq!(
+            query(&root, &out, "alpha", 20, 200, &["backend".into()], false).unwrap(),
+            "(no matches)"
+        );
+        assert!(query(&root, &out, "Beta::shared", 20, 200, &[], true)
+            .unwrap()
+            .contains("owners.rs:3"));
+        for (symbol, error) in [("shared", "ambiguous"), ("Absent", "was not found")] {
+            fs::write(&map_path, data.replace("Alpha::shared", symbol)).unwrap();
+            assert!(index(&root, &map_path, &out)
+                .unwrap_err()
+                .to_string()
+                .contains(error));
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bounded_output_marks_omissions_without_splitting_rows() {
+        let lines = vec!["abcd".into(), "xy".into(), "lambda: \u{03bb}".into()];
+        let complete = lines.join("\n");
+        for budget in 1..=40 {
+            for already_truncated in [false, true] {
+                let result = bounded_output(&lines, already_truncated, budget);
+                assert!(result.len() + 1 <= budget * 4, "{budget}: {result}");
+                if already_truncated || complete.len() + 1 > budget * 4 {
+                    assert!(result.ends_with("(truncated)") || result == "...");
+                    for line in result
+                        .lines()
+                        .filter(|line| !["(truncated)", "..."].contains(line))
+                    {
+                        assert!(lines.iter().any(|original| original == line));
+                    }
+                } else {
+                    assert_eq!(result, complete);
+                }
+            }
+        }
+        assert_eq!(bounded_output(&lines[..2], false, 2), "abcd\nxy");
+        assert_eq!(bounded_output(&lines, true, 5), "abcd\nxy\n(truncated)");
+        assert_eq!(bounded_output(&["(no matches)".into()], false, 1), "...");
+    }
+
     #[test]
     fn bundled_feature_map_resolves_all_symbols() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let out = std::env::temp_dir().join(format!("arch-dev-graph-test-{}", std::process::id()));
         let stats = index(root, &root.join("doc/codegraph_feature_map.json"), &out).unwrap();
         assert!(stats.features >= 8);
+        let map: FeatureMap =
+            serde_json::from_slice(&fs::read(root.join("doc/codegraph_feature_map.json")).unwrap())
+                .unwrap();
+        for feature in &map.features {
+            for variant in &feature.covers {
+                let result = query(root, &out, variant, 20, 200, &[], true).unwrap();
+                assert_eq!(
+                    result.lines().next(),
+                    Some(format!("feature {}", feature.name).as_str()),
+                    "{variant}: {result}"
+                );
+                assert!(result.contains("[curated] |"), "{variant}: {result}");
+                assert!(result.len() < 800, "{variant}: {result}");
+            }
+        }
+        for feature in ["counter", "register-file"] {
+            let question = format!(
+                "For ARCH {feature} declarations, locate the AST declaration type, parser function and SystemVerilog emitter."
+            );
+            let result = query(root, &out, &question, 20, 200, &[], true).unwrap();
+            let roles: Vec<_> = result
+                .lines()
+                .skip(1)
+                .take(3)
+                .filter_map(|line| line.split_whitespace().next())
+                .collect();
+            assert_eq!(roles, ["ast", "parser", "backend"], "{result}");
+        }
+        let arbiter_question = "For ARCH round-robin arbitration, identify the AST type, parser function, and SystemVerilog backend function with their source paths.";
+        for symbol in ["emit_fifo_sync_body", "emit_arbiter_round_robin"] {
+            let result = query(root, &out, symbol, 2, 200, &["backend".into()], true).unwrap();
+            assert!(
+                result
+                    .lines()
+                    .nth(1)
+                    .unwrap()
+                    .contains(&format!(" {symbol} [curated] |")),
+                "{result}"
+            );
+        }
+        for (include_source, budget) in [(false, 100), (true, 200)] {
+            let result = query(
+                root,
+                &out,
+                arbiter_question,
+                20,
+                budget,
+                &[],
+                include_source,
+            )
+            .unwrap();
+            let first_roles: Vec<_> = result.lines().take(4).collect();
+            assert_eq!(first_roles[0], "feature arbiter", "{result}");
+            for (line, symbol) in first_roles[1..].iter().zip([
+                "ArbiterDecl",
+                "parse_arbiter",
+                "emit_arbiter_round_robin",
+            ]) {
+                assert!(line.contains(symbol), "{result}");
+            }
+            assert_eq!(first_roles.len(), 4, "{result}");
+        }
         let result = query(root, &out, "pipe_reg declaration", 30, 600, &[], false).unwrap();
         assert!(result.contains("emit_pipe_reg"));
         assert!(result.contains("pipe_reg_test.arch"));
@@ -501,6 +959,15 @@ mod tests {
         assert!(port.contains("Prob047_dff8ar.arch"));
         assert!(!sourced.contains(" | **ARCH**"));
         assert!(!sourced.contains(" | ---"));
+        let pipeline_backend = query(root, &out, "pipeline backend", 20, 200, &[], true).unwrap();
+        assert!(
+            pipeline_backend.contains("emit_pipeline [curated] | pub(crate) fn emit_pipeline("),
+            "{pipeline_backend}"
+        );
+        assert!(
+            !pipeline_backend.contains("emit_pipeline_inst"),
+            "{pipeline_backend}"
+        );
         let parser_only = query(
             root,
             &out,
@@ -515,6 +982,41 @@ mod tests {
         assert!(!parser_only.contains("parse_fifo"));
         assert!(!parser_only.contains("emit_pipeline_inst"));
         assert!(!parser_only.contains("mcp_guidance"));
+        let limited = query(root, &out, "pipeline", 1, 800, &[], true).unwrap();
+        assert_eq!(limited, "feature pipeline\n(truncated)");
+        let complete_parser =
+            query(root, &out, "pipeline", 2, 800, &["parser".into()], true).unwrap();
+        assert!(!complete_parser.contains("(truncated)"));
+        let tight = query(root, &out, "pipe_reg output-port reset", 30, 100, &[], true).unwrap();
+        assert!(tight.ends_with("(truncated)"));
+        assert!(tight.len() + 1 <= 400);
+        for unsupported in [
+            "For ARCH missing_construct_zz, identify its AST type, parser owner, SystemVerilog emitter, and shipped fixture with source paths.",
+            "missing_construct_zz AST parser backend fixture",
+            "AST parser backend fixture src/parser.rs src/ast.rs",
+            "pipelines parser",
+        ] {
+            assert_eq!(query(root, &out, unsupported, 30, 200, &[], true).unwrap(),
+                       "(no matches)", "{unsupported}");
+        }
+        for (query_text, expected) in [
+            ("PIPE_REG", "feature pipe_reg"),
+            ("arbitration", "feature arbiter"),
+            ("round-robin arbitration AST parser", "feature arbiter"),
+            ("Where is parse_fifo defined?", "feature fifo"),
+            (
+                "Which feature owns PortRegInfo?",
+                "feature pipe_reg output-port reset",
+            ),
+            ("Find TypeChecker::check", "feature module"),
+        ] {
+            assert!(
+                query(root, &out, query_text, 30, 200, &[], false)
+                    .unwrap()
+                    .contains(expected),
+                "{query_text}"
+            );
+        }
         assert!(query(
             root,
             &out,

@@ -172,6 +172,10 @@ stale source files or a changed generator; rebuild the user index with
 language features to Rust symbols, tests, the specification, skill, and MCP
 guidance. Its mappings are curated ownership links, not inferred call edges;
 `dev-query` validates indexed source fingerprints and accepts `--role` filters.
+The bundled map tracks every variant in the core declaration, statement,
+thread, type, expression, and operator AST inventories; CI rejects unmapped
+new variants. See [developer graph coverage](doc/codegraph_feature_coverage.md)
+for the exact boundary and ownership limitations.
 For text responses, `context` and `dev-query` accept `--include-source` to
 append a short, freshness-checked source line. Context hits for imports and
 instances also show the indexed target declaration.
