@@ -488,6 +488,9 @@ pub fn query(
             continue;
         }
         related.sort_by_key(|edge| {
+            let exact_symbol = by_id
+                .get(edge.to.as_str())
+                .is_some_and(|node| has_named_terms(&words, &node.name));
             let named_matches = by_id.get(edge.to.as_str()).map_or(0, |node| {
                 node.name
                     .split(|ch: char| !ch.is_ascii_alphanumeric())
@@ -496,6 +499,7 @@ pub fn query(
             });
             (
                 role_priority(&edge.role),
+                std::cmp::Reverse(exact_symbol),
                 std::cmp::Reverse(named_matches),
                 edge.to.as_str(),
             )
@@ -910,6 +914,17 @@ mod tests {
             assert_eq!(roles, ["ast", "parser", "backend"], "{result}");
         }
         let arbiter_question = "For ARCH round-robin arbitration, identify the AST type, parser function, and SystemVerilog backend function with their source paths.";
+        for symbol in ["emit_fifo_sync_body", "emit_arbiter_round_robin"] {
+            let result = query(root, &out, symbol, 2, 200, &["backend".into()], true).unwrap();
+            assert!(
+                result
+                    .lines()
+                    .nth(1)
+                    .unwrap()
+                    .contains(&format!(" {symbol} [curated] |")),
+                "{result}"
+            );
+        }
         for (include_source, budget) in [(false, 100), (true, 200)] {
             let result = query(
                 root,
