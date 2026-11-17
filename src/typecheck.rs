@@ -9604,6 +9604,49 @@ impl<'a> TypeChecker<'a> {
             self.check_snake_case(&p.name);
         }
 
+        // Clock port validation: 1 clock (synchronous) or 2 clocks in different domains (asynchronous).
+        let clk_ports: Vec<(&crate::ast::PortDecl, &Ident)> = f
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Clock(domain) = &p.ty {
+                    Some((p, domain))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if clk_ports.is_empty() {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "fifo `{}` requires at least 1 `Clock<Domain>` port",
+                    f.name.name
+                ),
+                f.name.span,
+            ));
+        } else if clk_ports.len() > 2 {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "fifo `{}` has {} clock ports; a FIFO supports at most 2 clock ports (write and read)",
+                    f.name.name,
+                    clk_ports.len()
+                ),
+                clk_ports[2].0.name.span,
+            ));
+        } else if clk_ports.len() == 2 && clk_ports[0].1.name == clk_ports[1].1.name {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "fifo `{}` has two clock ports (`{}` and `{}`) in the same domain `{}`; same-domain clocks are a compile error — use a single clock port for a synchronous FIFO",
+                    f.name.name,
+                    clk_ports[0].0.name.name,
+                    clk_ports[1].0.name.name,
+                    clk_ports[0].1.name
+                ),
+                clk_ports[1].0.name.span,
+            ));
+        }
+
         // Required port names
         let required = [
             "push_valid",
