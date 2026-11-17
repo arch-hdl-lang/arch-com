@@ -5194,7 +5194,24 @@ impl Parser {
 
                 // Try numeric width first; if that fails, treat as param identifier
                 match parts[0].parse::<u32>() {
-                    Ok(width) => ExprKind::Literal(LitKind::Sized(width, value)),
+                    Ok(width) => {
+                        if width == 0 {
+                            return Err(CompileError::general(
+                                "sized literal width cannot be 0",
+                                tok.span,
+                            ));
+                        }
+                        if width < 64 && value >= (1u64 << width) {
+                            return Err(CompileError::general(
+                                &format!(
+                                    "sized literal value {} exceeds declared width of {} bits",
+                                    value, width
+                                ),
+                                tok.span,
+                            ));
+                        }
+                        ExprKind::Literal(LitKind::Sized(width, value))
+                    }
                     Err(_) => {
                         let width_str = parts[0];
                         if !width_str.is_empty()
