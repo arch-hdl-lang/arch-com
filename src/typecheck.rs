@@ -976,8 +976,10 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn check_struct(&mut self, s: &StructDecl) {
         self.check_pascal_case(&s.name);
+        let empty_types: HashMap<String, Ty> = HashMap::new();
         for field in &s.fields {
             self.check_snake_case(&field.name);
+            self.resolve_type_expr(&field.ty, &s.name.name, &empty_types);
         }
     }
 
@@ -4327,6 +4329,7 @@ impl<'a> TypeChecker<'a> {
                             let bits = enum_width(info.variants.len());
                             Ty::Enum(ident.name.clone(), bits)
                         }
+                        crate::resolve::Symbol::ExternEnum(_) => Ty::Enum(ident.name.clone(), 32),
                         // Bus types are permitted as wire/reg types — direction
                         // metadata is only meaningful on ports; in a wire
                         // context the bus is just a named bundle of fields.
@@ -4340,6 +4343,22 @@ impl<'a> TypeChecker<'a> {
                             ));
                             Ty::Error
                         }
+                    }
+                } else if let Some(p) = self
+                    .active_params
+                    .iter()
+                    .find(|p| p.name.name == ident.name)
+                    .cloned()
+                {
+                    if let ParamKind::Type(ty) = &p.kind {
+                        self.resolve_type_expr(ty, _module_name, local_types)
+                    } else {
+                        self.errors.push(CompileError::type_mismatch(
+                            "type",
+                            &ident.name,
+                            ident.span,
+                        ));
+                        Ty::Error
                     }
                 } else {
                     self.errors
@@ -10647,6 +10666,42 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_bus(&mut self, b: &crate::ast::BusDecl) {
         for p in &b.params {
             self.check_param_where_default(p);
+        }
+        let empty_types: HashMap<String, Ty> = HashMap::new();
+        for sig in &b.signals {
+            self.resolve_type_expr(&sig.ty, &b.name.name, &empty_types);
+        }
+        for gen in &b.generates {
+            for sig in &gen.then_signals {
+                self.resolve_type_expr(&sig.ty, &b.name.name, &empty_types);
+            }
+            for sig in &gen.else_signals {
+                self.resolve_type_expr(&sig.ty, &b.name.name, &empty_types);
+            }
+            for method in &gen.then_tlm_methods {
+                for (_, arg_ty) in &method.args {
+                    self.resolve_type_expr(arg_ty, &b.name.name, &empty_types);
+                }
+                if let Some(ret_ty) = &method.ret {
+                    self.resolve_type_expr(ret_ty, &b.name.name, &empty_types);
+                }
+            }
+            for method in &gen.else_tlm_methods {
+                for (_, arg_ty) in &method.args {
+                    self.resolve_type_expr(arg_ty, &b.name.name, &empty_types);
+                }
+                if let Some(ret_ty) = &method.ret {
+                    self.resolve_type_expr(ret_ty, &b.name.name, &empty_types);
+                }
+            }
+        }
+        for method in &b.tlm_methods {
+            for (_, arg_ty) in &method.args {
+                self.resolve_type_expr(arg_ty, &b.name.name, &empty_types);
+            }
+            if let Some(ret_ty) = &method.ret {
+                self.resolve_type_expr(ret_ty, &b.name.name, &empty_types);
+            }
         }
         if std::env::var("ARCH_NO_DEPRECATIONS").is_err() {
             for hs in &b.handshakes {
