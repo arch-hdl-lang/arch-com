@@ -1410,7 +1410,14 @@ impl<'a> Codegen<'a> {
                 );
             }
             Stmt::Log(l) => {
-                self.emit_log_stmt(l);
+                self.emit_pipeline_log_stmt(
+                    l,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
             }
             Stmt::For(f) => {
                 let var = &f.var.name;
@@ -1807,7 +1814,14 @@ impl<'a> Codegen<'a> {
                 );
             }
             Stmt::Log(l) => {
-                self.emit_log_stmt(l);
+                self.emit_pipeline_log_stmt(
+                    l,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
             }
             Stmt::For(f) => {
                 self.emit_for_loop_sv(f, |s, stmt| {
@@ -1866,6 +1880,86 @@ impl<'a> Codegen<'a> {
         }
         self.indent -= 1;
         self.line("endcase");
+    }
+
+    /// Emit a `log(...)` statement inside a pipeline stage `seq`/`comb` block.
+    /// Identical in shape to the module-scope `emit_log_stmt`, except every
+    /// argument is rendered through `emit_pipeline_stage_expr_str` so a stage
+    /// register reference (`acc`) is stage-prefixed (`s0_acc`) rather than left
+    /// as a bare module-scope identifier. The generic emitter uses
+    /// `emit_expr_str`, which carries no stage context, so a stage-reg arg came
+    /// out as an undefined net — `$display(... acc ...)` with no `acc` at module
+    /// scope, which Verilator rejects ("Can't find definition of variable
+    /// 'acc'"). Both the simple-stage and wait-stage control-process paths route
+    /// their logs here. Fixes the SV half of #1131 (the sim half — the log being
+    /// dropped entirely by the native pipeline sim — is fixed separately in
+    /// `sim_codegen/pipeline.rs`).
+    ///
+    /// Known remaining gap (#1131): the per-module verbosity/file-descriptor
+    /// scaffold (`integer _arch_verbosity`, its `$value$plusargs` seed, and the
+    /// `_log_fd_*` open) is emitted by the module backend only
+    /// (`codegen/module.rs`). A `pipeline` never emits it, so a non-`Always`
+    /// level (`if (_arch_verbosity >= N) …`) or a file `log`
+    /// (`$fwrite(_log_fd_*, …)`) here still references an undeclared net. The
+    /// argument is now stage-correct for every level; only `log(Always, …)` to
+    /// stdout is fully compilable in a pipeline until that scaffold is shared.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_log_stmt(
+        &mut self,
+        l: &LogStmt,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) {
+        let args_str: String = l
+            .args
+            .iter()
+            .map(|a| {
+                format!(
+                    ", {}",
+                    self.emit_pipeline_stage_expr_str(
+                        a,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                )
+            })
+            .collect();
+        let stmt = if let Some(ref path) = l.file {
+            let fd_name = Self::log_fd_name(path);
+            format!(
+                "$fwrite({}, \"[%0t][{}][{}] {}\\n\", $time{});",
+                fd_name,
+                l.level.name(),
+                l.tag,
+                l.fmt,
+                args_str
+            )
+        } else {
+            format!(
+                "$display(\"[%0t][{}][{}] {}\", $time{});",
+                l.level.name(),
+                l.tag,
+                l.fmt,
+                args_str
+            )
+        };
+        self.line("// synopsys translate_off");
+        if l.level == LogLevel::Always {
+            self.line(&stmt);
+        } else {
+            self.line(&format!(
+                "if (_arch_verbosity >= {}) {}",
+                l.level.value(),
+                stmt
+            ));
+        }
+        self.line("// synopsys translate_on");
     }
 
     /// Emit a `match` statement inside a pipeline stage `seq` block (inside an

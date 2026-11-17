@@ -12,61 +12,356 @@
       {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check"},
       {"role": "backend", "path": "src/codegen/module.rs"},
       {"role": "fixture", "path": "examples/pipe_reg_test.arch"}
-    ]},
+    ], "covers": ["Item::Module"]},
     {"name": "bus", "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "BusDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_bus"},
       {"role": "backend", "path": "src/codegen/mod.rs"},
       {"role": "fixture", "path": "tests/native_param_bus_wire/Probe.arch"}
+    ], "covers": ["Item::Bus"]},
+    {"name": "bus handshake metadata", "aliases": ["handshake", "handshake channel", "handshake_channel", "valid ready"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "HandshakeMeta"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_handshake_block"}
+    ]},
+    {"name": "bus credit channel metadata", "aliases": ["credit channel", "credit_channel", "credit-based flow control"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "CreditChannelMeta"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_credit_channel_block"},
+      {"role": "fixture", "path": "examples/noc_chain/noc_chain.arch"}
+    ]},
+    {"name": "bus conditional generation", "aliases": ["bus generate if", "bus generate-if", "generate_if bus"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "BusGenerateIf"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_bus_generate_if"},
+      {"role": "fixture", "path": "examples/nic400/BusAxi4.arch"}
+    ]},
+    {"name": "parameters and local parameters", "aliases": ["param", "localparam", "const parameter", "type parameter"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ParamDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_param_decl"},
+      {"role": "fixture", "path": "examples/top_counter.arch"}
+    ]},
+    {"name": "ports and registered ports", "aliases": ["port", "port direction", "input port", "output port", "port reg"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "PortDecl"},
+      {"role": "ast", "path": "src/ast.rs", "symbol": "Direction"},
+      {"role": "ast", "path": "src/ast.rs", "symbol": "PortRegInfo"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_port_decl"},
+      {"role": "fixture", "path": "tests/formal/hier_port_reg_proves.arch"}
     ]},
     {"name": "fifo", "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "FifoDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_fifo"},
+      {"role": "backend", "path": "src/codegen/fifo.rs", "symbol": "Codegen::emit_fifo"},
       {"role": "backend", "path": "src/codegen/fifo.rs", "symbol": "emit_fifo_sync_body"},
       {"role": "fixture", "path": "examples/sync_fifo.arch"}
-    ]},
-    {"name": "thread", "links": [
+    ], "covers": ["Item::Fifo"]},
+    {"name": "thread", "aliases": ["threads"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "ThreadBlock"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_thread_block"},
       {"role": "lowerer", "path": "src/thread_map.rs"},
       {"role": "backend", "path": "src/codegen/module.rs"},
       {"role": "fixture", "path": "tests/thread/basic_thread.arch"}
-    ]},
+    ], "covers": ["ModuleBodyItem::Thread", "ThreadStmt::CombAssign", "ThreadStmt::SeqAssign", "ThreadStmt::ForkTlmAssign", "ThreadStmt::JoinAll", "ThreadStmt::WaitUntil", "ThreadStmt::WaitCycles", "ThreadStmt::IfElse", "ThreadStmt::ForkJoin", "ThreadStmt::For", "ThreadStmt::Lock", "ThreadStmt::DoUntil", "ThreadStmt::Log", "ThreadStmt::Return"]},
     {"name": "fsm", "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "FsmDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_fsm"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_fsm"},
       {"role": "backend", "path": "src/codegen/fsm.rs", "symbol": "emit_fsm"},
       {"role": "fixture", "path": "examples/fsm_counter.arch"}
-    ]},
+    ], "covers": ["Item::Fsm"]},
     {"name": "pipeline", "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "PipelineDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_pipeline"},
-      {"role": "backend", "path": "src/codegen/pipeline.rs", "symbol": "emit_pipeline_inst"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_pipeline"},
+      {"role": "backend", "path": "src/codegen/pipeline.rs", "symbol": "emit_pipeline"},
       {"role": "fixture", "path": "examples/simple_pipeline.arch"}
+    ], "covers": ["Item::Pipeline"]},
+    {"name": "stage", "aliases": ["pipeline stage", "pipeline stages"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "StageDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_stage_decl"},
+      {"role": "fixture", "path": "examples/cpu_pipeline.arch"}
+    ]},
+    {"name": "stall directive", "aliases": ["pipeline stall", "stall condition"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "StallDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_stall_decl"}
+    ]},
+    {"name": "flush directive", "aliases": ["pipeline flush"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "FlushDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_flush_decl"},
+      {"role": "fixture", "path": "examples/cpu_pipeline.arch"}
+    ]},
+    {"name": "forwarding directive", "aliases": ["pipeline forward", "bypass"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ForwardDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_forward_decl"}
     ]},
     {"name": "pipe_reg declaration", "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "PipeRegDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_pipe_reg_decl"},
       {"role": "backend", "path": "src/codegen/module.rs", "symbol": "emit_pipe_reg"},
       {"role": "fixture", "path": "examples/pipe_reg_test.arch"}
-    ]},
+    ], "covers": ["ModuleBodyItem::PipeRegDecl"]},
     {"name": "pipe_reg output-port reset", "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "PortRegInfo"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_port_decl"},
       {"role": "backend", "path": "src/codegen/module.rs", "symbol": "emit_reg_block"},
       {"role": "fixture", "path": "tests/verilog_eval/Prob047_dff8ar.arch"}
     ]},
-    {"name": "tlm_method", "links": [
+    {"name": "tlm_method", "aliases": ["transaction-level method"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "TlmMethodMeta"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_tlm_method_decl"},
       {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_tlm_method_asserts"},
       {"role": "fixture", "path": "tests/axi_dma_tlm/TlmOneToOne.arch"}
     ]},
-    {"name": "arbiter", "links": [
+    {"name": "arbiter", "aliases": ["arbitration"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "ArbiterDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_arbiter"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_arbiter"},
+      {"role": "backend", "path": "src/codegen/arbiter.rs", "symbol": "Codegen::emit_arbiter"},
       {"role": "backend", "path": "src/codegen/arbiter.rs", "symbol": "emit_arbiter_round_robin"},
       {"role": "fixture", "path": "examples/bus_arbiter.arch"}
-    ]}
+    ], "covers": ["Item::Arbiter"]},
+    {"name": "clock domain", "aliases": ["domain"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "DomainDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_domain"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_domain"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "Codegen::emit_domain"},
+      {"role": "fixture", "path": "tests/aes/domain.arch"}
+    ], "covers": ["Item::Domain"]},
+    {"name": "struct", "aliases": ["structure"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "StructDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_struct"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_struct"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "Codegen::emit_struct"},
+      {"role": "fixture", "path": "tests/native_pkg_struct_fsm/Probe.arch"}
+    ], "covers": ["Item::Struct"]},
+    {"name": "enum", "aliases": ["enumeration"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "EnumDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_enum"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_enum"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "Codegen::emit_enum"},
+      {"role": "fixture", "path": "tests/sim_enum_let_type.arch"}
+    ], "covers": ["Item::Enum"]},
+    {"name": "RAM", "aliases": ["ram", "memory", "single-port RAM", "dual-port RAM"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "RamDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_ram"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_ram"},
+      {"role": "backend", "path": "src/codegen/ram.rs", "symbol": "Codegen::emit_ram"},
+      {"role": "fixture", "path": "examples/single_port_ram.arch"}
+    ], "covers": ["Item::Ram"]},
+    {"name": "CAM", "aliases": ["cam", "content-addressable memory"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "CamDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_cam"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_cam"},
+      {"role": "backend", "path": "src/codegen/cam.rs", "symbol": "Codegen::emit_cam"},
+      {"role": "fixture", "path": "tests/cam_basic.arch"}
+    ], "covers": ["Item::Cam"]},
+    {"name": "counter", "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "CounterDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_counter"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_counter"},
+      {"role": "backend", "path": "src/codegen/counter.rs", "symbol": "emit_counter"},
+      {"role": "fixture", "path": "examples/wrap_counter.arch"}
+    ], "covers": ["Item::Counter"]},
+    {"name": "register file", "aliases": ["register-file", "regfile", "register bank"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "RegfileDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_regfile"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_regfile"},
+      {"role": "backend", "path": "src/codegen/regfile.rs", "symbol": "emit_regfile"},
+      {"role": "fixture", "path": "examples/int_regs.arch"}
+    ], "covers": ["Item::Regfile"]},
+    {"name": "synchronizer", "aliases": ["clock-domain crossing", "CDC synchronizer"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "SynchronizerDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_synchronizer"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_synchronizer"},
+      {"role": "backend", "path": "src/codegen/synchronizer.rs", "symbol": "Codegen::emit_synchronizer"},
+      {"role": "fixture", "path": "examples/synchronizer_basic.arch"}
+    ], "covers": ["Item::Synchronizer"]},
+    {"name": "clock gate", "aliases": ["clock-gate", "clkgate", "clock gating"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ClkGateDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_clkgate"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_clkgate"},
+      {"role": "backend", "path": "src/codegen/clkgate.rs", "symbol": "Codegen::emit_clkgate"},
+      {"role": "fixture", "path": "examples/clkgate_basic.arch"}
+    ], "covers": ["Item::Clkgate"]},
+    {"name": "function", "aliases": ["functions"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "FunctionDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_function"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_function"},
+      {"role": "fixture", "path": "examples/function_test.arch"}
+    ], "covers": ["Item::Function", "ModuleBodyItem::Function", "FunctionBodyItem::Let", "FunctionBodyItem::Return", "FunctionBodyItem::IfElse", "FunctionBodyItem::For", "FunctionBodyItem::Assign"]},
+    {"name": "linklist", "aliases": ["linked list"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "LinklistDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_linklist"},
+      {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check_linklist"},
+      {"role": "backend", "path": "src/codegen/linklist.rs", "symbol": "Codegen::emit_linklist"},
+      {"role": "fixture", "path": "examples/linklist_basic.arch"}
+    ], "covers": ["Item::Linklist"]},
+    {"name": "template", "aliases": ["templates"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "TemplateDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_template"},
+      {"role": "fixture", "path": "examples/template_basic.arch"}
+    ], "covers": ["Item::Template"]},
+    {"name": "template hooks", "aliases": ["template hook", "template extension hook"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "TemplateHookDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_template_hook_decl"},
+      {"role": "fixture", "path": "examples/template_basic.arch"}
+    ]},
+    {"name": "module hooks", "aliases": ["module hook", "construct hook"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ModuleHookDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_module_hook_decl"}
+    ]},
+    {"name": "arbiter hooks", "aliases": ["arbiter hook", "custom arbitration hook", "grant_select hook"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ArbiterHookDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_arbiter_hook"},
+      {"role": "fixture", "path": "examples/arbiter_custom_hook.arch"}
+    ]},
+    {"name": "package", "aliases": ["packages"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "PackageDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_package"},
+      {"role": "fixture", "path": "examples/TestPkg.arch"}
+    ], "covers": ["Item::Package"]},
+    {"name": "use declaration", "aliases": ["use/import"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "UseDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_use"},
+      {"role": "fixture", "path": "examples/pkg_user.arch"}
+    ], "covers": ["Item::Use"]},
+    {"name": "external package", "aliases": ["extern package", "external-package"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ExternPackageDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_extern_package"}
+    ], "covers": ["Item::ExternPackage"]},
+    {"name": "generate", "aliases": ["generate for", "generate if", "elaboration-time generation"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "GenerateDecl"},
+      {"role": "ast", "path": "src/ast.rs", "symbol": "GenItem"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_generate_for"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_generate_if"},
+      {"role": "fixture", "path": "examples/generate_for.arch"}
+    ], "covers": ["ModuleBodyItem::Generate", "GenItem::Port", "GenItem::Inst", "GenItem::TlmConnect", "GenItem::Thread", "GenItem::Assert", "GenItem::Seq", "GenItem::Comb", "GenItem::Wire"]},
+    {"name": "register declaration", "aliases": ["register", "reg", "register reset"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "RegDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_reg_decl"},
+      {"role": "fixture", "path": "examples/param_reset.arch"}
+    ], "covers": ["ModuleBodyItem::RegDecl"]},
+    {"name": "alias declaration", "aliases": ["type alias", "type declaration", "module type alias"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "TypeAliasDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_type_alias_decl"},
+      {"role": "fixture", "path": "tests/regression/issues/alias_in_generate_if/AliasInGenif.arch"}
+    ], "covers": ["ModuleBodyItem::TypeAlias"]},
+    {"name": "wire declaration", "aliases": ["wire"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "WireDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_wire_decl"}
+    ], "covers": ["ModuleBodyItem::WireDecl"]},
+    {"name": "let binding", "aliases": ["let", "local binding", "combinational binding"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "LetBinding"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_let_binding"},
+      {"role": "fixture", "path": "tests/sim_enum_let_type.arch"}
+    ], "covers": ["ModuleBodyItem::LetBinding"]},
+    {"name": "combinational block", "aliases": ["comb block", "comb"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "CombBlock"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_comb_block"}
+    ], "covers": ["ModuleBodyItem::CombBlock"]},
+    {"name": "sequential block", "aliases": ["seq block", "seq"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "RegBlock"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_always_block"}
+    ], "covers": ["ModuleBodyItem::RegBlock"]},
+    {"name": "latch block", "aliases": ["latch"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "LatchBlock"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_latch_block"}
+    ], "covers": ["ModuleBodyItem::LatchBlock"]},
+    {"name": "instance", "aliases": ["inst", "module instantiation"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "InstDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_inst"}
+    ], "covers": ["ModuleBodyItem::Inst"]},
+    {"name": "port arrays", "aliases": ["port array", "ports[N]", "replicated ports"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "PortArrayDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_port_array"},
+      {"role": "fixture", "path": "examples/bus_arbiter.arch"}
+    ]},
+    {"name": "assertion and coverage", "aliases": ["assert", "cover", "assertions"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "AssertDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_assert_decl"},
+      {"role": "fixture", "path": "tests/assert_cover/counter_check.arch"}
+    ], "covers": ["ModuleBodyItem::Assert"]},
+    {"name": "TLM connect", "aliases": ["tlm connection", "transaction connection"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "TlmConnectDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_tlm_connect"},
+      {"role": "fixture", "path": "tests/axi_dma_tlm/TlmConnectGenerate.arch"}
+    ], "covers": ["ModuleBodyItem::TlmConnect"]},
+    {"name": "resource lock", "aliases": ["resource", "mutex", "semaphore", "lock"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ResourceDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_resource_decl"},
+      {"role": "fixture", "path": "tests/thread/resource_lock.arch"}
+    ], "covers": ["ModuleBodyItem::Resource"]},
+    {"name": "procedural statements", "aliases": ["statement", "control flow", "match", "loop"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "Stmt"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_reg_stmt"},
+      {"role": "fixture", "path": "tests/pipeline_match_seq.arch"}
+    ], "covers": ["Stmt::Assign", "Stmt::IfElse", "Stmt::Match", "Stmt::Log", "Stmt::For", "Stmt::Init", "Stmt::WaitUntil", "Stmt::DoUntil"]},
+    {"name": "scalar and aggregate types", "aliases": ["type expression", "typeexpr", "integer type", "vector type"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "TypeExpr"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_type_expr"},
+      {"role": "fixture", "path": "tests/sim_enum_let_type.arch"}
+    ], "covers": ["TypeExpr::UInt", "TypeExpr::SInt", "TypeExpr::Bool", "TypeExpr::Bit", "TypeExpr::Clock", "TypeExpr::Reset", "TypeExpr::Vec", "TypeExpr::Named"]},
+    {"name": "floating-point and block types", "aliases": ["float type", "FP32", "BF16", "FP8", "FP4", "FP6", "E8M0", "UE4M3", "ScaledVec"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "TypeExpr"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_type_expr"}
+    ], "covers": ["TypeExpr::FP32", "TypeExpr::BF16", "TypeExpr::FP8E4M3", "TypeExpr::FP8E5M2", "TypeExpr::FP4E2M1", "TypeExpr::FP6E2M3", "TypeExpr::FP6E3M2", "TypeExpr::E8M0", "TypeExpr::UE4M3", "TypeExpr::ScaledVec"]},
+    {"name": "expression forms", "aliases": ["expression", "expr", "literal", "identifier", "enum variant", "struct literal"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ExprKind"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr"},
+      {"role": "fixture", "path": "tests/sim_enum_bare_variant.arch"}
+    ], "covers": ["ExprKind::Literal", "ExprKind::Ident", "ExprKind::SynthIdent", "ExprKind::StructLiteral", "ExprKind::EnumVariant", "ExprKind::Bool", "ExprKind::Todo"]},
+    {"name": "expression selection and casts", "aliases": ["field access", "index", "slice", "part select", "cast", "signedness"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ExprKind"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr"}
+    ], "covers": ["ExprKind::FieldAccess", "ExprKind::Cast", "ExprKind::Index", "ExprKind::BitSlice", "ExprKind::PartSelect", "ExprKind::Signed", "ExprKind::Unsigned"]},
+    {"name": "expression matches and conditionals", "aliases": ["match expression", "ternary", "conditional expression"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ExprKind"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr"}
+    ], "covers": ["ExprKind::Match", "ExprKind::ExprMatch", "ExprKind::Ternary"]},
+    {"name": "expression operators", "aliases": ["binary operator", "unary operator", "arithmetic operator", "logical operator", "bitwise operator"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ExprKind"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr"}
+    ], "covers": ["ExprKind::Binary", "ExprKind::Unary"]},
+    {"name": "expression calls and helpers", "aliases": ["function call", "method call", "clog2", "onehot", "concatenation", "replication"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ExprKind"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr"}
+    ], "covers": ["ExprKind::MethodCall", "ExprKind::Concat", "ExprKind::Repeat", "ExprKind::Clog2", "ExprKind::Onehot", "ExprKind::FunctionCall", "ExprKind::PipelinedCall"]},
+    {"name": "scaled quantization expression", "aliases": ["scaled_quantize", "block quantization", "MXFP4", "NVFP4"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ExprKind"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr"}
+    ], "covers": ["ExprKind::ScaledQuantize"]},
+    {"name": "latency and SVA expressions", "aliases": ["latency annotation", "SVA next", "assertion expression", "inside set"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "ExprKind"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr"}
+    ], "covers": ["ExprKind::LatencyAt", "ExprKind::SvaNext", "ExprKind::Inside"]},
+    {"name": "arithmetic binary operators", "aliases": ["addition", "subtraction", "multiplication", "division", "modulo"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "BinOp"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr_bp"}
+    ], "covers": ["BinOp::Add", "BinOp::Sub", "BinOp::Mul", "BinOp::Div", "BinOp::Mod"]},
+    {"name": "comparison binary operators", "aliases": ["equality", "inequality", "relational operators"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "BinOp"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr_bp"}
+    ], "covers": ["BinOp::Eq", "BinOp::Neq", "BinOp::Lt", "BinOp::Gt", "BinOp::Lte", "BinOp::Gte"]},
+    {"name": "logical and bitwise binary operators", "aliases": ["boolean operators", "bitwise operators"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "BinOp"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr_bp"}
+    ], "covers": ["BinOp::And", "BinOp::Or", "BinOp::BitAnd", "BinOp::BitOr", "BinOp::BitXor"]},
+    {"name": "shift binary operators", "aliases": ["left shift", "right shift"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "BinOp"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr_bp"}
+    ], "covers": ["BinOp::Shl", "BinOp::Shr"]},
+    {"name": "wrapping arithmetic operators", "aliases": ["wrapping addition", "wrapping subtraction", "wrapping multiplication"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "BinOp"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr_bp"}
+    ], "covers": ["BinOp::AddWrap", "BinOp::SubWrap", "BinOp::MulWrap"]},
+    {"name": "temporal implication operators", "aliases": ["implies", "next-cycle implication", "SVA implication"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "BinOp"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_expr_bp"}
+    ], "covers": ["BinOp::Implies", "BinOp::ImpliesNext"]},
+    {"name": "unary logical and arithmetic operators", "aliases": ["logical not", "negation", "unary minus"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "UnaryOp"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_prefix"}
+    ], "covers": ["UnaryOp::Not", "UnaryOp::Neg"]},
+    {"name": "unary bitwise operators", "aliases": ["bitwise not", "reduction and", "reduction or", "reduction xor"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "UnaryOp"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_prefix"}
+    ], "covers": ["UnaryOp::BitNot", "UnaryOp::RedAnd", "UnaryOp::RedOr", "UnaryOp::RedXor"]}
   ]
 }
