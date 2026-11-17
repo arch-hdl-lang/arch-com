@@ -259,3 +259,95 @@ fn sv_pins_shift_width_and_leaves_constant_shifts_alone() {
         "constant shift should stay unsized:\n{text}"
     );
 }
+
+#[test]
+fn function_body_shifts_and_width_checks_enforced_1109() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = write(
+        td.path(),
+        "FnShift.arch",
+        r#"
+module FnShift
+  port a: in UInt<4>;
+  port y: out UInt<8>;
+  function widen(x: UInt<4>) -> UInt<8>
+    let t: UInt<8> = x << 2;
+    return t;
+  end function widen
+  comb
+    y = widen(a);
+  end comb
+end module FnShift
+"#,
+    );
+    let out = arch().arg("check").arg(&src).output().expect("arch check");
+    assert!(
+        !out.status.success(),
+        "arch check should reject widening shift in function body"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("shifts do not widen") || stderr.contains("shift result is UInt<4>"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn function_body_return_shift_rejected_1109() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = write(
+        td.path(),
+        "FnRetShift.arch",
+        r#"
+module FnRetShift
+  port a: in UInt<4>;
+  port y: out UInt<8>;
+  function widen(x: UInt<4>) -> UInt<8>
+    return x << 2;
+  end function widen
+  comb
+    y = widen(a);
+  end comb
+end module FnRetShift
+"#,
+    );
+    let out = arch().arg("check").arg(&src).output().expect("arch check");
+    assert!(
+        !out.status.success(),
+        "arch check should reject widening shift return in function body"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("shifts do not widen") || stderr.contains("shift result is UInt<4>"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn function_body_valid_shift_accepted_1109() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = write(
+        td.path(),
+        "FnValidShift.arch",
+        r#"
+module FnValidShift
+  port a: in UInt<4>;
+  port y: out UInt<8>;
+  function valid_shift(x: UInt<4>) -> UInt<8>
+    let t: UInt<8> = x.zext<8>() << 2;
+    let s: UInt<4> = x << 1;
+    return t;
+  end function valid_shift
+  comb
+    y = valid_shift(a);
+  end comb
+end module FnValidShift
+"#,
+    );
+    let out = arch().arg("check").arg(&src).output().expect("arch check");
+    assert!(
+        out.status.success(),
+        "arch check should accept valid shift in function body: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
