@@ -89,10 +89,58 @@ No token savings or improved default-agent adoption is claimed by this change.
 Fresh paired live evaluation is separate; older benchmark records and their
 grading policies must remain frozen.
 
+## Optional Evidence-Only Response
+
+`tools/compiler_response.py` lets a host separate a bounded source-location
+answer from a general coding session. It does not invoke Codex, change global
+settings, or remove instructions or permissions from normal editing sessions.
+
+```python
+from tools.compiler_context import retrieve_compiler_context
+from tools.compiler_response import prepare_response, verify_response
+
+question = "Locate the counter AST, parser and backend owners."
+context = retrieve_compiler_context(root, root / "target/debug/arch", question)
+request = prepare_response(root, context, question)
+if request["status"] == "ready":
+    # The caller sends request["prompt"] with request["output_schema"] using
+    # its response-only client profile, then records the actual tool events.
+    # verdict = verify_response(root, context, answer, used_tools=used_tools)
+    pass
+# If preparation or verification requests retrieval, use the caller's usual
+# targeted-source workflow. Include failed response and fallback costs.
+```
+
+Requests contain only the question, citation contract and verified source rows,
+not raw retrieval logs, hashes or benchmark answer keys. No ownership names are
+inferred by the helper. Recheck occurs both before the request and on response
+verification, with separately reported validation I/O. Payload and answer are
+each bounded to 4096 UTF-8 bytes; at most four 1-MiB source files are read.
+
+`verify_response` rejects tools used during the response stage, stale sources,
+null or malformed citations, duplicate JSON keys, unobserved rows, symbol/quote
+mismatches and graph-role swaps. `needs_retrieval` is an explicit handoff, not an
+automatic retry or an absence conclusion. Callers must pass the actual tool-use
+flag; feature toggles alone are not a security boundary. Keep normal safety and
+repository instructions, record every model attempt, and reject unexpected tools.
+
+Contexts from a source-search provider can use the same response interface if
+they supply `status`, `payload` (`path:line:source` rows), and `source_hashes`.
+Without explicit role evidence, validation proves only an observed lexical
+declaration, not correct semantic ownership. Even graph role bindings are curated
+metadata, not a semantic proof. Edits, ambiguous questions, missing evidence and
+compile checks still require the ordinary compiler workflow.
+
+This interface makes a reduced tool catalog possible; it does not itself prove
+token savings. Compare identical questions/evidence under full and reduced
+profiles, and compare graph with equally host-managed search before attributing
+benefits to graph retrieval.
+
 ## Offline Regression Mode
 
 ```sh
 python3 -m unittest discover -s tools -p test_compiler_context.py
+python3 -m unittest discover -s tools -p test_compiler_response.py
 python3 tools/codegraph_direct_eval.py --compiler-context --arch-bin target/debug/arch
 ```
 
