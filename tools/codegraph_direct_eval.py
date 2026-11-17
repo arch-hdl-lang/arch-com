@@ -174,10 +174,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch-bin", type=Path, required=True)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--compiler-context", action="store_true",
+                        help="audit deterministic host compiler preflight instead of graph ranking")
     args = parser.parse_args()
     root, arch_bin = args.root.resolve(), args.arch_bin.resolve()
     if not arch_bin.is_file():
         parser.error(f"compiler binary not found: {arch_bin}")
+    if args.compiler_context:
+        from compiler_context_audit import audit
+        records = audit(root, arch_bin)
+        print(json.dumps({"compiler_context_cases": records}, indent=2))
+        if not all(record["pass"] for record in records):
+            raise SystemExit(1)
+        return
     tasks = {task["id"]: task for task in load_tasks(root / "doc/codegraph_eval_tasks.json")}
     cross_tasks = {task["id"]: task for task in load_tasks(
         root / "doc/codegraph_eval_cross_file_tasks.json")}

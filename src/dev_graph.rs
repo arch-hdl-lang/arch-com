@@ -441,6 +441,14 @@ fn has_named_terms(words: &[String], name: &str) -> bool {
             .any(|window| window == name_terms)
 }
 
+pub struct QueryOptions<'a> {
+    pub limit: usize,
+    pub token_budget: usize,
+    pub roles: &'a [String],
+    pub include_source: bool,
+    pub best_match: bool,
+}
+
 pub fn query(
     root: &Path,
     index_dir: &Path,
@@ -450,6 +458,33 @@ pub fn query(
     roles: &[String],
     include_source: bool,
 ) -> io::Result<String> {
+    query_with_options(
+        root,
+        index_dir,
+        query,
+        QueryOptions {
+            limit,
+            token_budget,
+            roles,
+            include_source,
+            best_match: false,
+        },
+    )
+}
+
+pub fn query_with_options(
+    root: &Path,
+    index_dir: &Path,
+    query: &str,
+    options: QueryOptions<'_>,
+) -> io::Result<String> {
+    let QueryOptions {
+        limit,
+        token_budget,
+        roles,
+        include_source,
+        best_match,
+    } = options;
     let manifest: Manifest = serde_json::from_slice(&fs::read(index_dir.join("manifest.json"))?)?;
     if manifest.schema_version != SCHEMA_VERSION || manifest.generator != generator_id() {
         return Err(invalid(
@@ -554,6 +589,14 @@ pub fn query(
         hits.retain(|hit| hit.1 == words.len());
     }
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.name.cmp(&b.2.name)));
+    if best_match {
+        if hits.len() > 1 && hits[0].0 == hits[1].0 {
+            return Err(invalid(
+                "ambiguous developer graph best match; refine the query",
+            ));
+        }
+        hits.truncate(1);
+    }
     let total_lines: usize = hits
         .iter()
         .map(|hit| {
@@ -566,6 +609,7 @@ pub fn query(
         .sum();
     let mut lines = Vec::new();
     let mut source_lines: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut symbol_cache = BTreeMap::new();
     let mut remaining = limit.max(1);
     for (_, _, feature, related) in hits {
         if remaining == 0 {
@@ -578,6 +622,38 @@ pub fn query(
                 break;
             }
             if let Some(node) = by_id.get(edge.to.as_str()) {
+                if best_match && node.kind == "rust_symbol" {
+                    if !symbol_cache.contains_key(node.path.as_str()) {
+                        let path = source_path(root, &node.path)?;
+                        let bytes = fs::read(&path)?;
+                        if manifest.sources.get(&node.path) != Some(&digest(&bytes)) {
+                            return Err(invalid("selected source changed during graph retrieval"));
+                        }
+                        let source =
+                            std::str::from_utf8(&bytes).map_err(|err| invalid(err.to_string()))?;
+                        let syntax = syn::parse_file(source).map_err(|err| {
+                            invalid(format!("{}: Rust parse failed: {err}", path.display()))
+                        })?;
+                        let mut symbols = BTreeMap::new();
+                        collect_symbols(&syntax.items, &mut symbols);
+                        symbol_cache.insert(node.path.as_str(), symbols);
+                        source_lines.insert(
+                            node.path.as_str(),
+                            source.lines().map(str::to_string).collect(),
+                        );
+                    }
+                    let declaration = symbol_line(
+                        Path::new(&node.path),
+                        &node.name,
+                        &symbol_cache[node.path.as_str()],
+                    )?;
+                    if declaration != node.line {
+                        return Err(invalid(format!(
+                            "{}:{} does not identify the declaration of {}",
+                            node.path, node.line, node.name
+                        )));
+                    }
+                }
                 let mut line = format!(
                     "  {} {}:{} {} [{}]",
                     edge.role, node.path, node.line, node.name, edge.provenance
@@ -819,6 +895,68 @@ mod tests {
         assert!(covered.contains("parse_feature"));
         fs::write(&ast, "enum Feature { Present, Other, New }\n").unwrap();
         assert!(query(&root, &out, "sample", 10, 100, &[], false)
+            .unwrap_err()
+            .to_string()
+            .contains("changed since indexing"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn best_match_rejects_ties_without_changing_ordinary_queries() {
+        let root = std::env::temp_dir().join(format!("arch-dev-best-match-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("owners.rs"),
+            "struct Alpha;\nstruct Beta;\nfn use_alpha(_: Alpha) {}\n",
+        )
+        .unwrap();
+        let map = root.join("map.json");
+        let out = root.join("index");
+        fs::write(&map, r#"{"schema_version":1,"features":[{"name":"alpha","aliases":["shared"],"links":[{"role":"ast","path":"owners.rs","symbol":"Alpha"}]},{"name":"beta","aliases":["shared"],"links":[{"role":"ast","path":"owners.rs","symbol":"Beta"}]}]}"#).unwrap();
+        index(&root, &map, &out).unwrap();
+        let best = |text, budget| {
+            query_with_options(
+                &root,
+                &out,
+                text,
+                QueryOptions {
+                    limit: 30,
+                    token_budget: budget,
+                    roles: &[],
+                    include_source: true,
+                    best_match: true,
+                },
+            )
+        };
+        assert!(best("shared", 200)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        let ordinary = query(&root, &out, "shared", 30, 200, &[], true).unwrap();
+        assert!(ordinary.contains("feature alpha") && ordinary.contains("feature beta"));
+        let unique = best("alpha", 200).unwrap();
+        assert!(unique.contains("feature alpha") && !unique.contains("feature beta"));
+        assert!(!unique.contains("truncated"));
+        assert_eq!(best("unknown_zqx", 200).unwrap(), "(no matches)");
+        assert_eq!(best("alpha", 1).unwrap().trim(), "...");
+        let mut nodes: Vec<DevNode> = read_jsonl(&out.join("nodes.jsonl")).unwrap();
+        nodes
+            .iter_mut()
+            .find(|node| node.name == "Alpha")
+            .unwrap()
+            .line = 3;
+        write_jsonl(&out.join("nodes.jsonl"), &nodes).unwrap();
+        assert!(best("alpha", 200)
+            .unwrap_err()
+            .to_string()
+            .contains("does not identify the declaration"));
+        index(&root, &map, &out).unwrap();
+        fs::write(
+            root.join("owners.rs"),
+            "struct Alpha;\nstruct Beta;\n// changed\n",
+        )
+        .unwrap();
+        assert!(best("alpha", 200)
             .unwrap_err()
             .to_string()
             .contains("changed since indexing"));
