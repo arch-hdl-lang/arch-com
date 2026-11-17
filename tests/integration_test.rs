@@ -37592,6 +37592,97 @@ end module WidthUser
     assert!(String::from_utf8_lossy(&stale.stderr).contains("changed since indexing"));
 }
 
+/// Regression for the `--include-source` surface added in #1135: in compact
+/// text, `graph context --include-source` appends a verified source excerpt
+/// (after " | "); combined with `--json` it is rejected rather than silently
+/// ignored (the two output modes are mutually exclusive). The rejection path
+/// had no test coverage before this.
+#[test]
+fn test_graph_context_include_source_text_and_json_rejection() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("IncludeSrcProbe.arch");
+    std::fs::write(
+        &src,
+        r#"
+module IncludeSrcProbe
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  comb
+    y = a;
+  end comb
+end module IncludeSrcProbe
+"#,
+    )
+    .expect("write source");
+    let graph = td.path().join("graph");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let index = std::process::Command::new(arch_bin)
+        .args(["graph", "index"])
+        .arg(&src)
+        .args(["--out"])
+        .arg(&graph)
+        .arg("--clean")
+        .output()
+        .expect("graph index");
+    assert!(
+        index.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&index.stderr)
+    );
+
+    // Compact text + --include-source: succeeds and appends a source excerpt.
+    let sourced = std::process::Command::new(arch_bin)
+        .args([
+            "graph",
+            "context",
+            "IncludeSrcProbe module",
+            "--include-source",
+            "--index",
+        ])
+        .arg(&graph)
+        .output()
+        .expect("graph context --include-source");
+    assert!(
+        sourced.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&sourced.stderr)
+    );
+    let sourced_stdout = String::from_utf8_lossy(&sourced.stdout);
+    assert!(
+        sourced_stdout.contains("IncludeSrcProbe"),
+        "stdout:\n{sourced_stdout}"
+    );
+    assert!(
+        sourced_stdout.contains(" | "),
+        "--include-source should append a verified source excerpt after ' | ':\n{sourced_stdout}"
+    );
+
+    // --json + --include-source: rejected, not silently ignored.
+    let rejected = std::process::Command::new(arch_bin)
+        .args([
+            "graph",
+            "context",
+            "IncludeSrcProbe",
+            "--json",
+            "--include-source",
+            "--index",
+        ])
+        .arg(&graph)
+        .output()
+        .expect("graph context --json --include-source");
+    assert!(
+        !rejected.status.success(),
+        "--json with --include-source must be rejected; stdout:\n{}",
+        String::from_utf8_lossy(&rejected.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("only supported for compact text"),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+}
+
 #[test]
 fn test_dev_graph_cli_query_and_stale_mapping() {
     let td = tempfile::tempdir().expect("tempdir");
