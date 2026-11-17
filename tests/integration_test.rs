@@ -44856,3 +44856,43 @@ fn carry_cast_omitted_only_when_sv_width_already_keeps_the_carry() {
         "the literal-index form lints clean:\n{log}"
     );
 }
+
+#[test]
+fn test_pipeline_sim_comb_log_emitted_1131() {
+    // Regression for #1131 (comb-block half): a `log` inside a pipeline stage
+    // `comb` block was dropped by arch sim via `_ => {}` in emit_pipeline_sim_comb_stmt.
+    // The native sim must emit the printf in eval_comb(), matching SV's $display.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        pipeline PipeCombLog
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port data_in: in UInt<8>;
+          port data_out: out UInt<8>;
+          stage S0
+            reg acc: UInt<8> reset rst => 0;
+            seq on clk rising
+              acc <= data_in;
+            end seq
+            comb
+              data_out = acc;
+              log(Always, \"PCOMB\", \"comb stage out=%0d\", acc);
+            end comb
+          end stage S0
+        end pipeline PipeCombLog
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    let start_marker = "void VPipeCombLog::eval_comb() {";
+    let comb_start = cpp
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("expected eval_comb body in:\n{cpp}"));
+    let comb_body = &cpp[comb_start + start_marker.len()..];
+    let comb_body = comb_body.split("\n}\n").next().unwrap_or("");
+    assert!(
+        comb_body
+            .contains("printf(\"[ALWAYS][PCOMB] comb stage out=%lld\\n\", (long long)(_s0_acc));"),
+        "expected log printf in eval_comb:\n{comb_body}"
+    );
+}

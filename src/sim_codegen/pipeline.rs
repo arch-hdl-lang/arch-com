@@ -1525,6 +1525,11 @@ impl<'a> SimCodegen<'a> {
                     cpp, m, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent, true,
                 );
             }
+            Stmt::Log(_) => {
+                self.emit_pipeline_sim_stage_log(
+                    cpp, stmt, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent,
+                );
+            }
             _ => {}
         }
     }
