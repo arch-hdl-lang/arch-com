@@ -5353,12 +5353,29 @@ impl<'a> TypeChecker<'a> {
                     _ => Ty::Error,
                 }
             }
-            ExprKind::StructLiteral(name, _) => {
+            ExprKind::StructLiteral(name, fields) => {
                 if self.package_member_hidden(&name.name) {
                     self.errors
                         .push(CompileError::undefined(&name.name, name.span));
                     Ty::Error
                 } else {
+                    if let Some((sym, _)) = self.global_symbol(&name.name).cloned() {
+                        if let crate::resolve::Symbol::Struct(info) = sym {
+                            for f in fields {
+                                let _val_ty =
+                                    self.resolve_expr_type(&f.value, module_name, local_types);
+                                if !info.fields.iter().any(|(fname, _)| fname == &f.name.name) {
+                                    self.errors.push(CompileError::general(
+                                        &format!(
+                                            "unknown field `{}` on struct `{}`",
+                                            f.name.name, name.name
+                                        ),
+                                        f.name.span,
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     Ty::Struct(name.name.clone())
                 }
             }
