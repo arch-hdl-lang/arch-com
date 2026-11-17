@@ -142,7 +142,8 @@ def retrieve_compiler_context(root: Path, arch_bin: Path, query: str, *,
             result["truncated"] = start_line > 1 or start_line + line_limit <= len(lines)
             result["missing_roles"] = []
         else:
-            index = (index if index is not None else root / ".archdevgraph").resolve(strict=True)
+            index = Path(index) if index is not None else Path(".archdevgraph")
+            index = (index if index.is_absolute() else root / index).resolve(strict=True)
             for name in ("manifest.json", "nodes.jsonl", "edges.jsonl"):
                 path = index / name
                 if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_INDEX_BYTES:

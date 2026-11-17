@@ -89,6 +89,13 @@ class CompilerContextTests(unittest.TestCase):
         self.assertEqual(result["source_read_calls"], 1)
         self.assertTrue(result["truncated"])
 
+    def test_relative_index_resolves_under_workspace_not_process_cwd(self):
+        with patch("compiler_context._run", return_value=self.command()) as execute:
+            result = self.retrieve(index=Path(".archdevgraph"))
+        self.assertEqual(result["status"], "ready")
+        command = execute.call_args.args[0]
+        self.assertEqual(command[command.index("--index") + 1], str(self.index))
+
     def test_failures_do_not_supply_unverified_evidence_or_retry(self):
         cases = [self.command(exit_code=1), self.command(error="timeout"),
                  self.command(output_clipped=True), self.command(""),
