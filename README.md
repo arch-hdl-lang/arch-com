@@ -176,6 +176,9 @@ The bundled map tracks every variant in the core declaration, statement,
 thread, type, expression, and operator AST inventories; CI rejects unmapped
 new variants. See [developer graph coverage](doc/codegraph_feature_coverage.md)
 for the exact boundary and ownership limitations.
+Hosts can opt into [compiler context preflight](doc/compiler_context_preflight.md)
+to retrieve verified owner evidence before invoking an agent; known-file reads
+bypass graph, and incomplete evidence explicitly requests targeted search.
 For text responses, `context` and `dev-query` accept `--include-source` to
 append a short, freshness-checked source line. Context hits for imports and
 instances also show the indexed target declaration.

@@ -484,6 +484,9 @@ enum GraphCommand {
         /// Append a short verified source line to each result
         #[arg(long)]
         include_source: bool,
+        /// Return only a uniquely highest-ranked feature; reject ties
+        #[arg(long)]
+        best_match: bool,
     },
     /// Index ARCH source files into JSONL graph records
     Index {
@@ -1186,17 +1189,21 @@ fn main() -> miette::Result<()> {
                 token_budget,
                 roles,
                 include_source,
+                best_match,
             } => {
                 println!(
                     "{}",
-                    arch::dev_graph::query(
+                    arch::dev_graph::query_with_options(
                         &root,
                         &index,
                         &query,
-                        limit,
-                        token_budget,
-                        &roles,
-                        include_source
+                        arch::dev_graph::QueryOptions {
+                            limit,
+                            token_budget,
+                            roles: &roles,
+                            include_source,
+                            best_match,
+                        }
                     )
                     .into_diagnostic()?
                 );
