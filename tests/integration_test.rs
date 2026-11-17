@@ -44856,3 +44856,97 @@ fn carry_cast_omitted_only_when_sv_width_already_keeps_the_carry() {
         "the literal-index form lints clean:\n{log}"
     );
 }
+
+/// Issue #988: bus-port connectedness must not falsely treat an unrelated
+/// sibling port (e.g. `m_extra`) as connecting bus port `m`.
+#[test]
+fn test_bus_port_connectedness_not_shadowed_by_sibling_prefix_988() {
+    let source = r#"
+bus BpBus
+  req_valid: out Bool;
+  req_ready: in Bool;
+  req_data:  out UInt<8>;
+end bus BpBus
+
+module Leaf
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator BpBus;
+  port m_extra: in Bool;
+  port dummy_out: out Bool;
+  comb
+    m.req_valid = true;
+    m.req_data = 8'd0;
+    dummy_out = m_extra & m.req_ready;
+  end comb
+end module Leaf
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port extra: in Bool;
+  port out_val: out Bool;
+
+  inst leaf: Leaf
+    clk -> clk;
+    rst -> rst;
+    m_extra <- extra;
+    dummy_out -> out_val;
+  end inst leaf
+end module Top
+"#;
+    let errs = typecheck_errors(source)
+        .expect_err("unconnected bus port `m` must not be hidden by connecting `m_extra`");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("port `m` of `Leaf` is not connected in inst `leaf`")),
+        "expected error about unconnected port `m`, got: {errs:?}"
+    );
+
+    // Connecting `m` explicitly succeeds.
+    let valid_connected = r#"
+bus BpBus
+  req_valid: out Bool;
+  req_ready: in Bool;
+  req_data:  out UInt<8>;
+end bus BpBus
+
+module Leaf
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator BpBus;
+  port m_extra: in Bool;
+  port dummy_out: out Bool;
+  comb
+    m.req_valid = true;
+    m.req_data = 8'd0;
+    dummy_out = m_extra & m.req_ready;
+  end comb
+end module Leaf
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port extra: in Bool;
+  port ready_in: in Bool;
+  port b: target BpBus;
+  port out_val: out Bool;
+
+  comb
+    b.req_ready = ready_in;
+  end comb
+
+  inst leaf: Leaf
+    clk -> clk;
+    rst -> rst;
+    m -> b;
+    m_extra <- extra;
+    dummy_out -> out_val;
+  end inst leaf
+end module Top
+"#;
+    assert!(
+        typecheck_errors(valid_connected).is_ok(),
+        "connecting both `m` and `m_extra` must typecheck cleanly"
+    );
+}
