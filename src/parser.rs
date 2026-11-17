@@ -5748,7 +5748,16 @@ impl Parser {
             match self.peek_kind() {
                 Some(TokenKind::Kind) => {
                     self.advance();
-                    let val = self.expect_ident()?;
+                    let val = if self.check(TokenKind::Fifo) {
+                        let span = self.peek_span();
+                        self.advance();
+                        Ident {
+                            name: "fifo".to_string(),
+                            span,
+                        }
+                    } else {
+                        self.expect_ident()?
+                    };
                     self.expect(TokenKind::Semi)?;
                     kind = Some(match val.name.as_str() {
                         "fifo" => FifoKind::Fifo,
@@ -6625,6 +6634,9 @@ impl Parser {
                 latency = val;
             } else if self.check_ident("policy") {
                 self.advance();
+                if self.check(TokenKind::Colon) {
+                    self.advance();
+                }
                 let val = self.expect_ident()?;
                 self.expect(TokenKind::Semi)?;
                 policy = Some(match val.name.as_str() {

@@ -3387,15 +3387,15 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                |
 | ram InstrRom                                                                   |
 |                                                                                |
+| kind single;                                                                   |
+|                                                                                |
+| latency 1;                                                                     |
+|                                                                                |
+| **write**: first; // write_first \| read_first \| no_change                    |
+|                                                                                |
 | **param** DEPTH: **const** = 4096;                                             |
 |                                                                                |
 | **port** clk: **in** Clock\<SysDomain\>;                                       |
-|                                                                                |
-| kind single;                                                                   |
-|                                                                                |
-| **read**: **sync**;                                                            |
-|                                                                                |
-| **write**: first; // write_first \| read_first \| no_change                    |
 |                                                                                |
 | // One logical variable filling the whole address space                        |
 |                                                                                |
@@ -3405,7 +3405,7 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                |
 | **end** store                                                                  |
 |                                                                                |
-| **port** access                                                                |
+| **ports** access                                                               |
 |                                                                                |
 | en: **in** Bool;                                                               |
 |                                                                                |
@@ -3417,9 +3417,9 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                |
 | rdata: **out** UInt\<32\>;                                                     |
 |                                                                                |
-| **end** **port** access                                                        |
+| **end** **ports** access                                                       |
 |                                                                                |
-| **init**: file \"instr_rom.hex\"; // load from hex file at simulation/power-on |
+| **init**: file(\"instr_rom.hex\", hex); // load from hex file at simulation/power-on |
 |                                                                                |
 | **end** ram InstrRom                                                           |
 +--------------------------------------------------------------------------------+
@@ -3433,6 +3433,10 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                   |
 | ram DataCache                                                                     |
 |                                                                                   |
+| kind simple_dual;                                                                 |
+|                                                                                   |
+| latency 1;                                                                        |
+|                                                                                   |
 | **param** DEPTH: **const** = 1024;                                                |
 |                                                                                   |
 | **param** LINE: **type** = CacheLine; // compiler computes word width from struct |
@@ -3441,17 +3445,13 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                   |
 | **port** rst: **in** Reset\<Sync\>;                                               |
 |                                                                                   |
-| kind simple_dual;                                                                 |
-|                                                                                   |
-| **read**: **sync**;                                                               |
-|                                                                                   |
 | store                                                                             |
 |                                                                                   |
 | lines: Vec\<LINE, DEPTH\>;                                                        |
 |                                                                                   |
 | **end** store                                                                     |
 |                                                                                   |
-| **port** read_port                                                                |
+| **ports** read_port                                                               |
 |                                                                                   |
 | en: **in** Bool;                                                                  |
 |                                                                                   |
@@ -3459,9 +3459,9 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                   |
 | data: **out** LINE;                                                               |
 |                                                                                   |
-| **end** **port** read_port                                                        |
+| **end** **ports** read_port                                                       |
 |                                                                                   |
-| **port** write_port                                                               |
+| **ports** write_port                                                              |
 |                                                                                   |
 | en: **in** Bool;                                                                  |
 |                                                                                   |
@@ -3471,7 +3471,7 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                   |
 | mask: **in** Vec\<Bool, \$bytes(LINE)\>; // optional byte-enable mask             |
 |                                                                                   |
-| **end** **port** write_port                                                       |
+| **end** **ports** write_port                                                      |
 |                                                                                   |
 | **end** ram DataCache                                                             |
 +-----------------------------------------------------------------------------------+
@@ -3491,6 +3491,10 @@ partial, or mixed two-clock naming scheme is a compile error.
 |                                                                                 |
 | ram SharedScratchpad                                                            |
 |                                                                                 |
+| kind true_dual;                                                                 |
+|                                                                                 |
+| latency 1;                                                                      |
+|                                                                                 |
 | **param** DEPTH: **const** = 512;                                               |
 |                                                                                 |
 | **param** T: **type** = UInt\<64\>;                                         |
@@ -3498,10 +3502,6 @@ partial, or mixed two-clock naming scheme is a compile error.
 | **port** clk_a: **in** Clock\<CoreADomain\>;                                    |
 |                                                                                 |
 | **port** clk_b: **in** Clock\<CoreBDomain\>; // may be same or different domain |
-|                                                                                 |
-| kind true_dual;                                                                 |
-|                                                                                 |
-| **read**: **sync**;                                                             |
 |                                                                                 |
 | store                                                                           |
 |                                                                                 |
@@ -3511,7 +3511,7 @@ partial, or mixed two-clock naming scheme is a compile error.
 |                                                                                 |
 | // Port A --- full read/write                                                   |
 |                                                                                 |
-| **port** a                                                                      |
+| **ports** a                                                                     |
 |                                                                                 |
 | en: **in** Bool;                                                                |
 |                                                                                 |
@@ -3523,11 +3523,11 @@ partial, or mixed two-clock naming scheme is a compile error.
 |                                                                                 |
 | rdata: **out** T;                                                           |
 |                                                                                 |
-| **end** **port** a                                                              |
+| **end** **ports** a                                                             |
 |                                                                                 |
 | // Port B --- full read/write                                                   |
 |                                                                                 |
-| **port** b                                                                      |
+| **ports** b                                                                     |
 |                                                                                 |
 | en: **in** Bool;                                                                |
 |                                                                                 |
@@ -3539,7 +3539,7 @@ partial, or mixed two-clock naming scheme is a compile error.
 |                                                                                 |
 | rdata: **out** T;                                                           |
 |                                                                                 |
-| **end** **port** b                                                              |
+| **end** **ports** b                                                             |
 |                                                                                 |
 | // Collision policy when both ports access the same address simultaneously      |
 |                                                                                 |
@@ -3587,7 +3587,7 @@ A ram\'s store block can declare multiple logical variables of different types a
 |                                                                                            |
 | **end** store                                                                              |
 |                                                                                            |
-| **port** read_port                                                                         |
+| **ports** read_port                                                                        |
 |                                                                                            |
 | en: **in** Bool;                                                                           |
 |                                                                                            |
@@ -3595,9 +3595,9 @@ A ram\'s store block can declare multiple logical variables of different types a
 |                                                                                            |
 | data: **out** UInt\<64\>;                                                                  |
 |                                                                                            |
-| **end** **port** read_port                                                                 |
+| **end** **ports** read_port                                                                |
 |                                                                                            |
-| **port** write_port                                                                        |
+| **ports** write_port                                                                       |
 |                                                                                            |
 | en: **in** Bool;                                                                           |
 |                                                                                            |
@@ -3605,7 +3605,7 @@ A ram\'s store block can declare multiple logical variables of different types a
 |                                                                                            |
 | data: **in** UInt\<64\>;                                                                   |
 |                                                                                            |
-| **end** **port** write_port                                                                |
+| **end** **ports** write_port                                                               |
 |                                                                                            |
 | **end** ram UnifiedRegRam                                                                  |
 |                                                                                            |
@@ -3677,7 +3677,7 @@ Any Arch struct can be used as the word type of a ram. The compiler packs the st
 |                                                                             |
 | **end** store                                                               |
 |                                                                             |
-| **port** read_port                                                          |
+| **ports** read_port                                                         |
 |                                                                             |
 | en: **in** Bool;                                                            |
 |                                                                             |
@@ -3685,9 +3685,9 @@ Any Arch struct can be used as the word type of a ram. The compiler packs the st
 |                                                                             |
 | data: **out** CacheLine; // returned as a fully decoded struct              |
 |                                                                             |
-| **end** **port** read_port                                                  |
+| **end** **ports** read_port                                                 |
 |                                                                             |
-| **port** write_port                                                         |
+| **ports** write_port                                                        |
 |                                                                             |
 | en: **in** Bool;                                                            |
 |                                                                             |
@@ -3695,7 +3695,7 @@ Any Arch struct can be used as the word type of a ram. The compiler packs the st
 |                                                                             |
 | data: **in** CacheLine;                                                     |
 |                                                                             |
-| **end** **port** write_port                                                 |
+| **end** **ports** write_port                                                |
 |                                                                             |
 | **end** ram L1Cache                                                         |
 |                                                                             |
@@ -9257,7 +9257,7 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                             |
 | **end** store                                                               |
 |                                                                             |
-| **port** read_port                                                          |
+| **ports** read_port                                                         |
 |                                                                             |
 | en: **in** Bool;                                                            |
 |                                                                             |
@@ -9265,9 +9265,9 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                             |
 | data: **out** UInt\<32\>;                                                   |
 |                                                                             |
-| **end** **port** read_port                                                  |
+| **end** **ports** read_port                                                 |
 |                                                                             |
-| **port** write_port                                                         |
+| **ports** write_port                                                        |
 |                                                                             |
 | en: **in** Bool;                                                            |
 |                                                                             |
@@ -9275,7 +9275,7 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                             |
 | data: **in** UInt\<32\>;                                                    |
 |                                                                             |
-| **end** **port** write_port                                                 |
+| **end** **ports** write_port                                                |
 |                                                                             |
 | **init**: zero; // x0 and all CSRs initialise to zero on reset              |
 |                                                                             |

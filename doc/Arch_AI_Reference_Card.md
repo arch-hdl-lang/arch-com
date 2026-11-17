@@ -812,10 +812,10 @@ Sync or dual-clock async FIFO (gray-code auto-generated). `kind: fifo` (default)
 
 ```
 fifo Name
-  kind lifo;                          // optional, default fifo
+  kind fifo;                          // optional: fifo (default) | lifo
   param DEPTH: const = 64;
   param T: type = UInt<32>;       // REQUIRED — sets memory element type
-  latency 1;                          // optional: 0=comb/LUTRAM, 1=registered FWFT/BRAM
+  latency 1;                          // optional: 0=comb/LUTRAM, 1=registered FWFT/BRAM (fifo only)
 
   port clk: in Clock<D>;             // or wr_clk + rd_clk for async
   port rst: in Reset<Sync>;
@@ -884,19 +884,19 @@ ram Name
     biases:  Vec<SInt<16>, DEPTH>;
   end store
 
-  port rd
+  ports rd
     en:   in Bool;
     addr: in UInt<10>;
     data: out SInt<8>;
-  end port rd
+  end ports rd
 
-  port wr
+  ports wr
     en:   in Bool;
     addr: in UInt<10>;
     data: in SInt<8>;
-  end port wr
+  end ports wr
 
-  init: zero;                         // zero | none | file 'x.hex'
+  init: zero;                         // zero | none | file("x.hex", hex)
 end ram Name
 ```
 
@@ -972,6 +972,8 @@ Configurable counter. `kind: wrap | saturate | gray | one_hot | johnson`.
 
 ```
 counter Name
+  kind wrap;
+  direction: up;                      // up | down | up_down
   param T: const = 8;
   port clk:   in Clock<D>;
   port rst:   in Reset<Sync>;
@@ -979,8 +981,6 @@ counter Name
   port count: out UInt<T>;
   port at_max: out Bool;
   port at_min: out Bool;
-  kind wrap;
-  direction: up;                      // up | down | up_down
 end counter Name
 ```
 
@@ -992,6 +992,8 @@ N-requester, policy-driven grant with optional hook and latency.
 
 ```
 arbiter Name
+  policy round_robin;                // round_robin | priority | lru | weighted<W> | <FnName>
+  latency 1;                         // 1=comb grant (default), 2=+1 stage, 3=+2 stages
   param N: const = 4;
   port clk: in Clock<D>;
   port rst: in Reset<Sync>;
@@ -1001,8 +1003,6 @@ arbiter Name
   end ports req
   port grant_valid:      out Bool;
   port grant_requester:  out UInt<$clog2(N)>;
-  policy: round_robin;               // round_robin | priority | lru | weighted<W> | <FnName>
-  latency 1;                         // 1=comb grant (default), 2=+1 stage, 3=+2 stages
 end arbiter Name
 ```
 
@@ -1048,16 +1048,16 @@ regfile Name
   port clk: in Clock<D>;
   port rst: in Reset<Sync>;
 
-  port rd0
+  ports[1] rd0
     addr: in UInt<5>;
     data: out UInt<T>;
-  end port rd0
+  end ports rd0
 
-  port wr0
+  ports[1] wr0
     en:   in Bool;
     addr: in UInt<5>;
     data: in UInt<T>;
-  end port wr0
+  end ports wr0
 
   kind flop;                         // flop (default) | latch (ASIC area/power)
   flops: external;                   // latch only: external (default, caller flops) | internal (Ibex-style, +1 cycle latency)
