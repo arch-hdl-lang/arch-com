@@ -1223,7 +1223,8 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("{pad}}}\n"));
     }
 
-    fn emit_pipeline_sim_stmt(
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_sim_stage_stmt_impl(
         &self,
         cpp: &mut String,
         stmt: &Stmt,
@@ -1239,6 +1240,7 @@ impl<'a> SimCodegen<'a> {
         em: &HashMap<String, Vec<(String, u64)>>,
         params: &[ParamDecl],
         indent: usize,
+        comb: bool,
     ) {
         let pad = " ".repeat(indent);
         match stmt {
@@ -1246,6 +1248,8 @@ impl<'a> SimCodegen<'a> {
                 let tgt = if let ExprKind::Ident(n) = &a.target.kind {
                     if pn.contains(n) {
                         n.clone()
+                    } else if comb {
+                        format!("{}_{}", prefix, n)
                     } else {
                         format!("_{}_{}", prefix, n)
                     }
@@ -1257,162 +1261,15 @@ impl<'a> SimCodegen<'a> {
                 let val = self.pipeline_sim_expr(
                     &a.value, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
                 );
-                // An output-port target is emitted bare and keyed bare in the
-                // width map, so drop the stage prefix for a port (mirrors the
-                // comb arm and the #1114 residual note). Stage-local idents
-                // keep the `{prefix}_{n}` key unchanged.
-                let tgt_key = if let ExprKind::Ident(n) = &a.target.kind {
-                    if pn.contains(n) {
-                        n.clone()
-                    } else {
-                        format!("{}_{}", prefix, n)
-                    }
-                } else {
-                    String::new()
-                };
-                let mask = w
-                    .get(&tgt_key)
-                    .and_then(|&b| {
-                        if b > 0 && b < 64 {
-                            Some(format!(" & 0x{:X}ULL", (1u64 << b) - 1))
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-                cpp.push_str(&format!("{pad}{tgt} = ({val}){mask};\n"));
-            }
-            Stmt::IfElse(ie) => {
-                let cond = self.pipeline_sim_expr(
-                    &ie.cond, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
-                );
-                cpp.push_str(&format!("{pad}if ({cond}) {{\n"));
-                for s in &ie.then_stmts {
-                    self.emit_pipeline_sim_stmt(
-                        cpp,
-                        s,
-                        prefix,
-                        si,
-                        sn,
-                        sp,
-                        srn,
-                        pn,
-                        rn,
-                        ln,
-                        w,
-                        em,
-                        params,
-                        indent + 2,
-                    );
-                }
-                if !ie.else_stmts.is_empty() {
-                    cpp.push_str(&format!("{pad}}} else {{\n"));
-                    for s in &ie.else_stmts {
-                        self.emit_pipeline_sim_stmt(
-                            cpp,
-                            s,
-                            prefix,
-                            si,
-                            sn,
-                            sp,
-                            srn,
-                            pn,
-                            rn,
-                            ln,
-                            w,
-                            em,
-                            params,
-                            indent + 2,
-                        );
-                    }
-                }
-                cpp.push_str(&format!("{pad}}}\n"));
-            }
-            Stmt::For(f) => {
-                if let ForRange::Range(ref lo_expr, ref hi_expr) = f.range {
-                    let lo = self.pipeline_sim_expr(
-                        lo_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
-                    );
-                    let hi = self.pipeline_sim_expr(
-                        hi_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
-                    );
-                    cpp.push_str(&format!(
-                        "{pad}for (int {v} = {lo}; {v} <= {hi}; {v}++) {{\n",
-                        v = f.var.name
-                    ));
-                    for s in &f.body {
-                        self.emit_pipeline_sim_stmt(
-                            cpp,
-                            s,
-                            prefix,
-                            si,
-                            sn,
-                            sp,
-                            srn,
-                            pn,
-                            rn,
-                            ln,
-                            w,
-                            em,
-                            params,
-                            indent + 2,
-                        );
-                    }
-                    cpp.push_str(&format!("{pad}}}\n"));
-                }
-            }
-            Stmt::Match(m) => {
-                self.emit_pipeline_sim_match(
-                    cpp, m, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent, false,
-                );
-            }
-            _ => {}
-        }
-    }
-
-    fn emit_pipeline_sim_comb_stmt(
-        &self,
-        cpp: &mut String,
-        stmt: &Stmt,
-        prefix: &str,
-        si: usize,
-        sn: &[String],
-        sp: &[String],
-        srn: &[HashSet<String>],
-        pn: &HashSet<String>,
-        rn: &HashSet<String>,
-        ln: &HashSet<String>,
-        w: &HashMap<String, u32>,
-        em: &HashMap<String, Vec<(String, u64)>>,
-        params: &[ParamDecl],
-        indent: usize,
-    ) {
-        let pad = " ".repeat(indent);
-        match stmt {
-            Stmt::Assign(a) => {
-                let tgt = if let ExprKind::Ident(n) = &a.target.kind {
-                    if pn.contains(n) {
-                        n.clone()
-                    } else {
-                        format!("{}_{}", prefix, n)
-                    }
-                } else {
-                    self.pipeline_sim_expr(
-                        &a.target, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
-                    )
-                };
-                let val = self.pipeline_sim_expr(
-                    &a.value, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
-                );
-                // Width-mask to the target's declared width, mirroring the
-                // seq-block emitter (`emit_pipeline_sim_stmt`). Without this an
-                // overflowing/wrapping comb value (e.g. `a +% b`) keeps its
-                // extra high bits in native sim while SV truncates to the
-                // declared width — a sim≠SV miscompile (#1111). The width-map
-                // key is `format!("{prefix}_{n}")` for a plain ident in both
-                // arms (implicit wires/lets/regs are stored under that key);
-                // non-ident targets build an empty key and stay unmasked, as
-                // in the seq arm.
+                // Width-mask to the target's declared width, mirroring both
+                // seq and comb block behavior. Without this an overflowing/wrapping
+                // value (e.g. `a +% b`) keeps its extra high bits in native sim
+                // while SV truncates to the declared width — a sim≠SV miscompile (#1111).
+                //
+                // The width-map key is `format!("{prefix}_{n}")` for a plain ident
+                // in both arms (implicit wires/lets/regs are stored under that key);
+                // non-ident targets build an empty key and stay unmasked, as in the
+                // seq arm.
                 //
                 // Output ports live in the width map under their *bare* name
                 // (see "Add port widths"), and the emitted target above is bare
@@ -1447,7 +1304,7 @@ impl<'a> SimCodegen<'a> {
                 );
                 cpp.push_str(&format!("{pad}if ({cond}) {{\n"));
                 for s in &ie.then_stmts {
-                    self.emit_pipeline_sim_comb_stmt(
+                    self.emit_pipeline_sim_stage_stmt_impl(
                         cpp,
                         s,
                         prefix,
@@ -1462,12 +1319,13 @@ impl<'a> SimCodegen<'a> {
                         em,
                         params,
                         indent + 2,
+                        comb,
                     );
                 }
                 if !ie.else_stmts.is_empty() {
                     cpp.push_str(&format!("{pad}}} else {{\n"));
                     for s in &ie.else_stmts {
-                        self.emit_pipeline_sim_comb_stmt(
+                        self.emit_pipeline_sim_stage_stmt_impl(
                             cpp,
                             s,
                             prefix,
@@ -1482,6 +1340,7 @@ impl<'a> SimCodegen<'a> {
                             em,
                             params,
                             indent + 2,
+                            comb,
                         );
                     }
                 }
@@ -1500,7 +1359,7 @@ impl<'a> SimCodegen<'a> {
                         v = f.var.name
                     ));
                     for s in &f.body {
-                        self.emit_pipeline_sim_comb_stmt(
+                        self.emit_pipeline_sim_stage_stmt_impl(
                             cpp,
                             s,
                             prefix,
@@ -1515,6 +1374,7 @@ impl<'a> SimCodegen<'a> {
                             em,
                             params,
                             indent + 2,
+                            comb,
                         );
                     }
                     cpp.push_str(&format!("{pad}}}\n"));
@@ -1522,11 +1382,57 @@ impl<'a> SimCodegen<'a> {
             }
             Stmt::Match(m) => {
                 self.emit_pipeline_sim_match(
-                    cpp, m, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent, true,
+                    cpp, m, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent, comb,
                 );
             }
             _ => {}
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_sim_stmt(
+        &self,
+        cpp: &mut String,
+        stmt: &Stmt,
+        prefix: &str,
+        si: usize,
+        sn: &[String],
+        sp: &[String],
+        srn: &[HashSet<String>],
+        pn: &HashSet<String>,
+        rn: &HashSet<String>,
+        ln: &HashSet<String>,
+        w: &HashMap<String, u32>,
+        em: &HashMap<String, Vec<(String, u64)>>,
+        params: &[ParamDecl],
+        indent: usize,
+    ) {
+        self.emit_pipeline_sim_stage_stmt_impl(
+            cpp, stmt, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent, false,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_sim_comb_stmt(
+        &self,
+        cpp: &mut String,
+        stmt: &Stmt,
+        prefix: &str,
+        si: usize,
+        sn: &[String],
+        sp: &[String],
+        srn: &[HashSet<String>],
+        pn: &HashSet<String>,
+        rn: &HashSet<String>,
+        ln: &HashSet<String>,
+        w: &HashMap<String, u32>,
+        em: &HashMap<String, Vec<(String, u64)>>,
+        params: &[ParamDecl],
+        indent: usize,
+    ) {
+        self.emit_pipeline_sim_stage_stmt_impl(
+            cpp, stmt, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent, true,
+        );
     }
 
     /// Emit a `match` statement in a pipeline stage `seq`/`comb` block as a C++
@@ -1543,8 +1449,7 @@ impl<'a> SimCodegen<'a> {
     /// Before #1112 both pipeline sim emitters dropped `Stmt::Match` via a
     /// catch-all `_ => {}`, so a stage register driven only inside a `match`
     /// stayed stuck at its reset value while SV emitted a real `case` — a
-    /// sim≠SV miscompile. The two emitters are near-duplicates; #1125 tracks
-    /// consolidating them.
+    /// sim≠SV miscompile (#1112; consolidated under #1125).
     #[allow(clippy::too_many_arguments)]
     fn emit_pipeline_sim_match(
         &self,
@@ -1605,41 +1510,23 @@ impl<'a> SimCodegen<'a> {
             };
             cpp.push_str(&format!("{}{case_str}: {{\n", " ".repeat(indent + 2)));
             for s in &arm.body {
-                if comb {
-                    self.emit_pipeline_sim_comb_stmt(
-                        cpp,
-                        s,
-                        prefix,
-                        si,
-                        sn,
-                        sp,
-                        srn,
-                        pn,
-                        rn,
-                        ln,
-                        w,
-                        em,
-                        params,
-                        indent + 4,
-                    );
-                } else {
-                    self.emit_pipeline_sim_stmt(
-                        cpp,
-                        s,
-                        prefix,
-                        si,
-                        sn,
-                        sp,
-                        srn,
-                        pn,
-                        rn,
-                        ln,
-                        w,
-                        em,
-                        params,
-                        indent + 4,
-                    );
-                }
+                self.emit_pipeline_sim_stage_stmt_impl(
+                    cpp,
+                    s,
+                    prefix,
+                    si,
+                    sn,
+                    sp,
+                    srn,
+                    pn,
+                    rn,
+                    ln,
+                    w,
+                    em,
+                    params,
+                    indent + 4,
+                    comb,
+                );
             }
             cpp.push_str(&format!("{}  break;\n", " ".repeat(indent + 2)));
             cpp.push_str(&format!("{}}}\n", " ".repeat(indent + 2)));
