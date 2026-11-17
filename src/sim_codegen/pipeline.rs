@@ -713,6 +713,42 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("{pad}_{prefix}_valid_r = _{prev}_valid_r;\n"));
                 }
             }
+            // Stage `log(...)` statements mirror the SV *control* process: they
+            // run only when not in reset and read stage registers at their
+            // pre-edge value. Emit the logs-only pass (data assigns dropped)
+            // gated by `!rst` and BEFORE the data loop below, which performs the
+            // blocking `=` updates. Reversing this order would print the
+            // post-update value and diverge from SV's NBA read. (#1131)
+            let logs_present = stage.body.iter().any(|item| {
+                matches!(item, ModuleBodyItem::RegBlock(rb)
+                    if rb.stmts.iter().any(Self::pipeline_stmt_contains_log))
+            });
+            if logs_present {
+                cpp.push_str(&format!("{pad}if (!({rst_cond})) {{\n"));
+                for item in &stage.body {
+                    if let ModuleBodyItem::RegBlock(rb) = item {
+                        for stmt in &rb.stmts {
+                            self.emit_pipeline_sim_stage_log(
+                                &mut cpp,
+                                stmt,
+                                prefix,
+                                si,
+                                &stage_names,
+                                &stage_prefixes,
+                                &stage_reg_names,
+                                &port_names,
+                                &reg_names,
+                                &let_names,
+                                &widths,
+                                &_enum_map,
+                                &p.common.params,
+                                8 + indent_extra,
+                            );
+                        }
+                    }
+                }
+                cpp.push_str(&format!("{pad}}}\n"));
+            }
             for item in &stage.body {
                 if let ModuleBodyItem::RegBlock(rb) = item {
                     for stmt in &rb.stmts {
@@ -1609,6 +1645,255 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!("{}}}\n", " ".repeat(indent + 2)));
         }
         cpp.push_str(&format!("{pad}}}\n"));
+    }
+
+    /// True when `stmt` carries a `log(...)` anywhere in its subtree.
+    fn pipeline_stmt_contains_log(stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Log(_) => true,
+            Stmt::IfElse(ie) => {
+                ie.then_stmts.iter().any(Self::pipeline_stmt_contains_log)
+                    || ie.else_stmts.iter().any(Self::pipeline_stmt_contains_log)
+            }
+            Stmt::For(f) => f.body.iter().any(Self::pipeline_stmt_contains_log),
+            Stmt::Match(m) => m
+                .arms
+                .iter()
+                .any(|a| a.body.iter().any(Self::pipeline_stmt_contains_log)),
+            _ => false,
+        }
+    }
+
+    /// Emit ONLY the `log(...)` statements from a pipeline stage `seq` block,
+    /// preserving the surrounding `if`/`for`/`match` control structure while
+    /// dropping every data assignment — the native-sim twin of the SV control
+    /// process, which carries the logs (`include_logs = true`) while the data
+    /// process drops them (`src/codegen/pipeline.rs`). The caller emits this
+    /// pass gated by `!rst` and *before* the stage's data assignments, so a log
+    /// reading a stage register observes its pre-edge value — matching SV's NBA
+    /// read in the control `always_ff`, where the data register's `<=` update
+    /// has not yet committed. The printf shape mirrors the module-scope sim
+    /// `emit_log_stmt` in `stmt_codegen.rs` (verbosity gate, `(long long)` arg
+    /// casts, `sv_fmt_to_printf`), differing only in rendering args through
+    /// `pipeline_sim_expr` for stage prefixing.
+    ///
+    /// Subtrees with no log emit nothing, so a log-free stage is byte-identical
+    /// to before this pass existed. Scope: `seq`-block logs in simple (non-wait)
+    /// stages. Logs in a stage `comb` block, and in a wait-stage FSM, are still
+    /// dropped by the native sim — the narrower remaining halves of #1131,
+    /// which depend on the comb/wait emitters (#1125 tracks their dedup).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_sim_stage_log(
+        &self,
+        cpp: &mut String,
+        stmt: &Stmt,
+        prefix: &str,
+        si: usize,
+        sn: &[String],
+        sp: &[String],
+        srn: &[HashSet<String>],
+        pn: &HashSet<String>,
+        rn: &HashSet<String>,
+        ln: &HashSet<String>,
+        w: &HashMap<String, u32>,
+        em: &HashMap<String, Vec<(String, u64)>>,
+        params: &[ParamDecl],
+        indent: usize,
+    ) {
+        if !Self::pipeline_stmt_contains_log(stmt) {
+            return;
+        }
+        let pad = " ".repeat(indent);
+        match stmt {
+            Stmt::Log(l) => {
+                let args_str: String = l
+                    .args
+                    .iter()
+                    .map(|a| {
+                        format!(
+                            ", (long long)({})",
+                            self.pipeline_sim_expr(
+                                a, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
+                            )
+                        )
+                    })
+                    .collect();
+                let fmt = sv_fmt_to_printf(&l.fmt);
+                let print_line = if let Some(ref path) = l.file {
+                    let fd = log_fd_name(path);
+                    format!(
+                        "{pad}if ({fd}) fprintf({fd}, \"[{}][{}] {}\\n\"{});",
+                        l.level.name(),
+                        l.tag,
+                        fmt,
+                        args_str
+                    )
+                } else {
+                    format!(
+                        "{pad}printf(\"[{}][{}] {}\\n\"{});",
+                        l.level.name(),
+                        l.tag,
+                        fmt,
+                        args_str
+                    )
+                };
+                if l.level == LogLevel::Always {
+                    cpp.push_str(&print_line);
+                    cpp.push('\n');
+                } else {
+                    cpp.push_str(&format!(
+                        "{pad}if (Verilated::verbosity() >= {}) {{ {} }}\n",
+                        l.level.value(),
+                        print_line
+                    ));
+                }
+            }
+            Stmt::IfElse(ie) => {
+                let cond = self.pipeline_sim_expr(
+                    &ie.cond, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
+                );
+                cpp.push_str(&format!("{pad}if ({cond}) {{\n"));
+                for s in &ie.then_stmts {
+                    self.emit_pipeline_sim_stage_log(
+                        cpp,
+                        s,
+                        prefix,
+                        si,
+                        sn,
+                        sp,
+                        srn,
+                        pn,
+                        rn,
+                        ln,
+                        w,
+                        em,
+                        params,
+                        indent + 2,
+                    );
+                }
+                if ie.else_stmts.iter().any(Self::pipeline_stmt_contains_log) {
+                    cpp.push_str(&format!("{pad}}} else {{\n"));
+                    for s in &ie.else_stmts {
+                        self.emit_pipeline_sim_stage_log(
+                            cpp,
+                            s,
+                            prefix,
+                            si,
+                            sn,
+                            sp,
+                            srn,
+                            pn,
+                            rn,
+                            ln,
+                            w,
+                            em,
+                            params,
+                            indent + 2,
+                        );
+                    }
+                }
+                cpp.push_str(&format!("{pad}}}\n"));
+            }
+            Stmt::For(f) => {
+                if let ForRange::Range(ref lo_expr, ref hi_expr) = f.range {
+                    let lo = self.pipeline_sim_expr(
+                        lo_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
+                    );
+                    let hi = self.pipeline_sim_expr(
+                        hi_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params,
+                    );
+                    cpp.push_str(&format!(
+                        "{pad}for (int {v} = {lo}; {v} <= {hi}; {v}++) {{\n",
+                        v = f.var.name
+                    ));
+                    for s in &f.body {
+                        self.emit_pipeline_sim_stage_log(
+                            cpp,
+                            s,
+                            prefix,
+                            si,
+                            sn,
+                            sp,
+                            srn,
+                            pn,
+                            rn,
+                            ln,
+                            w,
+                            em,
+                            params,
+                            indent + 2,
+                        );
+                    }
+                    cpp.push_str(&format!("{pad}}}\n"));
+                }
+            }
+            Stmt::Match(m) => {
+                let scrut = self.pipeline_sim_expr(
+                    &m.scrutinee,
+                    prefix,
+                    si,
+                    sn,
+                    sp,
+                    srn,
+                    pn,
+                    rn,
+                    ln,
+                    w,
+                    em,
+                    params,
+                );
+                cpp.push_str(&format!("{pad}switch ({scrut}) {{\n"));
+                for arm in &m.arms {
+                    if !arm.body.iter().any(Self::pipeline_stmt_contains_log) {
+                        continue;
+                    }
+                    let case_str = match &arm.pattern {
+                        Pattern::Wildcard | Pattern::Ident(_) => "default".to_string(),
+                        Pattern::Literal(e) => format!(
+                            "case {}",
+                            self.pipeline_sim_expr(
+                                e, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params
+                            )
+                        ),
+                        Pattern::EnumVariant(en, vr) => {
+                            let idx = em
+                                .get(&en.name)
+                                .and_then(|variants| {
+                                    variants
+                                        .iter()
+                                        .find(|(n, _)| *n == vr.name)
+                                        .map(|(_, v)| *v)
+                                })
+                                .unwrap_or(0);
+                            format!("case {idx}")
+                        }
+                    };
+                    cpp.push_str(&format!("{}{case_str}: {{\n", " ".repeat(indent + 2)));
+                    for s in &arm.body {
+                        self.emit_pipeline_sim_stage_log(
+                            cpp,
+                            s,
+                            prefix,
+                            si,
+                            sn,
+                            sp,
+                            srn,
+                            pn,
+                            rn,
+                            ln,
+                            w,
+                            em,
+                            params,
+                            indent + 4,
+                        );
+                    }
+                    cpp.push_str(&format!("{}  break;\n", " ".repeat(indent + 2)));
+                    cpp.push_str(&format!("{}}}\n", " ".repeat(indent + 2)));
+                }
+                cpp.push_str(&format!("{pad}}}\n"));
+            }
+            _ => {}
+        }
     }
 
     /// Float format of a pipeline-scope expression (idents, `Stage.reg`
