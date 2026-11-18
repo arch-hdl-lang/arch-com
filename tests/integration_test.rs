@@ -37801,6 +37801,80 @@ fn test_dev_graph_cli_query_and_stale_mapping() {
 }
 
 #[test]
+fn test_dev_graph_cli_best_match_tie_and_unique() {
+    // End-to-end CLI contract for `arch graph dev-query --best-match` (landed in #1143).
+    // A top-rank tie must exit non-zero with an "ambiguous" diagnostic; a uniquely
+    // highest-ranked feature must exit 0 and return only that feature. The library unit
+    // test `best_match_rejects_ties_without_changing_ordinary_queries` covers the ranking
+    // logic in-process; this pins the process exit code and stderr that hosts (the
+    // compiler-context preflight, which always passes `--best-match`) depend on. A
+    // synthetic two-feature / one-shared-alias map forces a deterministic tie that the
+    // real bundled map (every feature name unique) cannot.
+    let td = tempfile::tempdir().expect("tempdir");
+    let root = td.path();
+    std::fs::write(root.join("owners.rs"), "struct Alpha;\nstruct Beta;\n").expect("owners");
+    std::fs::write(
+        root.join("map.json"),
+        r#"{"schema_version":1,"features":[{"name":"alpha","aliases":["shared"],"links":[{"role":"ast","path":"owners.rs","symbol":"Alpha"}]},{"name":"beta","aliases":["shared"],"links":[{"role":"ast","path":"owners.rs","symbol":"Beta"}]}]}"#,
+    )
+    .expect("map");
+    let index = root.join("devgraph");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let built = std::process::Command::new(arch_bin)
+        .args(["graph", "dev-index", "--root"])
+        .arg(root)
+        .arg("--map")
+        .arg(root.join("map.json"))
+        .arg("--out")
+        .arg(&index)
+        .output()
+        .expect("developer graph index");
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    // Shared alias ranks both features equally -> ambiguous, non-zero exit.
+    let tie = std::process::Command::new(arch_bin)
+        .args(["graph", "dev-query", "shared", "--root"])
+        .arg(root)
+        .arg("--index")
+        .arg(&index)
+        .arg("--best-match")
+        .output()
+        .expect("tie query");
+    assert!(
+        !tie.status.success(),
+        "tie must fail: {}",
+        String::from_utf8_lossy(&tie.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&tie.stderr).contains("ambiguous"),
+        "{}",
+        String::from_utf8_lossy(&tie.stderr)
+    );
+
+    // A uniquely highest-ranked feature succeeds and returns only that feature.
+    let unique = std::process::Command::new(arch_bin)
+        .args(["graph", "dev-query", "alpha", "--root"])
+        .arg(root)
+        .arg("--index")
+        .arg(&index)
+        .arg("--best-match")
+        .output()
+        .expect("unique query");
+    assert!(
+        unique.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unique.stderr)
+    );
+    let text = String::from_utf8_lossy(&unique.stdout);
+    assert!(text.contains("feature alpha"), "{text}");
+    assert!(!text.contains("feature beta"), "{text}");
+}
+
+#[test]
 fn test_graph_context_prefers_source_construct_to_generated_artifact() {
     let td = tempfile::tempdir().expect("tempdir");
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
