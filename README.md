@@ -171,7 +171,9 @@ stale source files or a changed generator; rebuild the user index with
 `arch graph index ... --clean`. The separate `.archdevgraph/` maps reviewed
 language features to Rust symbols, tests, the specification, skill, and MCP
 guidance. Its mappings are curated ownership links, not inferred call edges;
-`dev-query` validates indexed source fingerprints and accepts `--role` filters.
+`dev-query` validates indexed source fingerprints and accepts `--role` filters
+and `--best-match` (return only the uniquely highest-ranked feature, rejecting
+a top-rank tie).
 The bundled map tracks every variant in the core declaration, statement,
 thread, type, expression, and operator AST inventories; CI rejects unmapped
 new variants. See [developer graph coverage](doc/codegraph_feature_coverage.md)
