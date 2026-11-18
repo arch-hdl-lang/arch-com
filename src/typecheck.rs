@@ -220,6 +220,8 @@ pub struct TypeChecker<'a> {
     file_scopes: Vec<std::ops::Range<usize>>,
     /// Package imports visible to the item currently being checked.
     active_uses: HashSet<String>,
+    /// Set of module-scope `pipe_reg` delay-line names in the construct currently being checked.
+    module_pipe_regs: HashSet<String>,
     /// Signal names implicitly declared by an `inst` output connection
     /// (`clk_out -> clk_ifu_w;`) in the construct currently being checked.
     ///
@@ -247,6 +249,7 @@ impl<'a> TypeChecker<'a> {
             active_params: Vec::new(),
             file_scopes: Vec::new(),
             active_uses: HashSet::new(),
+            module_pipe_regs: HashSet::new(),
         }
     }
 
@@ -998,6 +1001,15 @@ impl<'a> TypeChecker<'a> {
         // happens in `check_inst_decl` when validating the inst connections.
         if m.is_interface {
             return;
+        }
+
+        // Body items: collect module-scope pipe_reg delay lines so tap reads (`q@K`)
+        // are recognized as available registered taps rather than pipelined operator outputs (#997).
+        self.module_pipe_regs.clear();
+        for item in &m.body {
+            if let ModuleBodyItem::PipeRegDecl(pr) = item {
+                self.module_pipe_regs.insert(pr.name.name.clone());
+            }
         }
 
         // Per-module map of Vec-of-bus port → count. Used by the Assign
@@ -4357,13 +4369,24 @@ impl<'a> TypeChecker<'a> {
     /// to reject mixed-latency combinations without auto-alignment (v1: no
     /// auto-inserted delay lines — see the proposal's "Mixed-latency
     /// expressions" decision).
-    fn expr_latency_tc(expr: &Expr) -> u32 {
+    fn expr_latency_tc(&self, expr: &Expr) -> u32 {
         match &expr.kind {
             ExprKind::PipelinedCall(_, _, n) => *n,
             // `scaled_quantize<Fmt, pipelined, N>` carries latency N; the
             // bare comb form adds no pipeline stages (arch#955).
             ExprKind::ScaledQuantize(_, _, _, _, stages) => stages.unwrap_or(0),
-            ExprKind::LatencyAt(_, n) => *n,
+            ExprKind::LatencyAt(inner, n) => {
+                // A read from a module-scope delay line `pipe_reg` tap (e.g. `sample_pipe@1` in §4.2.3 FIR)
+                // provides an already-registered value at cycle 0 of the consuming expression (#997).
+                // In contrast, pipelined operator outputs or port latency bindings (e.g. `acc_out@6`)
+                // materialize at cycle N and must not be mixed with cycle-0 operands.
+                let root = Self::expr_root_name_tc(inner);
+                if self.module_pipe_regs.contains(&root) {
+                    0
+                } else {
+                    *n
+                }
+            }
             _ => 0,
         }
     }
@@ -4479,7 +4502,7 @@ impl<'a> TypeChecker<'a> {
     fn check_operand_latency_alignment(&mut self, operands: &[&Expr], span: Span) {
         let mut first: Option<(u32, Span)> = None;
         for op in operands {
-            let lat = Self::expr_latency_tc(op);
+            let lat = self.expr_latency_tc(op);
             match &first {
                 None => first = Some((lat, op.span)),
                 Some((f, _)) if *f != lat => {
@@ -10222,6 +10245,15 @@ impl<'a> TypeChecker<'a> {
         }
         for port in &p.ports {
             self.check_snake_case(&port.name);
+        }
+
+        self.module_pipe_regs.clear();
+        for stage in &p.stages {
+            for item in &stage.body {
+                if let ModuleBodyItem::PipeRegDecl(pr) = item {
+                    self.module_pipe_regs.insert(pr.name.name.clone());
+                }
+            }
         }
 
         let stage_names: Vec<&str> = p.stages.iter().map(|s| s.name.name.as_str()).collect();
