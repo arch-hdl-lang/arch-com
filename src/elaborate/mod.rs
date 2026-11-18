@@ -2599,8 +2599,12 @@ fn subst_ident(ident: &Ident, var: &str, val: i64) -> Ident {
 /// the loop var). Bus-wire params and Vec count expressions all flow
 /// through subst_expr / subst_type_expr.
 fn subst_wire_decl(w: &WireDecl, var: &str, val: i64) -> WireDecl {
+    let mut name = subst_ident(&w.name, var, val);
+    if name.name == w.name.name {
+        name.name = format!("{}_{}", name.name, val);
+    }
     WireDecl {
-        name: subst_ident(&w.name, var, val),
+        name,
         ty: subst_type_expr(&w.ty, var, val),
         unpacked: w.unpacked,
         unpacked_ascending: w.unpacked_ascending,
@@ -2618,10 +2622,17 @@ fn subst_wire_decl(w: &WireDecl, var: &str, val: i64) -> WireDecl {
 }
 
 fn subst_assert(a: &AssertDecl, var: &str, val: i64) -> AssertDecl {
+    let name = a.name.as_ref().map(|n| {
+        let mut id = subst_ident(n, var, val);
+        if id.name == n.name {
+            id.name = format!("{}_{}", id.name, val);
+        }
+        id
+    });
     AssertDecl {
         kind: a.kind.clone(),
         engine: a.engine,
-        name: a.name.as_ref().map(|n| subst_ident(n, var, val)),
+        name,
         expr: subst_expr(a.expr.clone(), var, val),
         span: a.span,
     }
