@@ -1438,7 +1438,8 @@ impl Parser {
         Ok(ParamDecl {
             name,
             kind,
-            default,
+            default: default.clone(),
+            declared_default: default,
             constraint,
             is_local,
             span: start.merge(end_span),

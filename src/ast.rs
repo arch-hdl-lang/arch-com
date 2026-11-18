@@ -264,6 +264,8 @@ pub struct ParamDecl {
     pub name: Ident,
     pub kind: ParamKind,
     pub default: Option<Expr>,
+    /// Declared default expression at the definition site before monomorphization.
+    pub declared_default: Option<Expr>,
     /// Optional `where ConstExpr` compile-time constraint on this param.
     /// Only legal on `const`-kind params (rejected on type params at parse
     /// time). Checked at definition site (against `default`) and at every
