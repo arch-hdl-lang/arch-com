@@ -43,6 +43,7 @@ jobs:
       - run: python -m unittest discover -s tools -p 'test_codegraph_eval.py'
       - run: python -m unittest discover -s tools -p 'test_compiler_context.py'
       - run: python -m unittest discover -s tools -p 'test_compiler_response.py'
+      - run: python -m unittest discover -s tools -p 'test_compiler_search.py'
 
   cargo-test:
     name: cargo test

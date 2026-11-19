@@ -136,11 +136,64 @@ token savings. Compare identical questions/evidence under full and reduced
 profiles, and compare graph with equally host-managed search before attributing
 benefits to graph retrieval.
 
+## Bounded Search Control And Recovery Budget
+
+`tools/compiler_search.py` is a graph-independent, opt-in search provider for
+compiler ownership questions. Use it for an equally host-managed comparison or
+an explicitly chosen search workflow, not as a change to graph-first routing.
+It reads no graph index, curated feature map, benchmark manifest, or answer key.
+
+```python
+from tools.compiler_search import retrieve_search_context, retrieval_budget
+
+context = retrieve_search_context(root, question)
+request = prepare_response(root, context, question)
+budget = retrieval_budget(context, total_operations=6, reserve_operations=2)
+# Any caller-managed recovery must stay within budget["remaining_operations"].
+```
+
+The same `retrieval_budget` accounting can describe an existing graph context.
+It does not undo work, enforce future agent calls, or account for earlier
+retrievals. When chaining providers, callers must subtract all prior operations
+from the next provider's `total_operations`; a new provider does not reset a
+shared budget. `reserve_preserved` is false for contexts that already overspent.
+
+Search extracts a named construct phrase (for example, `ARCH's ... construct`)
+or removes role/request vocabulary from the first sentence. Multiword names
+generate joined, snake-case and initialism candidates without feature-specific
+aliases. Unsupported phrasings may need caller refinement. Generic output
+instructions such as `symbol` and `citation` do not become search terms.
+One recursive, bounded `rg --no-config` scans Rust source for exact declaration
+names. AST `*Decl`, parser `parse_*`, SystemVerilog `emit_*`, and type-checker
+`check_*` candidates are grouped by the same normalized construct stem and
+conventional source directories. Missing complete groups, multiple complete
+groups or duplicate declarations within a selected role request recovery.
+No truncation or partial result is treated as evidence of uniqueness.
+
+With the default six-operation budget and two-operation reserve, search spends
+at most one command plus three unique source reads. Failed attempts count too.
+The helper checks the allowance before reading sources, then verifies every
+literal row and records source SHA-256 hashes. Missing, ambiguous, changed,
+unsafe or oversized evidence produces `needs_search` with no consumable payload.
+No automatic search retry, model call, or fallback is performed.
+
+`ready` means a consistent set of **lexical candidates**, not parsed Rust or
+verified semantic owners. A declaration-shaped line in a block comment or raw
+string can match; this limitation is explicitly regression-tested. Role
+metadata is intentionally omitted, so `verify_response` only checks literal
+declarations. Independent source/semantic grading is still required when
+measuring answer quality. A naming-based search control is not an oracle.
+
+Host operation counts are not filesystem I/O counts: `rg` scans source internally,
+and freshness/response verification reads remain separately reported. Budget
+reservation alone is not evidence that fallback will succeed or save tokens.
+
 ## Offline Regression Mode
 
 ```sh
 python3 -m unittest discover -s tools -p test_compiler_context.py
 python3 -m unittest discover -s tools -p test_compiler_response.py
+python3 -m unittest discover -s tools -p test_compiler_search.py
 python3 tools/codegraph_direct_eval.py --compiler-context --arch-bin target/debug/arch
 ```
 
