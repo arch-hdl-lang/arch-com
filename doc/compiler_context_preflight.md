@@ -188,12 +188,82 @@ Host operation counts are not filesystem I/O counts: `rg` scans source internall
 and freshness/response verification reads remain separately reported. Budget
 reservation alone is not evidence that fallback will succeed or save tokens.
 
+## Evidence Selection And Typed Recovery
+
+The optional `tools/compiler_selection.py` interface avoids asking a model to
+copy declaration quotes. `prepare_selection` exposes bounded source rows with
+content-addressed IDs and a role-to-ID schema; `verify_selection` revalidates
+the snapshot and renders exact citations from the selected rows. IDs are bound
+to the policy, question, requested roles, source hashes, literal rows and source
+role metadata. They are evidence identities, not authorization capabilities.
+The caller must associate each response with its own host-held request/context.
+Null, duplicate or unknown IDs, changed snapshots, graph role swaps, duplicate
+JSON keys and tool-assisted replies request retrieval instead of an answer.
+
+```python
+from tools.compiler_selection import prepare_selection, verify_selection
+
+request = prepare_selection(root, context, question)
+# After a healthy, response-only model call using request["output_schema"]:
+# verified = verify_selection(root, context, reply, query=question,
+#                             used_tools=actual_tool_activity)
+# Only verified["answer"] is a rendered citation answer.
+```
+
+No expected benchmark answer, model-supplied quote or invented source text is
+used for rendering. Existing graph role bindings are retained. Unbound search
+rows remain lexical evidence, not semantic ownership proofs. The source-only
+request and later rendering each recheck source freshness; rendering also runs
+the existing citation verifier. All validation reads, including failed checks,
+are reported separately from retrieval operations. The legacy quote-response
+interface and its policy remain available and unchanged.
+
+`tools/compiler_recovery.py` provides one optional, host-owned recovery attempt:
+
+```python
+from tools.compiler_recovery import RecoverySession
+
+# Use a trusted, absolute rg path. Include ALL earlier retrieval work in context.
+recovery = RecoverySession(root, context, rg_binary=Path("/absolute/path/to/rg"))
+request = recovery.prepare(question)
+# After a healthy, tool-free reply containing only {"construct": "keyword"}:
+# result = recovery.recover(reply, used_tools=actual_tool_activity)
+# If ready, replace context with result["context"], prepare_selection, and
+# make one new response-only call. Do not combine graph and search role metadata.
+```
+
+Only a lowercase construct identifier (maximum 64 characters) is accepted.
+The typed name bypasses prose stopwords, so language keywords such as `function`
+are not discarded as generic request vocabulary. The host owns root, roles,
+executable, source paths, command options and remaining budget. Search is one
+bounded argv invocation, without a shell; it cannot execute a model-provided
+command. The executable's resolved absolute path and SHA-256 are recorded and
+checked before retrieval, with separately reported integrity-read I/O. This
+controls host retrieval, not arbitrary agent-shell PATHs or operating-system
+TOCTOU races. The binary is a trusted host dependency, not a model input.
+
+The session snapshots initial retrieval counters, charges failed searches, and
+consumes its single recovery attempt even for invalid replies or failed work.
+It never resets the six-operation total. A fresh three-file answer normally
+requires four operations; it cannot fit after four prior operations. In that
+case, search may spend one command but performs no over-budget source reads.
+Two remaining operations are not a promise of successful recovery.
+
+The host must reject unhealthy model stages before calling these helpers,
+record every model/tool attempt and its cost, and stop on unknown usage rather
+than retrying. The helpers themselves launch no models and cannot certify model
+health or enforce the caller's entire workflow. They do not change defaults,
+perform an automatic retry, or claim token savings. Fresh paired measurement
+must retain all failures and distinguish consumed regression tasks from holdouts.
+
 ## Offline Regression Mode
 
 ```sh
 python3 -m unittest discover -s tools -p test_compiler_context.py
 python3 -m unittest discover -s tools -p test_compiler_response.py
 python3 -m unittest discover -s tools -p test_compiler_search.py
+python3 -m unittest discover -s tools -p test_compiler_selection.py
+python3 -m unittest discover -s tools -p test_compiler_recovery.py
 python3 tools/codegraph_direct_eval.py --compiler-context --arch-bin target/debug/arch
 ```
 
