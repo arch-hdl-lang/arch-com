@@ -91,7 +91,8 @@ def _role(path: str, kind: str, symbol: str) -> str | None:
 
 def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "backend"),
                             byte_budget: int = 4096, total_operations: int = 6,
-                            reserve_operations: int = 2) -> dict:
+                            reserve_operations: int = 2, construct: str | None = None,
+                            rg_binary: Path | None = None) -> dict:
     """One bounded declaration search, then source reads within the host allowance.
 
     Missing/ambiguous coverage returns no consumable payload. Failed calls still
@@ -101,6 +102,15 @@ def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "
     """
     root = Path(root).resolve(strict=True)
     names = feature_names(query)
+    if construct is not None:
+        if not isinstance(construct, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", construct):
+            raise ValueError("construct must be a bounded lowercase identifier")
+        names = list(dict.fromkeys((construct, construct.replace("_", ""))))
+    executable = "rg"
+    if rg_binary is not None:
+        if not Path(rg_binary).is_absolute():
+            raise ValueError("rg_binary must be absolute")
+        executable = str(Path(rg_binary).resolve(strict=True))
     roles = tuple(roles)
     if not roles or len(set(roles)) != len(roles) or set(roles) - set(ROLES):
         raise ValueError("roles must be distinct supported compiler roles")
@@ -124,7 +134,7 @@ def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "
         alternatives = "|".join(re.escape(name) for name in names)
         pattern = (r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|unsafe)\s+)?"
                    r"(?:fn|struct|enum)\s+(?:parse_|emit_|check_)?(?:" + alternatives + r")(?:Decl)?\b")
-        command = ["rg", "--no-config", "--color", "never", "--no-heading", "-n", "-i",
+        command = [executable, "--no-config", "--color", "never", "--no-heading", "-n", "-i",
                    "--sort", "path", "--glob", "*.rs", "--", pattern, "src"]
         call = _run(command, root)
         result["commands"].append(call)
