@@ -2,19 +2,44 @@
 
 Modern SoC architectures targeting high-speed peripheral and serial subsystems (such as I3C HDR-DDR, CAN-FD, QSPI DDR, and USB 3.0 PIPE/UTMI) alongside advanced silicon implementations (multi-voltage I/O pads, dynamic well/body biasing, non-volatile MRAM/ReRAM memory, and power-domain isolation) require significant manual RTL boilerplate.
 
-Without violating Arch's core principles — **standalone compiler (no JVM/Scala runtime), zero hidden hardware, dual-engine equivalence (sim == SV), and compile-time type safety** — this RFC proposes a modular, process-agnostic set of language primitives to eliminate repetitive boilerplate and provide front-end verification for complex protocols and physical silicon macros.
+Without violating Arch's core principles — **standalone compiler (no JVM/Scala runtime), zero hidden hardware, dual-engine equivalence (sim == SV), and compile-time type safety** — this RFC covers two protocol-level gaps (§2 tagged unions with payloads, §3 physical silicon and power abstractions) and one narrower clarification request about where the existing handshake constructs apply (§1).
+
+> **Scope note.** §1 originally proposed a new `stream<T>` primitive. Review showed `handshake_channel`, `credit_channel`, `Token`, and `fifo` already cover the semantics, so §1 is revised to a clarification request rather than a new-primitive proposal. §2 and §3 are unaffected.
 
 ---
 
-## 1. Stream / Decoupled Handshake Primitive (`stream<T>`)
+## 1. Standalone Point-to-Point Stream Ports (clarification request, not a new primitive)
 
-### Problem
+### Status after review
 
-Wiring `valid`, `ready`, `data: T`, and backpressure/stall handshake logic across module and FIFO boundaries is the single largest source of repetitive boilerplate in streaming protocol controllers (I3C frame buffers, CAN message queues, QSPI burst engines, and USB PIPE packet streams). Hand-rolled ready/valid logic is also prone to combinatorial loop hazards and off-by-one skid buffer bugs.
+An earlier draft of this section proposed `stream<T>` as a *new* first-class primitive. That was an overclaim, and this revision withdraws it. ARCH already ships the core of what a streaming port needs:
 
-### Proposal
+* **`handshake_channel`** (§18b, nested in `bus`) — compiler-emitted valid/ready protocol wires plus Tier-2 protocol SVA.
+* **`credit_channel`** (§18c, nested in `bus`) — compiler-owned sender credit counter, receiver FIFO, and credit-return wires, with Lean/SMT construct proofs.
+* **`Token`** (§3.1) — a zero-width pure handshake carrier holding only `valid`/`ready`.
+* **`fifo`** (§8.2) — dual-clock FIFO with a verified push/pop handshake contract.
 
-Introduce a first-class unidirectional point-to-point handshake interface:
+The residual gap is narrower than the original draft implied, and it is a question about *placement*, not about missing semantics.
+
+### The actual question
+
+Both `handshake_channel` and `credit_channel` are **bus sub-constructs only** — §18c states plainly that "there is no standalone form, credit channels always nest inside a `bus`." A module that needs a single point-to-point streaming port with no address decode, no second channel, and no bus-level arbitration must therefore declare a one-channel `bus` purely to acquire handshake semantics.
+
+That is the same boilerplate the construct was introduced to remove, and it interacts awkwardly with two things the language already supports well:
+
+1. **Type parameters.** `bus` sub-constructs are declared per-channel with concrete port lists; a generic `SkidBuffer<T: type>` cannot express "a channel whose payload is `T`" without either monomorphising per instantiation or falling back to a raw `Vec<UInt<8>,N>` port and hand-written valid/ready.
+2. **`Vec<T,N>` payloads.** A burst link whose payload is an array element has no way to state that the handshake covers the whole element rather than its bits.
+
+### What would resolve it
+
+Either of these would close the question without new semantics:
+
+* **(a)** Confirm that a single-channel `bus` *is* the intended idiom for point-to-point streaming, and add a short spec example plus a note in §18b/§18c saying so. This costs no compiler work.
+* **(b)** Confirm that a standalone port form (a `stream<T>`-alike that lowers to exactly the same three signals `handshake_channel` already emits, minus the bus wrapper) is in scope for `doc/archive/plan_bus_unification.md`. This is a parser/elab change, not new hardware semantics.
+
+### Illustrative target (only if (b) is in scope)
+
+The shape below is *aspirational* and shown only to make the gap concrete — it is not a proposed grammar:
 
 ```arch
 module SkidBuffer<T: type>
@@ -43,9 +68,7 @@ module SkidBuffer<T: type>
 end module SkidBuffer
 ```
 
-* **Semantics:** A `stream<T>` bundles `data: T` (forward), `valid: Bool` (forward), and `ready: Bool` (backward).
-* **Handshake property:** Built-in `s.fire` is syntactic sugar for `(s.valid && s.ready)`.
-* **Lowering:** Lowers cleanly in SystemVerilog to `logic [W-1:0] data`, `logic valid`, and `logic ready`. In native C++ simulation (`arch sim`), it lowers to direct signal structs without dynamic allocations or event simulator overhead. Seamlessly connects to `DualClockFifo`.
+If this were adopted, `stream<T>` would be *syntactic sugar over the existing `handshake_channel` lowering* — same `data`/`valid`/`ready` signals, same `fire` predicate, same SVA — with no new semantics and no change to `sim == SV` equivalence. That constraint is what keeps it inside Arch's core principles.
 
 ---
 
@@ -130,6 +153,6 @@ Emerging memory controllers require asymmetric read/write duration and robust er
 
 ## Open Decisions for Maintainer Sign-off
 
-1. **`stream<T>` Implementation:** Should `stream<T>` be introduced as an intrinsic keyword primitive in the compiler grammar, or as a built-in standard library `bus` definition with a reserved `fire` helper?
+1. **Point-to-Point Streaming (clarification):** Is a single-channel `bus` the intended idiom for a standalone streaming port, or should a `stream<T>`-alike be added that lowers to exactly the signals `handshake_channel` already emits? If the former, a spec example in §18b/§18c would settle it with no compiler change.
 2. **Tagged Union Bit Layout:** Should variant unions automatically pad to the widest variant width (`max_width(payloads)`), or should users have an optional explicit bit-width ceiling attribute?
 3. **Physical Macro Library Packaging:** Should the physical cell abstractions (SIO pads, ICG clock gates, isolation cells) live as standard library modules under an `arch_stdcells` package, or use compiler-recognized intrinsic attributes?
