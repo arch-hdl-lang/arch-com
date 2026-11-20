@@ -135,15 +135,49 @@ class CompilerOwnershipIntegrationTests(unittest.TestCase):
                 self.assertNotIn("feature tlm_method", context["commands"][0]["stdout"])
 
     def test_channel_assertions_do_not_borrow_tlm_or_module_backend(self):
-        for phrase, feature in (("handshake channel", "bus handshake metadata"),
-                                ("credit channel", "bus credit channel metadata")):
+        for phrase, symbols in (
+                ("handshake channel", ("HandshakeMeta", "parse_handshake_block", "emit_handshake_asserts")),
+                ("credit channel", ("CreditChannelMeta", "parse_credit_channel_block", "emit_credit_channel_asserts"))):
             query = f"Locate {phrase} AST, parser and backend owners for protocol assertions."
+            with self.subTest(query=query):
+                context = retrieve_compiler_context(self.root, self.binary, query, index=self.index)
+                self.check_selection(context, query, symbols, "src/codegen/mod.rs")
+
+    def test_consumed_channel_questions_have_scoped_owners(self):
+        cases = (
+            ("For a handshake channel declared on an ARCH bus, where is its parsed metadata represented, which parser routine reads it, and which SystemVerilog routine emits the channel protocol assertions? Cite the AST, parser, and backend owners.",
+             ("HandshakeMeta", "parse_handshake_block", "emit_handshake_asserts")),
+            ("For an ARCH credit channel, trace its metadata representation and parser, then identify the SystemVerilog routine that emits sender-side credit state. Keep the backend scope to sender-side state rather than implying receiver FIFO synthesis. Cite one source location for each role.",
+             ("CreditChannelMeta", "parse_credit_channel_block", "emit_credit_channel_state")),
+            ("Locate credit channel receiver state AST, parser and backend owners.",
+             ("CreditChannelMeta", "parse_credit_channel_block", "emit_credit_channel_receiver_state")),
+            ("Locate receiver-side credit state AST, parser and backend owners instead of sender state.",
+             ("CreditChannelMeta", "parse_credit_channel_block", "emit_credit_channel_receiver_state")),
+        )
+        for query, symbols in cases:
+            with self.subTest(query=query):
+                context = retrieve_compiler_context(self.root, self.binary, query, index=self.index)
+                self.check_selection(context, query, symbols, "src/codegen/mod.rs")
+                self.assertEqual(len(context["commands"]) + context["source_read_calls"], 4)
+
+    def test_credit_channel_generic_compound_and_negated_scopes_fail_closed(self):
+        for query in (
+                "Locate credit channel AST, parser and backend owners.",
+                "Locate credit channel sender FIFO AST parser backend owners.",
+                "Locate credit channel sender AST parser backend owners.",
+                "Locate credit channel receiver AST parser backend owners.",
+                "Locate credit channel sender state and handshake channel owners.",
+                "Locate credit channel sender state. Also clock-domain owners.",
+                "Locate credit channel assertions and transaction methods.",
+                "Locate credit channel sender and receiver state AST parser backend owners.",
+                "Locate credit channel sender state and protocol assertions owners.",
+                "Locate sender credit state and receiver credit state owners.",
+                "Locate credit channel not sender state AST parser backend owners."):
             with self.subTest(query=query):
                 context = retrieve_compiler_context(self.root, self.binary, query, index=self.index)
                 self.assertEqual(context["status"], "needs_search")
                 self.assertEqual(context["source_read_calls"], 0)
                 self.assertEqual(context["payload"], "")
-                self.assertTrue(context["commands"][0]["stdout"].startswith(f"feature {feature}\n"))
 
     def test_late_missing_backend_does_not_starve_real_recovery(self):
         construct, queries, symbols, backend = CASES[0]

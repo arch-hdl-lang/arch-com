@@ -4,7 +4,7 @@ The developer graph maps language feature families to reviewed compiler source
 locations. It is separate from the user graph of ARCH declarations and instance
 relationships. Rebuild it with `arch graph dev-index --root . --out .archdevgraph`.
 
-The bundled map contains 70 feature families covering 149 variants in the eleven
+The bundled map contains 73 feature families covering 149 variants in the eleven
 core AST enums below, plus named nested constructs such as ports and hooks.
 
 ## Coverage Contract

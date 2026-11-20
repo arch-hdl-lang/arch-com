@@ -505,6 +505,109 @@ fn requests_multiple_generate_variants(query: &str) -> bool {
     .any(|phrase| has_exact_query_phrase(query, phrase))
 }
 
+fn credit_query_scope(query: &str) -> io::Result<Option<&'static str>> {
+    if !has_exact_query_phrase(query, "credit channel")
+        && !has_exact_query_phrase(query, "CreditChannelMeta")
+        && !has_exact_query_phrase(query, "credit state")
+        && !has_exact_query_phrase(query, "credit sender state")
+        && !has_exact_query_phrase(query, "credit receiver state")
+        && !has_exact_query_phrase(query, "credit protocol assertions")
+    {
+        return Ok(None);
+    }
+    if [
+        "handshake",
+        "handshakes",
+        "clock domain",
+        "clock domains",
+        "tlm method",
+        "tlm methods",
+        "transaction method",
+        "transaction methods",
+        "transaction level method",
+        "transaction level methods",
+    ]
+    .iter()
+    .any(|subject| has_exact_query_phrase(query, subject))
+    {
+        return Err(invalid(
+            "multiple public feature subjects; refine the query",
+        ));
+    }
+    let mut scopes = BTreeSet::new();
+    for sentence in query.to_lowercase().split(['.', ';', '!', '?', '\n']) {
+        // Bounded exclusion clauses do not request the excluded implementation.
+        // Other negation is left for clarification rather than guessed away.
+        let exclusion = ["rather than", "instead of", "but not"]
+            .iter()
+            .filter_map(|marker| sentence.find(marker))
+            .min();
+        if exclusion.is_some_and(|start| {
+            sentence[start..].contains(',')
+                || phrase_words(&sentence[start..]).iter().any(|word| {
+                    [
+                        "and",
+                        "or",
+                        "also",
+                        "then",
+                        "plus",
+                        "without",
+                        "except",
+                        "excluding",
+                    ]
+                    .contains(&word.as_str())
+                })
+        }) {
+            return Err(invalid(
+                "complex credit channel exclusion; refine the query",
+            ));
+        }
+        let positive = exclusion.map_or(sentence, |end| &sentence[..end]);
+        let words = phrase_words(positive);
+        if words.iter().any(|word| {
+            [
+                "not",
+                "without",
+                "excluding",
+                "except",
+                "unless",
+                "never",
+                "no",
+                "non",
+            ]
+            .contains(&word.as_str())
+        }) || positive.contains("n't")
+            || has_exact_query_phrase(positive, "other than")
+        {
+            return Err(invalid("negated credit channel scope; refine the query"));
+        }
+        let assertions = words.iter().any(|word| {
+            ["assert", "asserts", "assertion", "assertions", "sva"].contains(&word.as_str())
+        });
+        let state = words.iter().any(|word| word == "state");
+        let fifo = words.iter().any(|word| word == "fifo");
+        let sender = words.iter().any(|word| word == "sender");
+        if sender && fifo {
+            return Err(invalid("unsupported sender FIFO scope; refine the query"));
+        }
+        if sender && state || has_exact_query_phrase(positive, "emit_credit_channel_state") {
+            scopes.insert("credit channel sender state");
+        }
+        if words.iter().any(|word| word == "receiver") && (state || fifo) {
+            scopes.insert("credit channel receiver state");
+        }
+        if assertions {
+            scopes.insert("credit channel protocol assertions");
+        }
+    }
+    if scopes.len() > 1 {
+        return Err(invalid(
+            "ambiguous credit channel scope; query one operation at a time",
+        ));
+    }
+    Ok(scopes.into_iter().next())
+}
+
 pub struct QueryOptions<'a> {
     pub limit: usize,
     pub token_budget: usize,
@@ -581,9 +684,21 @@ pub fn query_with_options(
             "ambiguous developer graph best match; query names multiple generate variants",
         ));
     }
+    let credit_scope = if best_match
+        && nodes
+            .iter()
+            .any(|node| node.kind == "feature" && node.name == "bus credit channel metadata")
+    {
+        credit_query_scope(query)?
+    } else {
+        None
+    };
     let lowered_query = query.to_lowercase();
     let mut hits = Vec::new();
     for feature in nodes.iter().filter(|node| node.kind == "feature") {
+        if credit_scope.is_some_and(|scope| feature.name != scope) {
+            continue;
+        }
         let mut related: Vec<_> = edges
             .iter()
             .filter(|edge| edge.from == feature.id)
@@ -1273,7 +1388,7 @@ mod tests {
         let out =
             std::env::temp_dir().join(format!("arch-dev-ownership-queries-{}", std::process::id()));
         let stats = index(root, &root.join("doc/codegraph_feature_map.json"), &out).unwrap();
-        assert_eq!(stats.features, 70);
+        assert_eq!(stats.features, 73);
         let roles = ["ast".into(), "parser".into(), "backend".into()];
         let cases = [
             (
@@ -1368,6 +1483,64 @@ mod tests {
             }
         }
         let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn credit_scopes_preserve_exclusions_and_reject_compound_requests() {
+        for (question, expected) in [
+            (
+                "credit channel sender state rather than receiver FIFO",
+                "credit channel sender state",
+            ),
+            (
+                "receiver-side credit state instead of sender state",
+                "credit channel receiver state",
+            ),
+            (
+                "credit channel sender assertions",
+                "credit channel protocol assertions",
+            ),
+            ("emit_credit_channel_state", "credit channel sender state"),
+            (
+                "emit_credit_channel_receiver_state",
+                "credit channel receiver state",
+            ),
+            (
+                "emit_credit_channel_asserts",
+                "credit channel protocol assertions",
+            ),
+        ] {
+            assert_eq!(
+                credit_query_scope(question).unwrap(),
+                Some(expected),
+                "{question}"
+            );
+        }
+        for question in [
+            "credit channel sender and receiver state",
+            "credit channel receiver state and sender state",
+            "credit channel sender state and protocol assertions",
+            "credit channel sender state rather than receiver FIFO. Also receiver state.",
+            "credit channel sender state rather than receiver FIFO; also receiver state",
+            "credit channel sender state rather than receiver FIFO, then receiver state",
+            "credit channel sender state rather than receiver FIFO and protocol assertions",
+            "credit channel state excluding sender",
+            "credit channel not receiver state",
+            "credit channel sender FIFO",
+            "credit channel no sender state",
+            "credit channel never receiver state",
+            "credit channel other than sender state",
+            "credit channel sender state and handshake channel owners",
+            "credit channel sender state. Also clock-domain owners",
+            "credit channel assertions and transaction methods",
+            "credit channel receiver state and TLM methods",
+        ] {
+            assert!(credit_query_scope(question).is_err(), "{question}");
+        }
+        assert_eq!(credit_query_scope("credit channel owners").unwrap(), None);
+        assert_eq!(credit_query_scope("credit channel sender").unwrap(), None);
+        assert_eq!(credit_query_scope("credit channel receiver").unwrap(), None);
+        assert_eq!(credit_query_scope("module assertions").unwrap(), None);
     }
 
     #[test]

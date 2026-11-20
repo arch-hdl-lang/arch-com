@@ -292,6 +292,121 @@ class CompilerRecoveryTests(unittest.TestCase):
                     self.assertEqual(result["context"]["evidence"][1]["symbol"], expected)
                 self.assertLessEqual(result["host_operations"], 6)
 
+    def test_prompt_requests_specific_public_compound_subject_without_private_hints(self):
+        query = "Locate transaction methods declared on an ARCH bus."
+        session = self.session(query=query)
+        request = session.prepare(query)
+        self.assertTrue(request["prompt"].startswith(query + "\n"))
+        self.assertIn("most specific feature subject", request["prompt"])
+        self.assertIn("compound and nested feature names", request["prompt"])
+        self.assertNotIn("single ARCH language construct keyword", request["prompt"])
+        for private in ("TlmMethodMeta", "parse_tlm_method_decl", "emit_tlm_method_asserts", str(self.root)):
+            self.assertNotIn(private, request["prompt"])
+        self.assertEqual(set(request["output_schema"]["properties"]), {"construct"})
+
+    def test_parent_keywords_and_wrong_nested_subject_consume_attempt_without_search(self):
+        for query, construct in (("Locate transaction methods declared on an ARCH bus.", "bus"),
+                                 ("Locate a handshake channel on an ARCH bus.", "bus"),
+                                 ("Locate credit channel sender-side state owners.", "bus"),
+                                 ("Locate clock-domain declaration owners.", "clock"),
+                                 ("Locate handshake channel owners.", "tlm_method"),
+                                 ("Locate credit channel sender and receiver state owners.", "credit_channel"),
+                                 ("Locate credit channel without sender state owners.", "credit_channel"),
+                                 ("Locate credit channel except sender state owners.", "credit_channel"),
+                                 ("Locate handshake channel owners. Also locate transaction method owners.", "handshake")):
+            with self.subTest(query=query, construct=construct):
+                session = self.session(1, query=query)
+                with patch("compiler_search._run", side_effect=AssertionError("public subject conflict")):
+                    result = session.recover(json.dumps({"construct": construct}))
+                self.assertEqual(result["status"], "needs_retrieval")
+                self.assertEqual(result["host_operations"], 1)
+                self.assertEqual(result["remaining_operations"], 5)
+                self.assertEqual(session.recover(json.dumps({"construct": construct}))["reason"],
+                                 "recovery already attempted")
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_consumed_nested_subjects_recover_with_exact_owners_and_original_budget(self):
+        root = Path(__file__).resolve().parents[1]
+        binary = Path(shutil.which("rg")).resolve()
+        cases = (
+            (("domain", "clock_domain"), (
+                "Trace an ARCH clock-domain declaration through its AST representation and parser, then identify the SystemVerilog codegen routine that carries its domain metadata into output. Cite one source location for each role.",
+                "Locate clock domain AST, parser and backend owners."),
+             ("DomainDecl", "parse_domain", "emit_domain")),
+            (("tlm_method", "transaction_methods"), (
+                "For transaction methods declared on an ARCH bus, where are their signatures and modes represented and parsed, and which SystemVerilog codegen routine emits protocol assertions for those methods? Cite the AST, parser, and backend owners.",
+                "Locate the TLM method AST, parser and backend owners for protocol assertions."),
+             ("TlmMethodMeta", "parse_tlm_method_decl", "emit_tlm_method_asserts")),
+            (("handshake", "handshake_channel"), (
+                "For a handshake channel declared on an ARCH bus, where is its parsed metadata represented, which parser routine reads it, and which SystemVerilog routine emits the channel protocol assertions? Cite the AST, parser, and backend owners.",
+                "Locate handshake AST, parser and protocol assertion backend owners."),
+             ("HandshakeMeta", "parse_handshake_block", "emit_handshake_asserts")),
+            (("credit_channel",), (
+                "For an ARCH credit channel, trace its metadata representation and parser, then identify the SystemVerilog routine that emits sender-side credit state. Keep the backend scope to sender-side state rather than implying receiver FIFO synthesis. Cite one source location for each role.",
+                "Locate credit channel sender state AST, parser and backend owners, not receiver state."),
+             ("CreditChannelMeta", "parse_credit_channel_block", "emit_credit_channel_state")))
+        roles = ("ast", "parser", "backend")
+        for constructs, queries, expected in cases:
+            for query in queries:
+                direct = retrieve_search_context(root, query, rg_binary=binary)
+                self.assertEqual(direct["status"], "ready", direct["reason"])
+                self.assertEqual(tuple(row["symbol"] for row in direct["evidence"]), expected)
+                self.assertEqual(direct["budget"]["host_operations"], 4)
+                for construct in constructs:
+                    with self.subTest(query=query, construct=construct):
+                        session = RecoverySession(root, {"commands": [{}], "source_read_calls": 0}, rg_binary=binary)
+                        session.prepare(query)
+                        result = session.recover(json.dumps({"construct": construct}))
+                        self.assertEqual(result["status"], "ready", result["reason"])
+                        self.assertEqual(result["host_operations"], 5)
+                        self.assertEqual(result["remaining_operations"], 1)
+                        context = result["context"]
+                        self.assertEqual(tuple(row["symbol"] for row in context["evidence"]), expected)
+                        self.assertEqual(context["host_graph_calls"], 0)
+                        self.assertEqual(context["index_read_calls"], 0)
+                        self.assertTrue(all("role" not in row for row in context["evidence"]))
+                        self.assertEqual(context["commands"][0]["command"][0], str(binary))
+                        self.assertEqual(context["source_read_calls"], 3)
+                        # Expected owners affect only this offline answer, never the provider arguments.
+                        prepared = prepare_selection(root, context, query, roles)
+                        catalog = json.loads(prepared["prompt"].rsplit("\n", 1)[1])["evidence"]
+                        answer = {role: next(k for k, v in catalog.items() if v["symbol"] == symbol)
+                                  for role, symbol in zip(roles, expected)}
+                        self.assertEqual(verify_selection(root, context, json.dumps(answer), roles,
+                                                          query=query)["status"], "verified")
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_plural_nested_identifiers_require_the_corresponding_public_subject(self):
+        root = Path(__file__).resolve().parents[1]
+        binary = Path(shutil.which("rg")).resolve()
+        for query, construct, backend in (
+                ("Locate handshake channels and their protocol assertions owners.", "handshake_channels", "emit_handshake_asserts"),
+                ("Locate credit channels sender state owners.", "credit_channels", "emit_credit_channel_state"),
+                ("Locate clock domains owners.", "clock_domains", "emit_domain")):
+            session = RecoverySession(root, {"commands": [], "source_read_calls": 0}, rg_binary=binary)
+            session.prepare(query)
+            result = session.recover(json.dumps({"construct": construct}))
+            self.assertEqual(result["status"], "ready", result["reason"])
+            self.assertEqual(result["context"]["evidence"][-1]["symbol"], backend)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_real_credit_channel_facets_never_default_to_sender(self):
+        root = Path(__file__).resolve().parents[1]
+        binary = Path(shutil.which("rg")).resolve()
+        for scope, expected in (("receiver state", "emit_credit_channel_receiver_state"),
+                                ("protocol assertions", "emit_credit_channel_asserts"),
+                                ("", None), ("sender and receiver state", None),
+                                ("sender state and protocol assertions", None)):
+            with self.subTest(scope=scope):
+                session = RecoverySession(root, {"commands": [{}], "source_read_calls": 0}, rg_binary=binary)
+                session.prepare(f"Locate credit channel {scope} AST, parser and backend owners.")
+                result = session.recover('{"construct":"credit_channel"}')
+                self.assertEqual(result["status"], "ready" if expected else "needs_retrieval", result["reason"])
+                if expected:
+                    self.assertEqual(result["context"]["evidence"][-1]["symbol"], expected)
+                else:
+                    self.assertEqual(result["context"]["source_read_calls"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

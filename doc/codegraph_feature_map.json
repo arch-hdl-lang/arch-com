@@ -21,12 +21,31 @@
     ], "covers": ["Item::Bus"]},
     {"name": "bus handshake metadata", "aliases": ["handshake", "handshake channel", "handshake_channel", "valid ready"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "HandshakeMeta"},
-      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_handshake_block"}
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_handshake_block"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_handshake_asserts"}
     ]},
     {"name": "bus credit channel metadata", "aliases": ["credit channel", "credit_channel", "credit-based flow control"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "CreditChannelMeta"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_credit_channel_block"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_credit_channel_state"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_credit_channel_receiver_state"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_credit_channel_asserts"},
       {"role": "fixture", "path": "examples/noc_chain/noc_chain.arch"}
+    ]},
+    {"name": "credit channel sender state", "aliases": ["sender-side credit state", "sender credit state", "credit sender state"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "CreditChannelMeta"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_credit_channel_block"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_credit_channel_state"}
+    ]},
+    {"name": "credit channel receiver state", "aliases": ["receiver-side credit state", "receiver credit state", "credit receiver state"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "CreditChannelMeta"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_credit_channel_block"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_credit_channel_receiver_state"}
+    ]},
+    {"name": "credit channel protocol assertions", "aliases": ["credit channel assertions", "credit protocol assertions"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "CreditChannelMeta"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_credit_channel_block"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_credit_channel_asserts"}
     ]},
     {"name": "bus conditional generation", "aliases": ["bus conditional generate", "bus generate if", "bus generate-if", "generate_if bus"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "BusGenerateIf"},

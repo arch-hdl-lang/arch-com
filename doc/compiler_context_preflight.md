@@ -55,8 +55,20 @@ TLM-method aliases. This keeps method protocol assertions attached to
 `TlmMethodMeta`, `parse_tlm_method_decl` and `emit_tlm_method_asserts` rather than
 generic module assertions. The consumed confirmation question and paraphrases
 are offline ownership regressions, not new held-out or token-saving evidence.
-The routing change does not complete channel backend links, change recovery,
-or establish general multi-feature ambiguity detection.
+The TLM alias change alone does not establish general multi-feature ambiguity
+detection or measured token savings.
+
+Handshake metadata links to the module-level handshake assertion emitter.
+Credit-channel metadata retains all three backend entry points: sender state,
+receiver state and protocol assertions. Separate scoped families expose each
+operation without pretending the generic family has a unique backend owner.
+For best-match queries, explicit credit operation cues select these families;
+multiple requested operations and unsupported negation require clarification.
+Known mixed requests involving handshake, clock-domain or transaction-method
+subjects also require refinement before a credit facet can narrow the results.
+Sentence-local `rather than`, `instead of` and `but not` clauses exclude the
+trailing operation. These bounded rules are not general natural-language intent
+analysis. Ordinary queries continue to expose multiple families and owners.
 
 The preflight rejects truncated output, multiple visible feature blocks,
 multiple owners for one requested role, missing roles, unsupported rows,
@@ -174,10 +186,14 @@ retrievals. When chaining providers, callers must subtract all prior operations
 from the next provider's `total_operations`; a new provider does not reset a
 shared budget. `reserve_preserved` is false for contexts that already overspent.
 
-Search extracts a named construct phrase (for example, `ARCH's ... construct`)
-or removes role/request vocabulary from the first sentence. Multiword names
-generate joined, snake-case and initialism candidates without feature-specific
-aliases. Unsupported phrasings may need caller refinement. Generic output
+Search recognizes bounded opening public subjects for clock domains, transaction
+methods, handshake channels and credit channels, including plural spellings.
+Otherwise it extracts a named construct phrase (for example, `ARCH's ... construct`)
+or removes role/request vocabulary from the first sentence. Other multiword names
+generate joined, snake-case and initialism candidates. These public vocabulary
+normalizations contain no source locations or private expected answers and apply
+to initial retrieval as well as typed recovery. Unsupported phrasings may need
+caller refinement. Generic output
 instructions such as `symbol` and `citation` do not become search terms.
 One recursive, bounded `rg --no-config` scans Rust source for exact declaration
 names. AST `*Decl`, parser `parse_*`, SystemVerilog `emit_*`, and type-checker
@@ -186,8 +202,11 @@ conventional source directories. Missing complete groups, multiple complete
 groups or duplicate declarations within a selected role request recovery.
 No truncation or partial result is treated as evidence of uniqueness.
 
-Routine matching recognizes bounded, role-specific suffixes such as `_decl`
-and backend `_sva`. Conditional and iterative routine variants require an
+Routine matching recognizes bounded, role-specific suffixes including AST `Meta`,
+parser `_block`, and backend `_sva`, `_asserts` and state variants. Credit-channel
+backend retrieval requires an explicit unique sender-state, receiver-state or
+assertion scope; generic credit questions cannot default to sender state.
+Conditional and iterative routine variants require an
 explicit construct-bound cue in the public question, such as `conditional
 generate` or `generate if`; an unrelated prose `for` is not a variant hint.
 Missing or conflicting variant information cannot select an arbitrary parser.
@@ -257,7 +276,10 @@ request = recovery.prepare(question)
 # make one new response-only call. Do not combine graph and search role metadata.
 ```
 
-Only a lowercase construct identifier (maximum 64 characters) is accepted.
+Only a lowercase feature identifier (maximum 64 characters) is accepted. The
+recovery prompt asks for the most specific public subject, preserving compound
+and nested feature names instead of substituting the containing bus or a generic
+clock. Bounded public-subject checks reject such substitutions before searching.
 The typed name bypasses prose stopwords, so language keywords such as `function`
 are not discarded as generic request vocabulary. The host owns root, roles,
 and the public question captured by `prepare`; a different question cannot be
