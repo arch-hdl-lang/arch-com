@@ -104,7 +104,7 @@
       {"role": "backend", "path": "src/codegen/module.rs", "symbol": "emit_reg_block"},
       {"role": "fixture", "path": "tests/verilog_eval/Prob047_dff8ar.arch"}
     ]},
-    {"name": "tlm_method", "aliases": ["transaction-level method"], "links": [
+    {"name": "tlm_method", "aliases": ["transaction-level method", "transaction-level methods", "transaction method", "transaction methods", "TLM method", "TLM methods"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "TlmMethodMeta"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_tlm_method_decl"},
       {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "emit_tlm_method_asserts"},

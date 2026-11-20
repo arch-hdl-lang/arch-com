@@ -50,6 +50,14 @@ This is ranked discovery, not proof that the selected feature is semantically
 the only possible answer. A query about several features may need separate
 queries or targeted search.
 
+The TLM-method family includes explicit singular/plural transaction-method and
+TLM-method aliases. This keeps method protocol assertions attached to
+`TlmMethodMeta`, `parse_tlm_method_decl` and `emit_tlm_method_asserts` rather than
+generic module assertions. The consumed confirmation question and paraphrases
+are offline ownership regressions, not new held-out or token-saving evidence.
+The routing change does not complete channel backend links, change recovery,
+or establish general multi-feature ambiguity detection.
+
 The preflight rejects truncated output, multiple visible feature blocks,
 multiple owners for one requested role, missing roles, unsupported rows,
 unsafe paths, mismatched excerpts, and changed source. Graph positions are
