@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from compiler_recovery import RecoverySession
 from compiler_search import retrieve_search_context
+from compiler_selection import prepare_selection, verify_selection
 
 
 class CompilerRecoveryTests(unittest.TestCase):
@@ -137,6 +138,56 @@ class CompilerRecoveryTests(unittest.TestCase):
                 self.assertEqual(result["host_operations"], 5)
                 self.assertEqual({row["symbol"] for row in result["context"]["evidence"]},
                                  {construct.title() + "Decl", "parse_" + construct, "emit_" + construct})
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_recovered_context_flows_through_evidence_selection(self):
+        # End-to-end wiring for the documented recover -> prepare_selection ->
+        # verify_selection flow (doc/compiler_context_preflight.md "Evidence
+        # Selection And Typed Recovery"). The selection unit tests fabricate the
+        # context dict by hand, so nothing exercises a context actually produced
+        # by the real search/recovery provider against the selection helper.
+        root = Path(__file__).resolve().parents[1]
+        binary = Path(shutil.which("rg")).resolve()
+        roles = ("ast", "parser", "backend")
+        query = "Identify the compiler owners of the function construct."
+        session = RecoverySession(root, {"commands": [{}], "source_read_calls": 0}, rg_binary=binary)
+        context = session.recover(json.dumps({"construct": "function"}))["context"]
+        self.assertEqual(context["status"], "ready", context.get("reason"))
+        self.assertTrue(all("role" not in row for row in context["evidence"]))
+
+        prepared = prepare_selection(root, context, query, roles)
+        self.assertEqual(prepared["status"], "ready", prepared.get("reason"))
+        catalog = json.loads(prepared["prompt"].rsplit("\n", 1)[1])["evidence"]
+
+        def role_of(candidate):
+            if candidate["path"].startswith("src/ast"):
+                return "ast"
+            if candidate["symbol"].startswith("parse_"):
+                return "parser"
+            if candidate["symbol"].startswith("emit_"):
+                return "backend"
+            return None
+
+        by_role = {role_of(value): key for key, value in catalog.items()}
+        self.assertEqual(set(by_role), set(roles))
+        correct = {role: by_role[role] for role in roles}
+
+        verified = verify_selection(root, context, json.dumps(correct), roles, query=query)
+        self.assertEqual(verified["status"], "verified", verified.get("reason"))
+        self.assertEqual({c["symbol"] for c in verified["citations"].values()},
+                         {"FunctionDecl", "parse_function", "emit_function"})
+        for role, citation in verified["citations"].items():
+            self.assertEqual(role_of(citation), role)
+
+        # Search/recovery evidence carries no role metadata, so verify_response
+        # validates only literal declarations: a role swap renders the swapped
+        # citations instead of being rejected. Graph contexts, which do carry
+        # role bindings, reject swaps -- see test_compiler_selection.py
+        # ::test_graph_role_swap_and_tool_use_are_rejected.
+        swapped = {**correct, "ast": correct["backend"], "backend": correct["ast"]}
+        swapped_result = verify_selection(root, context, json.dumps(swapped), roles, query=query)
+        self.assertEqual(swapped_result["status"], "verified", swapped_result.get("reason"))
+        self.assertEqual(role_of(swapped_result["citations"]["ast"]), "backend")
 
     def test_typed_search_validation_and_public_prompt_only(self):
         for construct in ("../x", True, "a b", "x" * 65):
