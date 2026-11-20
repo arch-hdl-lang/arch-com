@@ -818,6 +818,138 @@ fn thread_stmt_span(stmt: &ThreadStmt) -> Span {
     }
 }
 
+fn collect_inst_edges(body: &[ModuleBodyItem], edges: &mut Vec<(String, Span)>) {
+    for item in body {
+        match item {
+            ModuleBodyItem::Inst(inst) => {
+                edges.push((inst.module_name.name.clone(), inst.span));
+            }
+            ModuleBodyItem::Generate(gen) => match gen {
+                GenerateDecl::For(gf) => {
+                    for it in &gf.items {
+                        if let GenItem::Inst(inst) = it {
+                            edges.push((inst.module_name.name.clone(), inst.span));
+                        }
+                    }
+                }
+                GenerateDecl::If(gi) => {
+                    for it in gi.then_items.iter().chain(gi.else_items.iter()) {
+                        if let GenItem::Inst(inst) = it {
+                            edges.push((inst.module_name.name.clone(), inst.span));
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
+fn check_instantiation_acyclic(items: &[Item]) -> Result<(), Vec<CompileError>> {
+    let mut module_edges: HashMap<String, Vec<(String, Span)>> = HashMap::new();
+    let mut module_names = HashSet::new();
+
+    for item in items {
+        match item {
+            Item::Module(m) => {
+                module_names.insert(m.name.name.clone());
+                let mut edges = Vec::new();
+                collect_inst_edges(&m.body, &mut edges);
+                module_edges.insert(m.name.name.clone(), edges);
+            }
+            Item::Pipeline(p) => {
+                module_names.insert(p.name.name.clone());
+                let mut edges = Vec::new();
+                for stage in &p.stages {
+                    collect_inst_edges(&stage.body, &mut edges);
+                }
+                module_edges.insert(p.name.name.clone(), edges);
+            }
+            _ => {}
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Visiting,
+        Visited,
+    }
+
+    let mut state: HashMap<String, State> = HashMap::new();
+    let mut path: Vec<(String, Span)> = Vec::new();
+    let mut errors: Vec<CompileError> = Vec::new();
+
+    fn dfs(
+        curr: &str,
+        module_edges: &HashMap<String, Vec<(String, Span)>>,
+        module_names: &HashSet<String>,
+        state: &mut HashMap<String, State>,
+        path: &mut Vec<(String, Span)>,
+        errors: &mut Vec<CompileError>,
+    ) {
+        state.insert(curr.to_string(), State::Visiting);
+
+        if let Some(edges) = module_edges.get(curr) {
+            for (target, span) in edges {
+                if !module_names.contains(target) {
+                    continue;
+                }
+                match state.get(target) {
+                    Some(State::Visiting) => {
+                        let mut cycle_path = Vec::new();
+                        let mut cycle_started = false;
+                        for (mod_name, _) in path.iter() {
+                            if mod_name == target {
+                                cycle_started = true;
+                            }
+                            if cycle_started {
+                                cycle_path.push(mod_name.clone());
+                            }
+                        }
+                        cycle_path.push(curr.to_string());
+                        cycle_path.push(target.clone());
+                        let cycle_str = cycle_path.join(" -> ");
+                        errors.push(CompileError::general(
+                            &format!("recursive module instantiation: {cycle_str}"),
+                            *span,
+                        ));
+                    }
+                    Some(State::Visited) => {}
+                    None => {
+                        path.push((curr.to_string(), *span));
+                        dfs(target, module_edges, module_names, state, path, errors);
+                        path.pop();
+                    }
+                }
+            }
+        }
+
+        state.insert(curr.to_string(), State::Visited);
+    }
+
+    let mut sorted_module_names: Vec<String> = module_names.iter().cloned().collect();
+    sorted_module_names.sort();
+
+    for name in &sorted_module_names {
+        if !state.contains_key(name) {
+            dfs(
+                name,
+                &module_edges,
+                &module_names,
+                &mut state,
+                &mut path,
+                &mut errors,
+            );
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Single-source entry point: every package in `ast` is treated as being in
@@ -925,6 +1057,8 @@ pub fn elaborate_with_file_scopes(
         })
         .collect();
 
+    check_instantiation_acyclic(&ast.items)?;
+
     // Step 2 + 3 — discover all instantiation variants, transitively.
     //
     // A variant of module M is one distinct (effective param) set M is ever
@@ -941,7 +1075,33 @@ pub fn elaborate_with_file_scopes(
     // variants, and repeat until no new variant appears. Modules form a DAG
     // (no recursive instantiation in ARCH), so this terminates.
     let mut module_variants = compute_all_variants(&ast.items, &module_defaults, &HashMap::new());
+    let mut fixpoint_iterations = 0;
     loop {
+        fixpoint_iterations += 1;
+        if fixpoint_iterations > 256 {
+            let err_span = ast
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Module(m) if module_variants.contains_key(&m.name.name) => Some(m.span),
+                    Item::Pipeline(p) if module_variants.contains_key(&p.name.name) => Some(p.span),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    ast.items
+                        .first()
+                        .map(|it| match it {
+                            Item::Module(m) => m.span,
+                            Item::Pipeline(p) => p.span,
+                            _ => Span::new(0, 0),
+                        })
+                        .unwrap_or_else(|| Span::new(0, 0))
+                });
+            return Err(vec![CompileError::general(
+                "module variant discovery exceeded maximum iteration limit (possible recursive instantiation)",
+                err_span,
+            )]);
+        }
         let mut inst_raw: HashMap<String, Vec<HashMap<String, i64>>> = HashMap::new();
         for item in &ast.items {
             if let Item::Module(m) = item {
