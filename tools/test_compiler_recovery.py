@@ -151,6 +151,7 @@ class CompilerRecoveryTests(unittest.TestCase):
         roles = ("ast", "parser", "backend")
         query = "Identify the compiler owners of the function construct."
         session = RecoverySession(root, {"commands": [{}], "source_read_calls": 0}, rg_binary=binary)
+        session.prepare(query)
         context = session.recover(json.dumps({"construct": "function"}))["context"]
         self.assertEqual(context["status"], "ready", context.get("reason"))
         self.assertTrue(all("role" not in row for row in context["evidence"]))
