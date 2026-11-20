@@ -124,6 +124,35 @@ class CompilerContextTests(unittest.TestCase):
         self.assertEqual(result["status"], "needs_search")
         self.assertEqual(result["reason"], "source changed during retrieval")
 
+    def test_incomplete_or_ambiguous_graph_preserves_recovery_read_budget(self):
+        cases = [
+            "\n".join(self.output.splitlines()[:-1]),
+            self.output + self.output.splitlines()[1] + "\n",
+            self.output + "feature other\n",
+            self.output + "(truncated)\n",
+            self.output.replace("  backend src/backend.rs:1 emit_counter [curated] | fn emit_counter() {",
+                                "  backend src/backend.rs:1 src/backend.rs [curated]"),
+            self.output.replace("src/backend.rs:1", "../outside.rs:1"),
+            self.output.replace("src/backend.rs:1", "src/missing.rs:1"),
+        ]
+        for output in cases:
+            with self.subTest(output=output), patch("compiler_context._run", return_value=self.command(output)):
+                result = self.retrieve()
+                self.assertEqual(result["status"], "needs_search")
+                self.assertEqual(len(result["commands"]), 1)
+                self.assertEqual(result["source_read_calls"], 0)
+                self.assertEqual(result["source_read_bytes"], 0)
+                self.assertEqual(result["payload"], "")
+                self.assertEqual(result["evidence"], [])
+                self.assertEqual(result["source_hashes"], {})
+
+    def test_missing_roles_reported_without_source_reads(self):
+        output = "\n".join(self.output.splitlines()[:-1])
+        with patch("compiler_context._run", return_value=self.command(output)):
+            result = self.retrieve()
+        self.assertEqual(result["missing_roles"], ["backend"])
+        self.assertEqual(result["source_read_calls"], 0)
+
     def test_explicit_paths_never_fall_through_to_graph(self):
         outside = self.root / "outside.rs"
         outside.write_text("pub struct Secret;\n")

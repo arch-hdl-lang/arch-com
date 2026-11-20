@@ -25,8 +25,11 @@ class CompilerRecoveryTests(unittest.TestCase):
         self.binary.chmod(0o755)
 
     def session(self, used=0, **kwargs):
-        return RecoverySession(self.root, {"commands": [{}] * used, "source_read_calls": 0},
-                               rg_binary=kwargs.pop("rg_binary", self.binary), **kwargs)
+        query = kwargs.pop("query", "For a function in ARCH, identify compiler owners.")
+        session = RecoverySession(self.root, {"commands": [{}] * used, "source_read_calls": 0},
+                                  rg_binary=kwargs.pop("rg_binary", self.binary), **kwargs)
+        session.prepare(query)
+        return session
 
     def call(self, **overrides):
         return {"command": [str(self.binary)], "stdout": "".join(f"{p}:1:{t}" for p, t in self.sources.items()),
@@ -132,6 +135,7 @@ class CompilerRecoveryTests(unittest.TestCase):
         for construct in ("function", "struct", "enum", "synchronizer"):
             with self.subTest(construct=construct):
                 session = RecoverySession(root, {"commands": [{}], "source_read_calls": 0}, rg_binary=binary)
+                session.prepare(f"Locate ARCH {construct} compiler owners.")
                 result = session.recover(json.dumps({"construct": construct}))
                 self.assertEqual(result["status"], "ready", result["reason"])
                 self.assertEqual(result["host_operations"], 5)
@@ -144,13 +148,97 @@ class CompilerRecoveryTests(unittest.TestCase):
                 retrieve_search_context(self.root, "query", construct=construct)
         with self.assertRaises(ValueError):
             retrieve_search_context(self.root, "query", rg_binary=Path("rg"))
-        session = self.session()
+        session = self.session(query="PUBLIC QUESTION")
         request = session.prepare("PUBLIC QUESTION")
         self.assertNotIn(str(self.root), request["prompt"])
         self.assertNotIn(session.binary_hash, request["prompt"])
         for query in (None, "", "x" * 8193):
             with self.assertRaises(ValueError):
                 session.prepare(query)
+
+    def test_prepared_public_query_is_bound_and_forwarded_without_private_context(self):
+        initial = {"commands": [], "source_read_calls": 0, "private_answer": "DO NOT FORWARD"}
+        session = RecoverySession(self.root, initial, rg_binary=self.binary)
+        query = "Trace a conditional function through its owners."
+        session.prepare(query)
+        session.prepare(query)
+        with self.assertRaisesRegex(ValueError, "already bound"):
+            session.prepare("Trace iterative function")
+        with patch("compiler_recovery.retrieve_search_context", return_value={
+                "commands": [], "source_read_calls": 0, "status": "ready"}) as retrieve:
+            result = session.recover('{"construct":"function"}')
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(retrieve.call_args.args, (self.root, query))
+        self.assertNotIn("private_answer", repr(retrieve.call_args))
+        self.assertNotIn("DO NOT FORWARD", repr(retrieve.call_args))
+        self.assertEqual(retrieve.call_args.kwargs["reserve_operations"], 0)
+        self.assertEqual(retrieve.call_args.kwargs["total_operations"], 6)
+        self.assertEqual(session.recover('{"construct":"function"}')["reason"], "recovery already attempted")
+
+    def test_unprepared_recovery_never_searches_and_consumes_attempt(self):
+        session = RecoverySession(self.root, {"commands": [{}], "source_read_calls": 0}, rg_binary=self.binary)
+        with patch("compiler_recovery.retrieve_search_context", side_effect=AssertionError("unprepared search")):
+            result = session.recover('{"construct":"function"}')
+        self.assertEqual(result["reason"], "recovery requires a prepared public query")
+        self.assertEqual(result["host_operations"], 1)
+        self.assertEqual(result["executable_read_calls"], 1)
+        self.assertIsNone(result["context"])
+        self.assertEqual(session.prepare("function")["status"], "needs_retrieval")
+
+    def test_typed_keyword_cannot_erase_explicit_bus_generation_scope(self):
+        for query in ("Locate bus conditional generate AST parser backend owners.",
+                      "Locate bus generate if owners.", "Locate generate_if bus owners.",
+                      "Trace a conditional generate block in an ARCH bus."):
+            for construct in ("generate", "generate_if", "module", "bus"):
+                with self.subTest(query=query, construct=construct):
+                    session = self.session(1, query=query)
+                    with patch("compiler_search._run", side_effect=AssertionError("scope conflict")):
+                        result = session.recover(json.dumps({"construct": construct}))
+                    self.assertEqual(result["status"], "needs_retrieval")
+                    self.assertIn("bus generation scope", result["reason"])
+                    self.assertEqual(result["host_operations"], 1)
+                    self.assertEqual(result["context"]["source_read_calls"], 0)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_consumed_ownership_failures_recover_from_empty_context(self):
+        root = Path(__file__).resolve().parents[1]
+        binary = Path(shutil.which("rg")).resolve()
+        cases = (
+            ("module", "Trace an ARCH module declaration through its AST, parser, and SystemVerilog generation.",
+             ("ModuleDecl", "parse_module", "emit_module")),
+            ("param", "Where are ARCH param and local param declarations represented and parsed?",
+             ("ParamDecl", "parse_param_decl", "emit_param_decl")),
+            ("generate", "Trace a conditional generate block in an ARCH module from its AST representation and parser routine to SystemVerilog.",
+             ("GenerateDecl", "parse_generate_if", "emit_generate")),
+            ("assert", "Trace module-level assertion, cover, and assume declarations to SystemVerilog Assertions emission.",
+             ("AssertDecl", "parse_assert_decl", "emit_assert_sva")))
+        for construct, query, owners in cases:
+            with self.subTest(construct=construct):
+                session = RecoverySession(root, {"commands": [], "source_read_calls": 0}, rg_binary=binary)
+                session.prepare(query)
+                result = session.recover(json.dumps({"construct": construct}))
+                self.assertEqual(result["status"], "ready", result["reason"])
+                self.assertEqual(tuple(r["symbol"] for r in result["context"]["evidence"]), owners)
+                self.assertEqual(result["host_operations"], 4)
+                self.assertEqual(result["remaining_operations"], 2)
+                self.assertEqual(result["context"]["commands"][0]["command"][0], str(binary))
+                self.assertEqual(result["context"]["host_graph_calls"], 0)
+                self.assertEqual(result["context"]["index_read_calls"], 0)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_real_generate_variants_require_unambiguous_public_query(self):
+        root = Path(__file__).resolve().parents[1]
+        binary = Path(shutil.which("rg")).resolve()
+        for query, expected in (("Trace iterative generate", "parse_generate_for"),
+                                ("Trace generate", None), ("Trace generate if and for", None)):
+            with self.subTest(query=query):
+                session = RecoverySession(root, {"commands": [], "source_read_calls": 0}, rg_binary=binary)
+                session.prepare(query)
+                result = session.recover('{"construct":"generate"}')
+                self.assertEqual(result["status"], "ready" if expected else "needs_retrieval")
+                if expected:
+                    self.assertEqual(result["context"]["evidence"][1]["symbol"], expected)
+                self.assertLessEqual(result["host_operations"], 6)
 
 
 if __name__ == "__main__":

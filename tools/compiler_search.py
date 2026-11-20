@@ -89,6 +89,61 @@ def _role(path: str, kind: str, symbol: str) -> str | None:
     return None
 
 
+def _canonical_owner(role: str, symbol: str, names: list[str]) -> tuple[str, str | None]:
+    prefixes = {"parser": "parse_", "backend": "emit_", "semantic_check": "check_"}
+    body = symbol if role == "ast" else symbol.removeprefix(prefixes[role])
+    suffixes = (("", None), ("Decl", None)) if role == "ast" else (
+        ("", None), ("_decl", None), ("_if", "if"), ("_for", "for"))
+    if role == "backend":
+        suffixes += (("_sva", None),)
+    elif role == "semantic_check":
+        suffixes = (("", None), ("_decl", None))
+    stems = {name.replace("_", "").lower() for name in names}
+    matches = set()
+    for suffix, variant in suffixes:
+        if suffix and not body.endswith(suffix):
+            continue
+        stem = (body[:-len(suffix)] if suffix else body).replace("_", "").lower()
+        if stem in stems:
+            matches.add((stem, variant))
+    if len(matches) != 1:
+        raise ValueError("search returned an unrelated or ambiguous symbol")
+    return matches.pop()
+
+
+def _public_variant(query: str, names: list[str]) -> str | None:
+    scoped_generation = re.search(
+        r"\bbus[ _-]+(?:(?:conditional|iterative)[ _-]+)?generat(?:e|ion)\b"
+        r"|\bgenerate[ _-]+(?:if|for)[ _-]+bus\b"
+        r"|\bgenerat(?:e|ion)(?:[ _-]+(?:if|for|block|declaration))*\s+(?:in|inside|within)\s+"
+        r"(?:(?:a|an|the|arch)\s+)*bus\b", query, re.I)
+    if scoped_generation and not all(re.fullmatch(r"busgenerate(?:if|for)?", name.replace("_", ""))
+                                     for name in names):
+        raise ValueError("selected construct drops explicit bus generation scope")
+    # A prose "for" or an unrelated conditional must not select a routine.
+    subject = "(?:" + "|".join(re.escape(name).replace("_", r"[ _-]") for name in names) + ")"
+    if re.search(r"\b(?:not|non)\s*[- ]\s*(?:conditional|iterative)\s+" + subject + r"\b", query, re.I):
+        raise ValueError("negated public construct variant; refine the question")
+    found = set()
+    for variant, adjective in (("if", "conditional"), ("for", "iterative")):
+        prose = ("uncertain|needed|possible|available|any" if variant == "if" else
+                 "each|every|the|a|an|its|this|these|their|my|your|all|example")
+        if (re.search(r"\b" + adjective + r"\s+" + subject + r"\b", query, re.I)
+                or re.search(r"\b" + subject + r"[ _-]+" + variant
+                             + r"\b(?!\s+(?:" + prose + r")\b)", query, re.I)):
+            found.add(variant)
+    # Keep an explicit list such as "generate if and for" ambiguous.
+    if re.search(r"\b" + subject + r"\s+(?:if\s*(?:and|or|[+/])\s*for|for\s*(?:and|or|[+/])\s*if)\b",
+                 query, re.I):
+        found.update(("if", "for"))
+    if re.search(r"\b(?:conditional\s+(?:and|or)\s+iterative|iterative\s+(?:and|or)\s+conditional)\s+"
+                 + subject + r"\b", query, re.I):
+        found.update(("if", "for"))
+    if len(found) > 1:
+        raise ValueError("multiple public construct variants; refine the question")
+    return next(iter(found), None)
+
+
 def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "backend"),
                             byte_budget: int = 4096, total_operations: int = 6,
                             reserve_operations: int = 2, construct: str | None = None,
@@ -99,6 +154,8 @@ def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "
     count. Callers own any recovery and must honor the returned remaining budget.
     Source hashes and literal rows support compiler_response, but no semantic role
     bindings are attached: naming/path conventions are only search heuristics.
+    Routine suffixes are role-specific; public variant cues select only unique
+    matching owners, while generic questions use only shared owners.
     """
     root = Path(root).resolve(strict=True)
     names = feature_names(query)
@@ -127,13 +184,15 @@ def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "
     try:
         if not names:
             raise ValueError("no bounded construct name; refine the question")
+        variant = _public_variant(query, names)
         if allowance < 2:
             raise ValueError("insufficient host allowance for search and source verification")
         if (root / "src").is_symlink() or not (root / "src").is_dir():
             raise ValueError("source root must be a real directory")
         alternatives = "|".join(re.escape(name) for name in names)
         pattern = (r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|unsafe)\s+)?"
-                   r"(?:fn|struct|enum)\s+(?:parse_|emit_|check_)?(?:" + alternatives + r")(?:Decl)?\b")
+                   r"(?:fn|struct|enum)\s+(?:parse_|emit_|check_)?(?:" + alternatives
+                   + r")(?:Decl|_decl|_sva|_if|_for)?\b")
         command = [executable, "--no-config", "--color", "never", "--no-heading", "-n", "-i",
                    "--sort", "path", "--glob", "*.rs", "--", pattern, "src"]
         call = _run(command, root)
@@ -154,20 +213,25 @@ def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "
             kind = re.search(r"\b(fn|struct|enum)\s+" + re.escape(symbol) + r"\b", quote)
             role = _role(relative, kind.group(1) if kind else "", symbol)
             if role in roles:
-                stem = re.sub(r"^(parse_|emit_|check_)|Decl$", "", symbol)
-                stem = stem.replace("_", "").lower()
-                if stem not in {name.replace("_", "").lower() for name in names}:
-                    raise ValueError("search returned an unrelated symbol")
+                stem, owner_variant = _canonical_owner(role, symbol, names)
                 group = candidates.setdefault(stem, {role: {} for role in roles})
                 group[role][(relative, int(number))] = {
-                    "path": relative, "line": int(number), "symbol": symbol, "quote": quote}
+                    "path": relative, "line": int(number), "symbol": symbol, "quote": quote,
+                    "variant": owner_variant}
+        for group in candidates.values():
+            for role, rows in group.items():
+                if any(row["variant"] is not None for row in rows.values()):
+                    # Generic questions can use shared owners, never an arbitrary
+                    # specialized routine. Explicit variants require an exact match.
+                    group[role] = {key: row for key, row in rows.items() if row["variant"] == variant}
         complete = [group for group in candidates.values() if all(group[role] for role in roles)]
         result["missing_roles"] = [role for role in roles if not any(g[role] for g in candidates.values())]
         if not complete:
             raise ValueError("search lacks a consistent construct for all requested roles")
         if len(complete) != 1 or any(len(rows) != 1 for rows in complete[0].values()):
             raise ValueError("ambiguous declaration candidates; refine the question")
-        rows = [next(iter(complete[0][role].values())) for role in roles]
+        rows = [{key: value for key, value in next(iter(complete[0][role].values())).items()
+                 if key != "variant"} for role in roles]
         paths = list(dict.fromkeys(row["path"] for row in rows))
         resolved = {relative: _source(root, relative) for relative in paths}
         if len(set(resolved.values())) > min(4, allowance - len(result["commands"])):

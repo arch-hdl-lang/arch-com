@@ -165,7 +165,8 @@ def retrieve_compiler_context(root: Path, arch_bin: Path, query: str, *,
             if call["exit_code"] != 0 or call["error"] or call["output_clipped"]:
                 raise ValueError("graph unavailable or stale; refresh or use targeted search")
             features = []
-            read_cache = {}
+            candidates = []
+            # Reject incomplete or ambiguous output before spending source reads.
             for line in call["stdout"].splitlines():
                 if line.startswith("feature "):
                     features.append(line)
@@ -179,31 +180,33 @@ def retrieve_compiler_context(root: Path, arch_bin: Path, query: str, *,
                 role, relative, number, symbol, excerpt = match.groups()
                 if role not in roles or len(features) != 1:
                     raise ValueError("ambiguous graph owners")
-                path = _source(root, relative)
+                if any(candidate[0] == role for candidate in candidates):
+                    raise ValueError("multiple owners for a requested role; refine the query")
+                candidates.append((role, relative, int(number), symbol, excerpt))
+            if len(features) != 1:
+                raise ValueError("no unambiguous graph feature")
+            result["missing_roles"] = [r for r in roles if not any(row[0] == r for row in candidates)]
+            if result["missing_roles"]:
+                raise ValueError("graph lacks requested source roles")
+            paths = {relative: _source(root, relative) for _, relative, _, _, _ in candidates}
+            if len(paths) > 4:
+                raise ValueError("source read budget exceeded")
+            read_cache = {}
+            for role, relative, n, symbol, excerpt in candidates:
                 if relative not in read_cache:
-                    if len(read_cache) >= 4:
-                        raise ValueError("source read budget exceeded")
-                    data = _read(path, result)
+                    data = _read(paths[relative], result)
                     sha = hashlib.sha256(data).hexdigest()
                     if _index_digest(data) != pins.get(relative):
                         raise ValueError("source changed during retrieval")
                     sources[relative] = sha
                     read_cache[relative] = data.decode("utf-8").splitlines()
                 source_lines = read_cache[relative]
-                n = int(number)
                 if n > len(source_lines):
                     raise ValueError("graph location outside source")
                 quote = source_lines[n - 1].lstrip()
                 if excerpt != " ".join(quote.split())[:120] or not re.search(r"(?<!\w)" + re.escape(symbol.split("::")[-1]) + r"(?!\w)", quote):
                     raise ValueError("graph symbol or excerpt does not match source")
                 rows.append({"role": role, "path": relative, "line": n, "symbol": symbol, "quote": quote})
-                if sum(row["role"] == role for row in rows) > 1:
-                    raise ValueError("multiple owners for a requested role; refine the query")
-            if len(features) != 1:
-                raise ValueError("no unambiguous graph feature")
-            result["missing_roles"] = [r for r in roles if not any(row["role"] == r for row in rows)]
-            if result["missing_roles"]:
-                raise ValueError("graph lacks requested source roles")
         payload = []
         for row in rows:
             line = f"{row['path']}:{row['line']}:{row['quote']}\n"
