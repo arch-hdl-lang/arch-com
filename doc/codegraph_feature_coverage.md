@@ -4,7 +4,7 @@ The developer graph maps language feature families to reviewed compiler source
 locations. It is separate from the user graph of ARCH declarations and instance
 relationships. Rebuild it with `arch graph dev-index --root . --out .archdevgraph`.
 
-The bundled map contains 68 feature families covering 147 variants in the ten
+The bundled map contains 70 feature families covering 149 variants in the eleven
 core AST enums below, plus named nested constructs such as ports and hooks.
 
 ## Coverage Contract
@@ -14,6 +14,7 @@ to one feature family through its `covers` metadata:
 
 - `Item`: top-level language declarations and imports.
 - `ModuleBodyItem` and `GenItem`: module and generated-body constructs.
+- `GenerateDecl`: conditional and iterative generation variants.
 - `Stmt`, `ThreadStmt`, and `FunctionBodyItem`: statement and control-flow forms.
 - `TypeExpr`: type representations, including floating-point and scaled types.
 - `ExprKind`, `BinOp`, and `UnaryOp`: expressions and operators.
@@ -87,3 +88,22 @@ workflow. See [validation evidence](codegraph_feature_coverage_validation.md)
 for the four-trial live rerun and its limitations.
 The bundled-map regression also queries every covered variant and checks its
 top-ranked owner family and source output within the 200-token byte budget.
+
+## Complete Ownership Is Separate
+
+An indexed family is not necessarily a complete AST/parser/backend answer.
+See [the checked ownership inventory](codegraph_ownership_coverage.md) for every
+family's missing, file-only, single-symbol and multiple-link roles.
+
+Module, parameter and assertion backend links now name literal declarations.
+Conditional and iterative generate have separate families and exact aliases;
+generic generate keeps its multiple owners. Exact phrase specificity favors a
+qualified family such as bus conditional generation over a shorter alias.
+`--best-match` rejects ties, multiple requested AST/parser/backend owners and
+explicit compound generate variants. Ordinary queries still expose multiple
+families. This remains lexical ranking, not a general natural-language parser
+or semantic proof. Unsupported or ambiguous questions require refinement.
+
+These fixes are checked by consumed offline regressions, not a fresh live token
+benchmark. Source freshness, output bounds and cumulative recovery budgets
+remain required; old benchmark results have not been changed.

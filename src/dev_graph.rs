@@ -406,6 +406,7 @@ fn terms(query: &str) -> Vec<String> {
 
 fn has_query_anchor(
     words: &[String],
+    query: &str,
     feature: &DevNode,
     related: &[&DevEdge],
     by_id: &BTreeMap<&str, &DevNode>,
@@ -423,7 +424,7 @@ fn has_query_anchor(
         .aliases
         .iter()
         .chain(&feature.covers)
-        .any(|alias| has_named_terms(words, alias))
+        .any(|alias| has_exact_query_phrase(query, alias))
     {
         return true;
     }
@@ -439,6 +440,69 @@ fn has_named_terms(words: &[String], name: &str) -> bool {
         && words
             .windows(name_terms.len())
             .any(|window| window == name_terms)
+}
+
+fn phrase_words(text: &str) -> Vec<String> {
+    text.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn has_exact_query_phrase(query: &str, phrase: &str) -> bool {
+    let query_words = phrase_words(query);
+    let phrase_words = phrase_words(phrase);
+    !phrase_words.is_empty()
+        && query_words
+            .windows(phrase_words.len())
+            .any(|window| window == phrase_words)
+}
+
+fn exact_phrase_specificity(query: &str, name: &str, aliases: &[String]) -> usize {
+    std::iter::once(name)
+        .chain(aliases.iter().map(String::as_str))
+        .filter(|phrase| has_exact_query_phrase(query, phrase))
+        .map(|phrase| phrase_words(phrase).len())
+        .max()
+        .unwrap_or(0)
+}
+
+fn requests_multiple_generate_variants(query: &str) -> bool {
+    let conditional = [
+        "generate if",
+        "conditional generate",
+        "conditional generation",
+        "GenerateDecl::If",
+    ]
+    .iter()
+    .any(|phrase| has_exact_query_phrase(query, phrase));
+    let iterative = [
+        "generate for",
+        "iterative generate",
+        "iterative generation",
+        "GenerateDecl::For",
+    ]
+    .iter()
+    .any(|phrase| has_exact_query_phrase(query, phrase));
+    if conditional && iterative {
+        return true;
+    }
+    [
+        "generate if and for",
+        "generate for and if",
+        "generate if or for",
+        "generate for or if",
+        "generate if for",
+        "generate for if",
+        "conditional and iterative generate",
+        "iterative and conditional generate",
+        "conditional or iterative generate",
+        "iterative or conditional generate",
+        "conditional iterative generate",
+        "iterative conditional generate",
+    ]
+    .iter()
+    .any(|phrase| has_exact_query_phrase(query, phrase))
 }
 
 pub struct QueryOptions<'a> {
@@ -512,6 +576,11 @@ pub fn query_with_options(
     if words.is_empty() {
         return Err(invalid("developer graph query requires a search term"));
     }
+    if best_match && requests_multiple_generate_variants(query) {
+        return Err(invalid(
+            "ambiguous developer graph best match; query names multiple generate variants",
+        ));
+    }
     let lowered_query = query.to_lowercase();
     let mut hits = Vec::new();
     for feature in nodes.iter().filter(|node| node.kind == "feature") {
@@ -519,7 +588,7 @@ pub fn query_with_options(
             .iter()
             .filter(|edge| edge.from == feature.id)
             .collect();
-        if !has_query_anchor(&words, feature, &related, &by_id) {
+        if !has_query_anchor(&words, query, feature, &related, &by_id) {
             continue;
         }
         related.sort_by_key(|edge| {
@@ -561,23 +630,21 @@ pub fn query_with_options(
             continue;
         }
         let feature_name = feature.name.to_lowercase();
-        let feature_terms = terms(&feature.name);
-        let exact_feature_mention = (!feature_terms.is_empty()
-            && words
-                .windows(feature_terms.len())
-                .any(|window| window == feature_terms.as_slice()))
+        let exact_feature_mention = has_exact_query_phrase(query, &feature.name)
             || feature
                 .aliases
                 .iter()
-                .any(|alias| has_named_terms(&words, alias));
+                .any(|alias| has_exact_query_phrase(query, alias));
         let exact_coverage_mention = feature
             .covers
             .iter()
-            .any(|covered| has_named_terms(&words, covered));
+            .any(|covered| has_exact_query_phrase(query, covered));
+        let phrase_specificity = exact_phrase_specificity(query, &feature.name, &feature.aliases);
         let score = matched * 10
             + usize::from(feature_name.contains(&lowered_query)) * 100
             + usize::from(exact_feature_mention) * 100
             + usize::from(exact_coverage_mention) * 200
+            + phrase_specificity * 40
             + usize::from(matched == words.len()) * 30;
         related.retain(|edge| roles.is_empty() || roles.iter().any(|role| role == &edge.role));
         if related.is_empty() {
@@ -594,6 +661,28 @@ pub fn query_with_options(
             return Err(invalid(
                 "ambiguous developer graph best match; refine the query",
             ));
+        }
+        if let Some((_, _, _, related)) = hits.first() {
+            let mut owners_by_role = BTreeMap::<&str, BTreeSet<&str>>::new();
+            for edge in related
+                .iter()
+                .filter(|edge| matches!(edge.role.as_str(), "ast" | "parser" | "backend"))
+            {
+                if let Some(node) = by_id
+                    .get(edge.to.as_str())
+                    .filter(|node| node.kind == "rust_symbol")
+                {
+                    owners_by_role
+                        .entry(edge.role.as_str())
+                        .or_default()
+                        .insert(node.id.as_str());
+                }
+            }
+            if let Some((role, _)) = owners_by_role.iter().find(|(_, owners)| owners.len() > 1) {
+                return Err(invalid(format!(
+                    "ambiguous developer graph best match; multiple {role} owners, refine the query"
+                )));
+            }
         }
         hits.truncate(1);
     }
@@ -762,6 +851,7 @@ mod tests {
         "ExprKind",
         "BinOp",
         "UnaryOp",
+        "GenerateDecl",
     ];
 
     #[test]
@@ -1175,6 +1265,346 @@ mod tests {
             .to_string()
             .contains("generator changed"));
         let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn consumed_ownership_questions_and_paraphrases_return_exact_role_owners() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let out =
+            std::env::temp_dir().join(format!("arch-dev-ownership-queries-{}", std::process::id()));
+        let stats = index(root, &root.join("doc/codegraph_feature_map.json"), &out).unwrap();
+        assert_eq!(stats.features, 70);
+        let roles = ["ast".into(), "parser".into(), "backend".into()];
+        let cases = [
+            (
+                "module",
+                [
+                    "Trace an ARCH module declaration through its AST, parser, and SystemVerilog generation. Identify the declaration node, parser routine, and top-level emitter, citing one source location for each role.",
+                    "Locate the ARCH module AST, parser and SystemVerilog backend owners.",
+                ],
+                "module",
+                [
+                    ("ast", "src/ast.rs", "ModuleDecl"),
+                    ("parser", "src/parser.rs", "parse_module"),
+                    ("backend", "src/codegen/module.rs", "emit_module"),
+                ],
+            ),
+            (
+                "parameter",
+                [
+                    "Where are ARCH `param` and `local param` declarations represented and parsed, and which SystemVerilog codegen routine renders them as parameter declarations? Cite the AST, parser, and backend owner for each role.",
+                    "Locate the local parameter AST, parser and SystemVerilog emitter.",
+                ],
+                "parameters and local parameters",
+                [
+                    ("ast", "src/ast.rs", "ParamDecl"),
+                    ("parser", "src/parser.rs", "parse_param_decl"),
+                    ("backend", "src/codegen/mod.rs", "emit_param_decl"),
+                ],
+            ),
+            (
+                "conditional generate",
+                [
+                    "Trace a conditional generate block in an ARCH module from its AST representation and parser routine to the SystemVerilog codegen routine that handles generate declarations. Cite one source location for each role.",
+                    "Locate the ARCH generate if AST, parser and SystemVerilog backend owners.",
+                ],
+                "conditional generate",
+                [
+                    ("ast", "src/ast.rs", "GenerateDecl"),
+                    ("parser", "src/parser.rs", "parse_generate_if"),
+                    ("backend", "src/codegen/mod.rs", "emit_generate"),
+                ],
+            ),
+            (
+                "assertion and coverage",
+                [
+                    "Trace module-level assertion, cover, and assume declarations from their AST representation and parser to the SystemVerilog Assertions emission routine. Identify and cite the owner for each role.",
+                    "Locate the assertion and coverage AST, parser and SystemVerilog backend owners.",
+                ],
+                "assertion and coverage",
+                [
+                    ("ast", "src/ast.rs", "AssertDecl"),
+                    ("parser", "src/parser.rs", "parse_assert_decl"),
+                    ("backend", "src/codegen/mod.rs", "emit_assert_sva"),
+                ],
+            ),
+        ];
+
+        for (case, queries, expected_feature, expected_roles) in cases {
+            for question in queries {
+                let result = query_with_options(
+                    root,
+                    &out,
+                    question,
+                    QueryOptions {
+                        limit: 30,
+                        token_budget: 200,
+                        roles: &roles,
+                        include_source: true,
+                        best_match: true,
+                    },
+                )
+                .unwrap_or_else(|error| panic!("{case}: {error}"));
+                let mut lines = result.lines();
+                assert_eq!(
+                    lines.next(),
+                    Some(format!("feature {expected_feature}").as_str()),
+                    "{case}: {question}\n{result}"
+                );
+                for (role, path, symbol) in expected_roles {
+                    let line = lines.next().unwrap_or_else(|| panic!("{case}: {result}"));
+                    let terminal_symbol = symbol.rsplit("::").next().unwrap();
+                    assert!(
+                        line.starts_with(&format!("  {role} {path}:"))
+                            && line
+                                .split_whitespace()
+                                .nth(2)
+                                .and_then(|symbol| symbol.rsplit("::").next())
+                                == Some(terminal_symbol),
+                        "{case}: {question}\n{result}"
+                    );
+                }
+                assert!(lines.next().is_none(), "{case}: {result}");
+            }
+        }
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn every_generate_variant_alias_combination_requires_disambiguation() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let map: FeatureMap =
+            serde_json::from_slice(&fs::read(root.join("doc/codegraph_feature_map.json")).unwrap())
+                .unwrap();
+        let names = |variant: &str| {
+            let feature = map
+                .features
+                .iter()
+                .find(|feature| feature.covers.iter().any(|covered| covered == variant))
+                .unwrap();
+            std::iter::once(feature.name.as_str())
+                .chain(feature.aliases.iter().map(String::as_str))
+                .chain(feature.covers.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+        };
+        for conditional in names("GenerateDecl::If") {
+            for iterative in names("GenerateDecl::For") {
+                for connector in ["and", "or", "/"] {
+                    for (left, right) in [(conditional, iterative), (iterative, conditional)] {
+                        let query = format!("Locate {left} {connector} {right} owners.");
+                        assert!(requests_multiple_generate_variants(&query), "{query}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generic_generate_is_ambiguous_and_bus_conditional_generation_routes_to_bus() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let out =
+            std::env::temp_dir().join(format!("arch-dev-generate-routing-{}", std::process::id()));
+        index(root, &root.join("doc/codegraph_feature_map.json"), &out).unwrap();
+        let all_roles = ["ast".into(), "parser".into(), "backend".into()];
+        let generic = query_with_options(
+            root,
+            &out,
+            "generate",
+            QueryOptions {
+                limit: 30,
+                token_budget: 200,
+                roles: &all_roles,
+                include_source: true,
+                best_match: true,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            generic.contains("multiple ast owners") || generic.contains("multiple parser owners")
+        );
+
+        let default_query = query(root, &out, "generate", 30, 800, &all_roles, false).unwrap();
+        assert!(default_query.contains("feature generate"));
+
+        for phrase in [
+            "generate if and for",
+            "generate if or for",
+            "generate if/for",
+            "conditional and iterative generate",
+            "conditional or iterative generate",
+            "generate if or generate for",
+            "conditional generate and generate for",
+        ] {
+            let compound = query_with_options(
+                root,
+                &out,
+                &format!("Locate {phrase} AST parser backend owners."),
+                QueryOptions {
+                    limit: 30,
+                    token_budget: 200,
+                    roles: &all_roles,
+                    include_source: true,
+                    best_match: true,
+                },
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                compound.contains("multiple generate variants"),
+                "{phrase}: {compound}"
+            );
+        }
+
+        let ordinary_compound = query_with_options(
+            root,
+            &out,
+            "Locate generate if AST and parser owners for each role.",
+            QueryOptions {
+                limit: 30,
+                token_budget: 200,
+                roles: &all_roles,
+                include_source: true,
+                best_match: true,
+            },
+        )
+        .unwrap();
+        assert!(ordinary_compound.starts_with("feature conditional generate\n"));
+
+        let bus_roles = ["ast".into(), "parser".into()];
+        let bus = query_with_options(
+            root,
+            &out,
+            "Locate bus conditional generate AST parser backend owners.",
+            QueryOptions {
+                limit: 20,
+                token_budget: 200,
+                roles: &bus_roles,
+                include_source: true,
+                best_match: true,
+            },
+        )
+        .unwrap();
+        assert!(
+            bus.starts_with("feature bus conditional generation\n"),
+            "{bus}"
+        );
+        assert!(bus.contains("BusGenerateIf [curated]"), "{bus}");
+        assert!(bus.contains("parse_bus_generate_if [curated]"), "{bus}");
+        assert!(!bus.contains("feature conditional generate"), "{bus}");
+
+        let iterative = query_with_options(
+            root,
+            &out,
+            "Locate the ARCH generate for AST, parser and backend owners.",
+            QueryOptions {
+                limit: 30,
+                token_budget: 200,
+                roles: &all_roles,
+                include_source: true,
+                best_match: true,
+            },
+        )
+        .unwrap();
+        assert!(
+            iterative.starts_with("feature iterative generate\n"),
+            "{iterative}"
+        );
+        assert!(
+            iterative.contains("parse_generate_for [curated]"),
+            "{iterative}"
+        );
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn all_feature_ast_parser_backend_links_are_audited_by_cardinality() {
+        fn status(feature: &Feature, role: &str) -> String {
+            let links: Vec<_> = feature
+                .links
+                .iter()
+                .filter(|link| link.role == role)
+                .collect();
+            match links.as_slice() {
+                [] => "missing".into(),
+                [link] if link.symbol.is_none() => "file-only".into(),
+                [_] => "one-symbol".into(),
+                _ => format!("multiple({})", links.len()),
+            }
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let map: FeatureMap =
+            serde_json::from_slice(&fs::read(root.join("doc/codegraph_feature_map.json")).unwrap())
+                .unwrap();
+        let variants = ast_variants(&fs::read_to_string(root.join("src/ast.rs")).unwrap()).unwrap();
+        let mut variant_total = 0;
+        eprintln!("AST enum inventory:");
+        for name in COVERED_ENUMS {
+            let count = variants[*name].len();
+            variant_total += count;
+            eprintln!("  {name}: {count}");
+        }
+        eprintln!(
+            "  total: {} enums, {variant_total} variants",
+            COVERED_ENUMS.len()
+        );
+        let mut categories = BTreeSet::new();
+        let mut category_counts = BTreeMap::<String, usize>::new();
+        let mut audited = 0;
+        let mut expected_rows = Vec::new();
+        for feature in &map.features {
+            let row = ["ast", "parser", "backend"].map(|role| status(feature, role));
+            expected_rows.push(format!(
+                "| {} | {} | {} | {} |",
+                feature.name, row[0], row[1], row[2]
+            ));
+            for category in &row {
+                categories.insert(category.clone());
+                *category_counts.entry(category.clone()).or_default() += 1;
+                audited += 1;
+            }
+            eprintln!(
+                "{}: ast={}, parser={}, backend={}",
+                feature.name, row[0], row[1], row[2]
+            );
+        }
+        let inventory =
+            fs::read_to_string(root.join("doc/codegraph_ownership_coverage.md")).unwrap();
+        let documented_rows: Vec<_> = inventory
+            .lines()
+            .filter(|line| line.starts_with("| "))
+            .skip(2)
+            .collect();
+        assert_eq!(documented_rows, expected_rows, "ownership inventory drift");
+        assert_eq!(audited, map.features.len() * 3);
+        assert!(categories.contains("missing"));
+        assert!(categories.contains("file-only"));
+        assert!(categories.contains("one-symbol"));
+        assert!(categories
+            .iter()
+            .any(|category| category.starts_with("multiple(")));
+        eprintln!("Role-link audit across {} features:", map.features.len());
+        for (category, count) in category_counts {
+            eprintln!("  {category}: {count}");
+        }
+        let by_name: BTreeMap<_, _> = map
+            .features
+            .iter()
+            .map(|feature| (feature.name.as_str(), feature))
+            .collect();
+        assert_eq!(status(by_name["module"], "backend"), "one-symbol");
+        assert_eq!(
+            status(by_name["parameters and local parameters"], "backend"),
+            "one-symbol"
+        );
+        assert_eq!(
+            status(by_name["assertion and coverage"], "backend"),
+            "one-symbol"
+        );
+        assert_eq!(status(by_name["bus"], "backend"), "file-only");
+        assert_eq!(status(by_name["module hooks"], "backend"), "missing");
+        assert_eq!(status(by_name["generate"], "parser"), "multiple(2)");
     }
 
     #[test]

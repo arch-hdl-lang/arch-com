@@ -93,6 +93,20 @@ class CompilerSearchTests(unittest.TestCase):
         self.assertEqual(result["source_read_calls"], 0)
         self.assertIn("consistent construct", result["reason"])
 
+    def test_bus_scope_requires_scoped_names_without_banning_matching_owners(self):
+        query = "Locate bus conditional generate AST and parser owners."
+        self.sources = {"src/ast.rs": "pub struct BusGenerateIf {}\n",
+                        "src/parser.rs": "fn parse_bus_generate_if() {}\n"}
+        self.write_sources()
+        with patch("compiler_search._run", return_value=self.call()):
+            result = retrieve_search_context(self.root, query, construct="bus_generate_if", roles=("ast", "parser"))
+        self.assertEqual(result["status"], "ready", result["reason"])
+        self.assertEqual([row["symbol"] for row in result["evidence"]], ["BusGenerateIf", "parse_bus_generate_if"])
+        with patch("compiler_search._run", side_effect=AssertionError("scope conflict")):
+            rejected = retrieve_search_context(self.root, query, construct="generate", roles=("ast", "parser"))
+        self.assertEqual(rejected["status"], "needs_search")
+        self.assertEqual(rejected["commands"], [])
+
     def test_complete_acronym_collision_and_duplicate_role_fail_closed(self):
         full = self.output().replace("CamDecl", "ContentAddressableMemoryDecl").replace("parse_cam", "parse_content_addressable_memory").replace("emit_cam", "emit_content_addressable_memory")
         duplicate = "src/ast.rs:9:pub struct CamDecl {}\n"
@@ -188,6 +202,90 @@ class CompilerSearchTests(unittest.TestCase):
         over = retrieval_budget({"commands": [None] * 7, "source_read_calls": 0})
         self.assertEqual(over["remaining_operations"], 0)
         self.assertFalse(over["reserve_preserved"])
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_role_specific_suffixes_with_real_search(self):
+        for parser, backend in (("parse_cam_decl", "emit_cam_decl"), ("parse_cam", "emit_cam_sva")):
+            with self.subTest(parser=parser, backend=backend):
+                self.sources["src/parser.rs"] = f"fn {parser}() {{}}\n"
+                self.sources["src/codegen/nested/cam.rs"] = f"fn {backend}() {{}}\n"
+                self.write_sources()
+                result = self.retrieve()
+                self.assertEqual(result["status"], "ready", result["reason"])
+                self.assertEqual([r["symbol"] for r in result["evidence"]], ["CamDecl", parser, backend])
+                self.assertEqual(result["budget"]["host_operations"], 4)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_suffix_helpers_and_wrong_roles_do_not_supply_coverage(self):
+        for parser, backend in (("parse_cam_decl_helper", "emit_cam_sva"),
+                                ("parse_cam_sva", "emit_cam"),
+                                ("parse_cam", "emit_cam_sva_extra"),
+                                ("emit_cam", "parse_cam_decl"),
+                                ("parse_cam_decl_decl", "emit_cam")):
+            with self.subTest(parser=parser, backend=backend):
+                self.sources["src/parser.rs"] = f"fn {parser}() {{}}\n"
+                self.sources["src/codegen/nested/cam.rs"] = f"fn {backend}() {{}}\n"
+                self.write_sources()
+                result = self.retrieve()
+                self.assertEqual(result["status"], "needs_search")
+                self.assertEqual(result["source_read_calls"], 0)
+                self.assertEqual(result["payload"], "")
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_multiple_suffix_owners_fail_in_both_orders(self):
+        for rows in (("parse_cam", "parse_cam_decl"), ("parse_cam_decl", "parse_cam")):
+            self.sources["src/parser.rs"] = "".join(f"fn {name}() {{}}\n" for name in rows)
+            self.write_sources()
+            result = self.retrieve()
+            self.assertEqual(result["status"], "needs_search")
+            self.assertIn("ambiguous", result["reason"])
+            self.assertEqual(result["source_read_calls"], 0)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_public_variants_select_unique_routines_without_role_mixing(self):
+        self.sources["src/parser.rs"] = "fn parse_cam_for() {}\nfn parse_cam_if() {}\n"
+        self.sources["src/codegen/nested/cam.rs"] = "fn emit_cam_if() {}\nfn emit_cam_for() {}\n"
+        self.write_sources()
+        for query, variant in (("Trace conditional cam", "if"), ("Trace iterative cam", "for"),
+                               ("Trace cam if", "if"), ("Trace cam for", "for")):
+            with self.subTest(query=query):
+                result = retrieve_search_context(self.root, query, construct="cam")
+                self.assertEqual(result["status"], "ready", result["reason"])
+                self.assertEqual([r["symbol"] for r in result["evidence"]],
+                                 ["CamDecl", "parse_cam_" + variant, "emit_cam_" + variant])
+        self.sources["src/codegen/nested/cam.rs"] = "fn emit_cam_for() {}\nfn emit_cam() {}\n"
+        self.write_sources()
+        result = retrieve_search_context(self.root, "Trace conditional cam", construct="cam")
+        self.assertEqual(result["status"], "needs_search")
+        self.assertEqual(result["source_read_calls"], 0)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_generic_conflicting_and_unrelated_variant_cues_fail_closed(self):
+        self.sources["src/parser.rs"] = "fn parse_cam_if() {}\nfn parse_cam_for() {}\n"
+        self.write_sources()
+        for query in ("Trace cam", "Find owners for cam", "Trace cam if and for", "Trace cam if+for",
+                      "Trace conditional and iterative cam", "Trace conditional cam and iterative cam",
+                      "Trace cam. Return null if uncertain.", "Trace cam and conditional fifo",
+                      "Find cam for each role", "Locate cam if possible", "Trace not conditional cam"):
+            with self.subTest(query=query):
+                result = retrieve_search_context(self.root, query, construct="cam")
+                self.assertEqual(result["status"], "needs_search")
+                self.assertEqual(result["source_read_calls"], 0)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_variant_uniqueness_and_read_budget_remain_strict(self):
+        self.sources["src/parser.rs"] = "fn parse_cam_if() {}\nfn parse_cam_for() {}\n"
+        self.write_sources()
+        result = retrieve_search_context(self.root, "conditional cam", construct="cam", total_operations=3,
+                                         reserve_operations=0)
+        self.assertEqual(result["status"], "needs_search")
+        self.assertEqual(result["source_read_calls"], 0)
+        self.assertEqual(result["budget"]["host_operations"], 1)
+        (self.root / "src/parser").mkdir()
+        (self.root / "src/parser/duplicate.rs").write_text("fn parse_cam_if() {}\n")
+        result = retrieve_search_context(self.root, "conditional cam", construct="cam")
+        self.assertEqual(result["status"], "needs_search")
+        self.assertIn("ambiguous", result["reason"])
 
 
 if __name__ == "__main__":

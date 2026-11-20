@@ -76,5 +76,15 @@ jobs:
       - name: compiler context preflight audit
         run: python3 tools/codegraph_direct_eval.py --compiler-context --arch-bin target/release/arch
 
+      - name: Install compiler recovery search dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: Compiler ownership and recovery regressions
+        env:
+          ARCH_COMPILER_GRAPH_BIN: target/release/arch
+        run: python3 -m unittest discover -s tools -p 'test_compiler_ownership_integration.py'
+
       - name: cargo test --release
         run: cargo test --release

@@ -40,7 +40,10 @@ evidence of absence.
 Unknown ownership always executes one `dev-query` with the original question
 unchanged, `--best-match`, source excerpts, and requested role filters (default:
 AST, parser, backend). `--best-match` chooses the uniquely highest-ranked
-feature and rejects equal-score ties. Ordinary `dev-query` behavior is unchanged.
+feature and rejects equal-score ties and multiple AST/parser/backend owners in
+the selected roles. Exact feature/alias phrases favor the more specific family.
+Ordinary `dev-query` still exposes multiple families and their owners rather
+than applying this single-answer gate.
 Selected symbol positions are revalidated with the compiler's Rust parser;
 a reference to a symbol is not accepted as its declaration location.
 This is ranked discovery, not proof that the selected feature is semantically
@@ -51,6 +54,11 @@ The preflight rejects truncated output, multiple visible feature blocks,
 multiple owners for one requested role, missing roles, unsupported rows,
 unsafe paths, mismatched excerpts, and changed source. Graph positions are
 checked against actual source, including the schema-v1 index fingerprint.
+Output structure, role completeness, uniqueness and source paths are checked
+before any wrapper source reads. A missing role, ambiguous owner or unsupported
+file-level link therefore costs the graph command but not partial source reads.
+This preserves recovery allowance without changing the shared operation limit;
+it does not eliminate the graph command's internal source-validation I/O.
 Delivered evidence carries SHA-256 source hashes; prompt preparation rechecks
 them immediately before inclusion. Later consumers can call `check_context`
 again after a delay. The result is a snapshot, not a lock on source files.
@@ -170,6 +178,15 @@ conventional source directories. Missing complete groups, multiple complete
 groups or duplicate declarations within a selected role request recovery.
 No truncation or partial result is treated as evidence of uniqueness.
 
+Routine matching recognizes bounded, role-specific suffixes such as `_decl`
+and backend `_sva`. Conditional and iterative routine variants require an
+explicit construct-bound cue in the public question, such as `conditional
+generate` or `generate if`; an unrelated prose `for` is not a variant hint.
+Missing or conflicting variant information cannot select an arbitrary parser.
+Names from different construct stems are never combined to fill missing roles.
+These are lexical naming conventions, not a curated-map lookup or proof of
+semantic ownership.
+
 With the default six-operation budget and two-operation reserve, search spends
 at most one command plus three unique source reads. Failed attempts count too.
 The helper checks the allowance before reading sources, then verifies every
@@ -235,6 +252,14 @@ request = recovery.prepare(question)
 Only a lowercase construct identifier (maximum 64 characters) is accepted.
 The typed name bypasses prose stopwords, so language keywords such as `function`
 are not discarded as generic request vocabulary. The host owns root, roles,
+and the public question captured by `prepare`; a different question cannot be
+substituted later in that session. Recovery keeps this question for explicit
+variant disambiguation instead of replacing it with generic retrieval wording.
+Calling `recover` without successful preparation rejects the request without
+searching and consumes the one-shot attempt. An explicit bus-generation scope
+cannot be replaced by an unqualified module-generation keyword; unsupported
+scopes require refinement rather than borrowing another family's owners.
+The host also owns the
 executable, source paths, command options and remaining budget. Search is one
 bounded argv invocation, without a shell; it cannot execute a model-provided
 command. The executable's resolved absolute path and SHA-256 are recorded and
@@ -265,6 +290,7 @@ python3 -m unittest discover -s tools -p test_compiler_search.py
 python3 -m unittest discover -s tools -p test_compiler_selection.py
 python3 -m unittest discover -s tools -p test_compiler_recovery.py
 python3 tools/codegraph_direct_eval.py --compiler-context --arch-bin target/debug/arch
+ARCH_COMPILER_GRAPH_BIN=target/debug/arch python3 -m unittest discover -s tools -p test_compiler_ownership_integration.py
 ```
 
 This mode exercises actual counter and register-file ownership queries,
@@ -272,3 +298,13 @@ known-file bypass, missing coverage, payload exhaustion, a reference masqueradin
 as a declaration, and a stale-index mutation in a disposable index. It has independent expected owner names,
 never launches an agent, and reports separately from the existing graph-ranking
 audit. Both modes run in CI.
+
+The real-provider ownership integration suite requires ripgrep and a built
+compiler. It covers module, parameter, conditional-generate and assertion
+ownership, paraphrases, literal evidence-ID rendering, typed search recovery,
+and recovery after an incomplete graph response. Generic generate remains
+ambiguous. CI runs this suite with the release compiler and explicitly installed
+ripgrep; without `ARCH_COMPILER_GRAPH_BIN`, ordinary unit discovery skips it.
+These are consumed development regressions from a failed paired benchmark.
+Synthetic selection replies and construct keywords are test inputs, not live
+model results or evidence of measured token savings.

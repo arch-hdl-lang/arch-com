@@ -10,7 +10,7 @@
       {"role": "ast", "path": "src/ast.rs", "symbol": "ModuleDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_module"},
       {"role": "semantic_check", "path": "src/typecheck.rs", "symbol": "TypeChecker::check"},
-      {"role": "backend", "path": "src/codegen/module.rs"},
+      {"role": "backend", "path": "src/codegen/module.rs", "symbol": "Codegen::emit_module"},
       {"role": "fixture", "path": "examples/pipe_reg_test.arch"}
     ], "covers": ["Item::Module"]},
     {"name": "bus", "links": [
@@ -28,14 +28,15 @@
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_credit_channel_block"},
       {"role": "fixture", "path": "examples/noc_chain/noc_chain.arch"}
     ]},
-    {"name": "bus conditional generation", "aliases": ["bus generate if", "bus generate-if", "generate_if bus"], "links": [
+    {"name": "bus conditional generation", "aliases": ["bus conditional generate", "bus generate if", "bus generate-if", "generate_if bus"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "BusGenerateIf"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_bus_generate_if"},
       {"role": "fixture", "path": "examples/nic400/BusAxi4.arch"}
     ]},
-    {"name": "parameters and local parameters", "aliases": ["param", "localparam", "const parameter", "type parameter"], "links": [
+    {"name": "parameters and local parameters", "aliases": ["param", "parameter", "localparam", "local parameter", "local param", "const parameter", "type parameter"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "ParamDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_param_decl"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "Codegen::emit_param_decl"},
       {"role": "fixture", "path": "examples/top_counter.arch"}
     ]},
     {"name": "ports and registered ports", "aliases": ["port", "port direction", "input port", "output port", "port reg"], "links": [
@@ -226,13 +227,26 @@
       {"role": "ast", "path": "src/ast.rs", "symbol": "ExternPackageDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_extern_package"}
     ], "covers": ["Item::ExternPackage"]},
-    {"name": "generate", "aliases": ["generate for", "generate if", "elaboration-time generation"], "links": [
+    {"name": "generate", "aliases": ["elaboration-time generation"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "GenerateDecl"},
       {"role": "ast", "path": "src/ast.rs", "symbol": "GenItem"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_generate_for"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_generate_if"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "Codegen::emit_generate"},
       {"role": "fixture", "path": "examples/generate_for.arch"}
     ], "covers": ["ModuleBodyItem::Generate", "GenItem::Port", "GenItem::Inst", "GenItem::TlmConnect", "GenItem::Thread", "GenItem::Assert", "GenItem::Seq", "GenItem::Comb", "GenItem::Wire"]},
+    {"name": "conditional generate", "aliases": ["conditional generation", "generate if", "generate-if", "generate_if"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "GenerateDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_generate_if"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "Codegen::emit_generate"},
+      {"role": "fixture", "path": "examples/generate_if.arch"}
+    ], "covers": ["GenerateDecl::If"]},
+    {"name": "iterative generate", "aliases": ["iterative generation", "generate for", "generate-for", "generate_for"], "links": [
+      {"role": "ast", "path": "src/ast.rs", "symbol": "GenerateDecl"},
+      {"role": "parser", "path": "src/parser.rs", "symbol": "parse_generate_for"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "Codegen::emit_generate"},
+      {"role": "fixture", "path": "examples/generate_for.arch"}
+    ], "covers": ["GenerateDecl::For"]},
     {"name": "register declaration", "aliases": ["register", "reg", "register reset"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "RegDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_reg_decl"},
@@ -276,6 +290,7 @@
     {"name": "assertion and coverage", "aliases": ["assert", "cover", "assertions"], "links": [
       {"role": "ast", "path": "src/ast.rs", "symbol": "AssertDecl"},
       {"role": "parser", "path": "src/parser.rs", "symbol": "parse_assert_decl"},
+      {"role": "backend", "path": "src/codegen/mod.rs", "symbol": "Codegen::emit_assert_sva"},
       {"role": "fixture", "path": "tests/assert_cover/counter_check.arch"}
     ], "covers": ["ModuleBodyItem::Assert"]},
     {"name": "TLM connect", "aliases": ["tlm connection", "transaction connection"], "links": [

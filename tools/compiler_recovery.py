@@ -43,6 +43,7 @@ class RecoverySession:
             raise ValueError("rg_binary must be an explicit absolute executable")
         self.binary = Path(rg_binary).resolve(strict=True)
         self.attempted = False
+        self.query = None
         self._lock = threading.Lock()
         self.executable_read_calls = 0
         self.executable_read_bytes = 0
@@ -63,9 +64,13 @@ class RecoverySession:
         if not isinstance(query, str) or not query.strip() or len(query.encode()) > 8192:
             raise ValueError("query must contain 1..8192 UTF-8 bytes")
         result = {"policy": POLICY, "status": "needs_retrieval", "reason": None}
-        if self.attempted or self.total - self.used < 2:
-            result["reason"] = "recovery exhausted or insufficient remaining budget"
-            return result
+        with self._lock:
+            if self.attempted or self.total - self.used < 2:
+                result["reason"] = "recovery exhausted or insufficient remaining budget"
+                return result
+            if self.query is not None and self.query != query:
+                raise ValueError("recovery public query already bound")
+            self.query = query
         schema = {"type": "object", "additionalProperties": False,
                   "properties": {"construct": {"anyOf": [
                       {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}, {"type": "null"}]}},
@@ -86,6 +91,9 @@ class RecoverySession:
                 if self.attempted:
                     raise ValueError("recovery already attempted")
                 self.attempted = True
+                if self.query is None:
+                    raise ValueError("recovery requires a prepared public query")
+                query = self.query
             if used_tools or not isinstance(answer, str) or len(answer.encode()) > 256:
                 raise ValueError("tool-assisted or oversized recovery request")
             request = json.loads(answer, object_pairs_hook=_unique)
@@ -97,7 +105,7 @@ class RecoverySession:
                 raise ValueError("insufficient remaining retrieval budget")
             if self._binary_digest() != self.binary_hash:
                 raise ValueError("rg executable changed before retrieval")
-            context = retrieve_search_context(self.root, "Compiler ownership", roles=self.roles,
+            context = retrieve_search_context(self.root, query, roles=self.roles,
                                               construct=request["construct"], rg_binary=self.binary,
                                               total_operations=self.total - self.used, reserve_operations=0)
             self.used += context["source_read_calls"] + len(context["commands"])
