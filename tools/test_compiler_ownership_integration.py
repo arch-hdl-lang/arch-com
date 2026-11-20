@@ -97,6 +97,54 @@ class CompilerOwnershipIntegrationTests(unittest.TestCase):
                     self.assertEqual(recovered["context"]["index_read_calls"], 0)
                     self.check_selection(recovered["context"], query, symbols, backend)
 
+    def test_consumed_tlm_question_and_paraphrases_keep_method_ownership(self):
+        queries = (
+            "For transaction methods declared on an ARCH bus, where are their signatures and modes represented and parsed, and which SystemVerilog codegen routine emits protocol assertions for those methods? Cite the AST, parser, and backend owners.",
+            "Locate the transaction method AST, parser and backend for protocol assertions.",
+            "Locate TLM method AST, parser and backend owners for protocol assertions.",
+            "Locate TLM methods AST, parser and SystemVerilog assertion emission.",
+            "Where is a transaction-level method represented, parsed and emitted as protocol assertions?",
+            "Where are transaction-level methods represented, parsed and emitted as protocol assertions?",
+            "Locate tlm_method AST, parser and backend owners.",
+            "Locate transaction_methods AST, parser and backend owners.",
+        )
+        for query in queries:
+            with self.subTest(query=query):
+                context = retrieve_compiler_context(self.root, self.binary, query, index=self.index)
+                self.check_selection(context, query,
+                                     ("TlmMethodMeta", "parse_tlm_method_decl", "emit_tlm_method_asserts"),
+                                     "src/codegen/mod.rs")
+                self.assertEqual(context["host_graph_calls"], 1)
+                self.assertEqual(len(context["commands"]) + context["source_read_calls"], 4)
+
+    def test_transaction_connection_does_not_borrow_method_or_assertion_owners(self):
+        query = "Locate transaction connection AST, parser and backend owners."
+        context = retrieve_compiler_context(self.root, self.binary, query, index=self.index)
+        self.assertEqual(context["status"], "needs_search")
+        self.assertEqual(context["source_read_calls"], 0)
+        self.assertEqual(context["payload"], "")
+        self.assertTrue(context["commands"][0]["stdout"].startswith("feature TLM connect\n"))
+
+    def test_method_near_misses_do_not_anchor_tlm(self):
+        for phrase in ("transaction methodology", "TLM methodical", "transaction methodsize"):
+            query = f"Locate {phrase} AST, parser and backend owners."
+            with self.subTest(query=query):
+                context = retrieve_compiler_context(self.root, self.binary, query, index=self.index)
+                self.assertEqual(context["status"], "needs_search")
+                self.assertEqual(context["source_read_calls"], 0)
+                self.assertNotIn("feature tlm_method", context["commands"][0]["stdout"])
+
+    def test_channel_assertions_do_not_borrow_tlm_or_module_backend(self):
+        for phrase, feature in (("handshake channel", "bus handshake metadata"),
+                                ("credit channel", "bus credit channel metadata")):
+            query = f"Locate {phrase} AST, parser and backend owners for protocol assertions."
+            with self.subTest(query=query):
+                context = retrieve_compiler_context(self.root, self.binary, query, index=self.index)
+                self.assertEqual(context["status"], "needs_search")
+                self.assertEqual(context["source_read_calls"], 0)
+                self.assertEqual(context["payload"], "")
+                self.assertTrue(context["commands"][0]["stdout"].startswith(f"feature {feature}\n"))
+
     def test_late_missing_backend_does_not_starve_real_recovery(self):
         construct, queries, symbols, backend = CASES[0]
         query = queries[0]
