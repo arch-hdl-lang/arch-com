@@ -44930,3 +44930,35 @@ fn carry_cast_omitted_only_when_sv_width_already_keeps_the_carry() {
         "the literal-index form lints clean:\n{log}"
     );
 }
+
+#[test]
+fn test_struct_literal_unknown_field_is_compile_error_935() {
+    let source = r#"
+struct Pt
+  x: UInt<8>;
+  y: UInt<8>;
+end struct Pt
+
+module C23
+  port o: out UInt<8>;
+  let p: Pt = Pt { x: 1, z: 2 };
+  comb
+    o = p.x;
+  end comb
+end module C23
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(ast).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let err = checker
+        .check()
+        .expect_err("expected unknown field rejection");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(
+        msg.contains("unknown field `z` on struct `Pt`"),
+        "expected unknown field error message, got: {msg}"
+    );
+}
