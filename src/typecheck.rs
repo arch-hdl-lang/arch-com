@@ -2344,15 +2344,64 @@ impl<'a> TypeChecker<'a> {
                         continue;
                     }
                     let name = port.name.name.as_str();
-                    let is_connected = if port.bus_info.is_some() {
-                        // Accept whole-bus OR per-field bindings.
-                        let prefix = format!("{}_", name);
-                        connected.contains(name) || connected.iter().any(|c| c.starts_with(&prefix))
+                    let is_connected = if let Some(bi) = &port.bus_info {
+                        if connected.contains(name) {
+                            true
+                        } else if let Some((crate::resolve::Symbol::Bus(info), _)) =
+                            self.global_symbol(&bi.bus_name.name)
+                        {
+                            let mut pm = info.default_param_map();
+                            for pa in &bi.params {
+                                pm.insert(pa.name.name.clone(), &pa.value);
+                            }
+                            let signals = info.effective_signals(&pm);
+                            let prefixes: Vec<String> = match bi.count.as_ref() {
+                                None => vec![name.to_string()],
+                                Some(count) => match self.eval_const_expr(count, &HashMap::new()) {
+                                    Some(n) if n > 0 => {
+                                        (0..n).map(|i| format!("{name}_{i}")).collect()
+                                    }
+                                    _ => vec![name.to_string()],
+                                },
+                            };
+                            prefixes.iter().any(|p| {
+                                connected.contains(p.as_str())
+                                    || signals.iter().any(|(sig, _, _)| {
+                                        connected.contains(format!("{p}_{sig}").as_str())
+                                    })
+                            })
+                        } else {
+                            // Fallback if the bus declaration is unavailable.
+                            let prefix = format!("{}_", name);
+                            connected.iter().any(|c| c.starts_with(&prefix))
+                        }
                     } else {
                         connected.contains(name)
                     };
                     if !is_connected {
-                        if port.direction == Direction::In {
+                        let has_in_signal = if let Some(bi) = &port.bus_info {
+                            if let Some((crate::resolve::Symbol::Bus(info), _)) =
+                                self.global_symbol(&bi.bus_name.name)
+                            {
+                                let mut pm = info.default_param_map();
+                                for pa in &bi.params {
+                                    pm.insert(pa.name.name.clone(), &pa.value);
+                                }
+                                info.effective_signals(&pm)
+                                    .into_iter()
+                                    .any(|(_, dir, _)| match bi.perspective {
+                                        crate::ast::BusPerspective::Initiator => {
+                                            dir == Direction::In
+                                        }
+                                        crate::ast::BusPerspective::Target => dir == Direction::Out,
+                                    })
+                            } else {
+                                false
+                            }
+                        } else {
+                            port.direction == Direction::In
+                        };
+                        if has_in_signal || port.direction == Direction::In {
                             self.errors.push(CompileError::general(
                                 &format!(
                                     "input port `{}` of `{}` is not connected in inst `{}`",
