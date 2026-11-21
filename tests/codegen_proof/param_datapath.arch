@@ -1,0 +1,23 @@
+// Integer parameters, including a derived one, used in widths, a reset value,
+// a wrapping op and an indexed part-select. Certified at default values.
+module Param
+  param W: const = 8;
+  param INIT: const = 3;
+  param DEPTH: const = W * 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<W>;
+  port b: in UInt<W>;
+  port s: out UInt<W + 1>;
+  port q: out UInt<W>;
+  port hi: out UInt<4>;
+  reg r: UInt<W> reset rst => INIT;
+  comb
+    s = a + b;
+    q = r;
+    hi = a[W-1:W-4];
+  end comb
+  seq on clk rising
+    r <= (r +% a) ^ b;
+  end seq
+end module Param
