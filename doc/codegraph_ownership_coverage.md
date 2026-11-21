@@ -1,7 +1,7 @@
 # Compiler Ownership Inventory
 
-This is a link-cardinality audit of all 70 bundled feature families.
-Only 21 have exactly one symbol link for each of AST, parser and backend.
+This is a link-cardinality audit of all 73 bundled feature families.
+Only 25 have exactly one symbol link for each of AST, parser and backend.
 That count is not semantic proof, query readiness, compilation coverage or a
 measured token saving. All mapped symbols are separately resolved by Rust
 syntax parsing during index tests. Missing backend links remain missing rather
@@ -24,8 +24,11 @@ cargo test --lib all_feature_ast_parser_backend_links_are_audited_by_cardinality
 | --- | --- | --- | --- |
 | module | one-symbol | one-symbol | one-symbol |
 | bus | one-symbol | one-symbol | file-only |
-| bus handshake metadata | one-symbol | one-symbol | missing |
-| bus credit channel metadata | one-symbol | one-symbol | missing |
+| bus handshake metadata | one-symbol | one-symbol | one-symbol |
+| bus credit channel metadata | one-symbol | one-symbol | multiple(3) |
+| credit channel sender state | one-symbol | one-symbol | one-symbol |
+| credit channel receiver state | one-symbol | one-symbol | one-symbol |
+| credit channel protocol assertions | one-symbol | one-symbol | one-symbol |
 | bus conditional generation | one-symbol | one-symbol | missing |
 | parameters and local parameters | one-symbol | one-symbol | one-symbol |
 | ports and registered ports | multiple(3) | one-symbol | missing |

@@ -75,9 +75,12 @@ class RecoverySession:
                   "properties": {"construct": {"anyOf": [
                       {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}, {"type": "null"}]}},
                   "required": ["construct"]}
-        prompt = (query + "\nWithout tools, identify the single ARCH language construct keyword needed for "
-                  "compiler ownership retrieval. Return only JSON with construct set to a lowercase "
-                  "identifier, or null if uncertain or multiple constructs are requested. "
+        prompt = (query + "\nWithout tools, identify the most specific feature subject named in the public "
+                  "question for compiler ownership retrieval. Preserve compound and nested feature names; "
+                  "do not replace a nested subject with its containing language construct or a generic "
+                  "type. Use a lowercase snake_case feature identifier, not a source declaration name. "
+                  "The host retains the question's requested backend scope. Return only JSON with "
+                  "construct set to that identifier, or null if uncertain or multiple features are requested. "
                   "Do not provide source paths, symbols, citations, commands or explanations. "
                   "The host will search and verify source within its remaining retrieval budget.")
         result.update(status="ready", prompt=prompt, output_schema=schema)

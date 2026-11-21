@@ -287,6 +287,166 @@ class CompilerSearchTests(unittest.TestCase):
         self.assertEqual(result["status"], "needs_search")
         self.assertIn("ambiguous", result["reason"])
 
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_metadata_block_and_assertion_suffixes_are_exact_and_role_specific(self):
+        self.sources = {"src/ast.rs": "pub struct CamMeta {}\n",
+                        "src/parser.rs": "fn parse_cam_block() {}\n",
+                        "src/codegen/nested/cam.rs": "fn emit_cam_asserts() {}\n"}
+        self.write_sources()
+        result = self.retrieve()
+        self.assertEqual(result["status"], "ready", result["reason"])
+        self.assertEqual([r["symbol"] for r in result["evidence"]],
+                         ["CamMeta", "parse_cam_block", "emit_cam_asserts"])
+        self.assertEqual(result["budget"]["host_operations"], 4)
+        valid = self.sources.copy()
+        for path, wrong in (("src/ast.rs", "struct CamMetadata {}\n"),
+                            ("src/ast.rs", "struct CamMetaExtra {}\n"),
+                            ("src/parser.rs", "fn parse_cam_block_extra() {}\n"),
+                            ("src/parser.rs", "fn parse_cam_asserts() {}\n"),
+                            ("src/codegen/nested/cam.rs", "fn emit_cam_block() {}\n"),
+                            ("src/codegen/nested/cam.rs", "fn emit_cam_asserts_extra() {}\n"),
+                            ("src/codegen/nested/cam.rs", "fn emit_other_asserts() {}\n")):
+            with self.subTest(wrong=wrong):
+                self.sources = {**valid, path: wrong}
+                self.write_sources()
+                failed = self.retrieve()
+                self.assertEqual(failed["status"], "needs_search")
+                self.assertEqual(failed["source_read_calls"], 0)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_credit_backend_scopes_require_explicit_unique_public_selection(self):
+        self.sources = {"src/ast.rs": "pub struct CreditChannelMeta {}\n",
+                        "src/parser.rs": "fn parse_credit_channel_block() {}\n",
+                        "src/codegen/nested/cam.rs": "fn emit_credit_channel_state() {}\n"
+                            "fn emit_credit_channel_receiver_state() {}\nfn emit_credit_channel_asserts() {}\n"}
+        self.write_sources()
+        positives = (("Locate credit channel sender-side state owners.", "emit_credit_channel_state"),
+                     ("Locate credit channel receiver-side state owners.", "emit_credit_channel_receiver_state"),
+                     ("Locate credit channel protocol assertions owners.", "emit_credit_channel_asserts"),
+                     ("Locate credit channel sender-side state, rather than implying receiver FIFO synthesis.",
+                      "emit_credit_channel_state"),
+                     ("Locate credit channel receiver state, not sender state.", "emit_credit_channel_receiver_state"))
+        for query, backend in positives:
+            with self.subTest(query=query):
+                result = retrieve_search_context(self.root, query, construct="credit_channel")
+                self.assertEqual(result["status"], "ready", result["reason"])
+                self.assertEqual(result["evidence"][-1]["symbol"], backend)
+                self.assertEqual(result["budget"]["host_operations"], 4)
+                limited = retrieve_search_context(self.root, query, construct="credit_channel",
+                                                  total_operations=3, reserve_operations=0)
+                self.assertEqual(limited["status"], "needs_search")
+                self.assertEqual(limited["source_read_calls"], 0)
+        for query in ("Locate credit channel owners.", "Locate credit channel sender and receiver state owners.",
+                      "Locate credit channel sender FIFO owners.",
+                      "Locate credit channel sender FIFO and protocol assertions owners.",
+                      "Locate credit channel sender owners.",
+                      "Locate credit channel receiver owners.",
+                      "Locate credit channel receiver state and sender owners.",
+                      "Locate credit channel sender state and protocol assertions owners.",
+                      "Locate credit channel sender state, not receiver state but also protocol assertions.",
+                      "Locate credit channel sender state rather than implying receiver FIFO synthesis and protocol assertions."):
+            with self.subTest(query=query):
+                result = retrieve_search_context(self.root, query, construct="credit_channel")
+                self.assertEqual(result["status"], "needs_search")
+                self.assertEqual(result["source_read_calls"], 0)
+        self.sources["src/codegen/nested/cam.rs"] = "fn emit_credit_channel_state() {}\n"
+        self.write_sources()
+        for query in ("Locate credit channel receiver state owners.", "Locate credit channel owners."):
+            result = retrieve_search_context(self.root, query, construct="credit_channel")
+            self.assertEqual(result["status"], "needs_search")
+            self.assertEqual(result["payload"], "")
+        self.sources["src/codegen/nested/cam.rs"] += "fn emit_credit_channel_sender_state() {}\n"
+        self.write_sources()
+        result = retrieve_search_context(self.root, positives[0][0], construct="credit_channel")
+        self.assertEqual(result["status"], "needs_search")
+        self.assertIn("ambiguous", result["reason"])
+
+    def test_public_nested_subject_cannot_be_dropped_or_swapped(self):
+        for query, rejected in (("Locate transaction methods declared on a bus.", ("bus", "method", "assert", "handshake")),
+                                ("Locate handshake channel owners on a bus.", ("bus", "channel", "credit_channel")),
+                                ("Locate credit channel sender state owners.", ("bus", "credit", "sender_state")),
+                                ("Locate clock-domain declaration owners.", ("clock", "module", "synchronizer")),
+                                ("Locate handshake channels and transaction methods.", ("handshake", "tlm_method"))):
+            for construct in rejected:
+                with self.subTest(query=query, construct=construct), patch("compiler_search._run", side_effect=AssertionError("scope rejected")):
+                    result = retrieve_search_context(self.root, query, construct=construct)
+                self.assertEqual(result["status"], "needs_search")
+                self.assertEqual(result["commands"], [])
+                self.assertEqual(result["source_read_calls"], 0)
+
+    def test_unsupported_backend_exclusions_fail_before_retrieval(self):
+        for scope in ("without sender state", "except sender state", "other than receiver state",
+                      "no sender state", "non-sender state", "not only sender state",
+                      "rather than looking at receiver state", "sender state except assertions"):
+            query = f"Locate credit channel {scope} owners."
+            for construct in (None, "credit_channel"):
+                with self.subTest(scope=scope, construct=construct), patch("compiler_search._run", side_effect=AssertionError("excluded scope")):
+                    result = retrieve_search_context(self.root, query, construct=construct)
+                self.assertEqual(result["status"], "needs_search")
+                self.assertEqual(result["commands"], [])
+                self.assertEqual(result["source_read_calls"], 0)
+                if construct is not None:
+                    self.assertIn("unsupported public backend exclusion", result["reason"])
+
+    def test_additional_recognized_subjects_conflict_across_sentence_boundaries(self):
+        subjects = (("handshake channel", "handshake"), ("transaction method", "tlm_method"),
+                    ("clock domain", "domain"), ("credit channel sender state", "credit_channel"))
+        for first, construct in subjects:
+            for second, other in subjects:
+                if construct == other:
+                    continue
+                for separator in (". Also locate ", "; then identify ", "? Locate ", "! Locate "):
+                    query = f"Locate {first} owners{separator}{second} owners."
+                    with self.subTest(query=query), patch("compiler_search._run", side_effect=AssertionError("multiple subjects")):
+                        for chosen in (None, construct, other):
+                            result = retrieve_search_context(self.root, query, construct=chosen)
+                            self.assertEqual(result["status"], "needs_search")
+                            self.assertIn("multiple public feature subjects", result["reason"])
+                            self.assertEqual(result["commands"], [])
+                            self.assertEqual(result["source_read_calls"], 0)
+
+    def test_opening_subject_rejects_unknown_alternatives_and_output_only_subjects(self):
+        for query in ("Locate handshake channels and fifo owners.",
+                      "For ARCH's credit channel or ram construct, identify owners.",
+                      "Trace clock domain and synchronizer declarations through their owners.",
+                      "Locate transaction methods and methodical helpers.",
+                      "Return source citation per role. Label its role clock domain."):
+            with self.subTest(query=query), patch("compiler_search._run", side_effect=AssertionError("ambiguous subject")):
+                result = retrieve_search_context(self.root, query)
+            self.assertEqual(result["status"], "needs_search")
+            self.assertEqual(result["source_read_calls"], 0)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_new_suffixes_do_not_mix_stems_or_hide_duplicate_owners(self):
+        self.sources = {"src/ast.rs": "pub struct CamMeta {}\n",
+                        "src/parser.rs": "fn parse_cam_block() {}\nfn parse_cam_decl() {}\n",
+                        "src/codegen/nested/cam.rs": "fn emit_cam_asserts() {}\n"}
+        self.write_sources()
+        result = self.retrieve()
+        self.assertEqual(result["status"], "needs_search")
+        self.assertIn("ambiguous", result["reason"])
+        self.sources["src/parser.rs"] = "fn parse_content_addressable_memory_block() {}\n"
+        self.write_sources()
+        result = self.retrieve()
+        self.assertEqual(result["status"], "needs_search")
+        self.assertIn("consistent construct", result["reason"])
+        self.assertEqual(result["source_read_calls"], 0)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep required")
+    def test_public_normalization_is_not_a_global_alias_or_role_word_hint(self):
+        self.sources = {"src/ast.rs": "pub struct DomainDecl {}\n",
+                        "src/parser.rs": "fn parse_domain() {}\n",
+                        "src/codegen/nested/cam.rs": "fn emit_domain() {}\n"}
+        self.write_sources()
+        for query in ("Locate AST, parser and backend owners.",
+                      "Locate AST, parser and backend owners. Return clock_domain as a role label."):
+            result = retrieve_search_context(self.root, query, construct="clock_domain")
+            self.assertEqual(result["status"], "needs_search")
+            self.assertEqual(result["source_read_calls"], 0)
+        result = retrieve_search_context(self.root, "Locate clock-domain owners.", construct="clock_domain")
+        self.assertEqual(result["status"], "ready", result["reason"])
+        self.assertEqual(result["feature_names"], ["domain"])
+
 
 if __name__ == "__main__":
     unittest.main()

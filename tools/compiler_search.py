@@ -28,15 +28,100 @@ owners declaration declarations implementation implementations function function
 source sources citation citations symbol symbols path line role roles identify
 locate find show return give one per corresponding please entry point""".split())
 
+# Bounded public vocabulary, not source locations or a compiler feature index.
+# These normalizations apply only when the same subject occurs in the question.
+PUBLIC_SUBJECTS = (
+    ("domain", r"clock[ _-]+domains?", {"domain", "domains", "clockdomain", "clockdomains"}),
+    ("tlm_method", r"(?:tlm|transaction(?:[ _-]+level)?)[ _-]+methods?",
+     {"tlmmethod", "tlmmethods", "transactionmethod", "transactionmethods",
+      "transactionlevelmethod", "transactionlevelmethods"}),
+    ("handshake", r"handshakes?(?:[ _-]+channels?)?",
+     {"handshake", "handshakes", "handshakechannel", "handshakechannels"}),
+    ("credit_channel", r"credit[ _-]+channels?", {"creditchannel", "creditchannels"}),
+)
+
+
+def _opening_subject(query: str) -> str | None:
+    # Accept an explicit opening subject, not an incidental word in an output
+    # instruction. Unknown additions to its first clause are not discarded.
+    first_clause = re.split(r"[,.;!?]", query, maxsplit=1)[0]
+    prefix = r"\s*(?:(?:for|trace|locate|find|identify)\s+)?(?:(?:a|an|the)\s+)?(?:arch(?:['\u2019]s)?\s+)?"
+    for stem, phrase, _ in PUBLIC_SUBJECTS:
+        match = re.match(prefix + r"(?:" + phrase + r")(?![\w])", first_clause, re.I)
+        if match is None:
+            continue
+        tail = first_clause[match.end():].strip()
+        tail = re.sub(r"\b(?:declared\s+)?(?:on|in|inside|within)\s+(?:(?:a|an|the)\s+)?(?:arch\s+)?bus\b",
+                      "", tail, flags=re.I)
+        vocabulary = STOPWORDS | {"through", "representation", "represented", "parsed", "metadata",
+                                  "protocol", "assertion", "assertions", "emission"}
+        if stem == "credit_channel":
+            vocabulary |= {"sender", "receiver", "side", "credit", "state"}
+        if all(word.lower() in vocabulary for word in re.findall(r"[A-Za-z][A-Za-z_0-9]*", tail)):
+            return stem
+    return None
+
+
+def _specific_names(query: str, names: list[str]) -> list[str]:
+    # Later clauses may add a conflicting subject, but cannot supply the first
+    # subject used for normalization (for example, an output-label instruction).
+    mentioned = [stem for stem, phrase, _ in PUBLIC_SUBJECTS
+                 if re.search(r"(?<![\w])(?:" + phrase + r")(?![\w])", query, re.I)]
+    if len(mentioned) > 1:
+        raise ValueError("multiple public feature subjects; refine the question")
+    sentence = re.split(r"[.;!?]", query, maxsplit=1)[0]
+    subjects = [(stem, spellings) for stem, phrase, spellings in PUBLIC_SUBJECTS
+                if re.search(r"(?<![\w])(?:" + phrase + r")(?![\w])", sentence, re.I)]
+    if not subjects:
+        return names
+    stem, spellings = subjects[0]
+    if not names or any(name.replace("_", "") not in spellings for name in names):
+        raise ValueError("selected construct drops or changes the specific public feature subject")
+    return list(dict.fromkeys((stem, stem.replace("_", ""))))
+
+
+def _backend_scope(query: str, names: list[str]) -> str | None:
+    # State/receiver/assertion ownership is distinct from generate if/for variants.
+    # The unsuffixed credit-channel state routine is sender-only, never a default
+    # for a generic channel request or for another construct's state routine.
+    if {name.replace("_", "") for name in names} != {"creditchannel"}:
+        return None
+    excluded_facet = (r"(?:(?:sender|receiver)(?:[ _-]+side)?(?:[ _-]+credit)?[ _-]+(?:state|fifo)"
+                      r"(?:[ _-]+synthesis)?|(?:protocol[ _-]+)?assertions?)")
+    included = re.sub(r"\b(?:rather than|instead of|but not|excluding|not)\s+"
+                      r"(?:implying\s+)?" + excluded_facet + r"\b", "", query, flags=re.I)
+    if re.search(r"\b(?:without|except|unless|excluding|not|never|no|rather than|instead of|other than)\b"
+                 r"|\bnon[ _-]|\b(?:don't|doesn't)\b", included, re.I):
+        raise ValueError("unsupported public backend exclusion; refine the question")
+    scopes = set()
+    if re.search(r"\bsender(?:[ _-]+side)?(?:[ _-]+[a-z]+){0,3}[ _-]+fifo\b", included, re.I):
+        raise ValueError("unsupported sender FIFO scope; refine the question")
+    for side in ("sender", "receiver"):
+        facet = "state" if side == "sender" else "(?:state|fifo)"
+        if re.search(r"\b" + side + r"(?:[ _-]+side)?(?:[ _-]+[a-z]+){0,3}[ _-]+" + facet + r"\b",
+                     included, re.I):
+            scopes.add(side + "_state")
+    if scopes and all(re.search(r"\b" + side + r"\b", included, re.I) for side in ("sender", "receiver")):
+        raise ValueError("multiple public backend scopes; refine the question")
+    if re.search(r"\b(?:protocol[ _-]+)?assertions?\b", included, re.I):
+        scopes.add("asserts")
+    if len(scopes) > 1:
+        raise ValueError("multiple public backend scopes; refine the question")
+    return next(iter(scopes), None)
+
 
 def feature_names(query: str) -> list[str]:
     """Prefer a named construct phrase; otherwise discard instruction vocabulary.
 
-    Multiword names yield joined/snake-case spellings and their initialism.
-    No language-feature aliases or graph metadata are consulted.
+    Recognized opening public subjects use the bounded normalizations above.
+    Other multiword names yield joined/snake-case spellings and their initialism.
+    No graph, source-owner index or private expected answer is consulted.
     """
     if not isinstance(query, str) or not query.strip() or len(query.encode()) > 8192:
         raise ValueError("query must contain 1..8192 UTF-8 bytes")
+    opening = _opening_subject(query)
+    if opening:
+        return list(dict.fromkeys((opening, opening.replace("_", ""))))
     phrases = list(re.finditer(r"\bARCH['\u2019]s\s+([^,.;:]+?)\s+construct\b", query, re.I))
     if len(phrases) > 1 or (phrases and re.search(r"\b(and|or)\b", phrases[0].group(1), re.I)):
         return []
@@ -92,10 +177,13 @@ def _role(path: str, kind: str, symbol: str) -> str | None:
 def _canonical_owner(role: str, symbol: str, names: list[str]) -> tuple[str, str | None]:
     prefixes = {"parser": "parse_", "backend": "emit_", "semantic_check": "check_"}
     body = symbol if role == "ast" else symbol.removeprefix(prefixes[role])
-    suffixes = (("", None), ("Decl", None)) if role == "ast" else (
+    suffixes = (("", None), ("Decl", None), ("Meta", None)) if role == "ast" else (
         ("", None), ("_decl", None), ("_if", "if"), ("_for", "for"))
     if role == "backend":
-        suffixes += (("_sva", None),)
+        suffixes += (("_sva", None), ("_asserts", "asserts"), ("_state", "state"),
+                     ("_sender_state", "sender_state"), ("_receiver_state", "receiver_state"))
+    elif role == "parser":
+        suffixes += (("_block", None),)
     elif role == "semantic_check":
         suffixes = (("", None), ("_decl", None))
     stems = {name.replace("_", "").lower() for name in names}
@@ -184,7 +272,10 @@ def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "
     try:
         if not names:
             raise ValueError("no bounded construct name; refine the question")
+        names = _specific_names(query, names)
+        result["feature_names"] = names
         variant = _public_variant(query, names)
+        backend_scope = _backend_scope(query, names)
         if allowance < 2:
             raise ValueError("insufficient host allowance for search and source verification")
         if (root / "src").is_symlink() or not (root / "src").is_dir():
@@ -192,7 +283,7 @@ def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "
         alternatives = "|".join(re.escape(name) for name in names)
         pattern = (r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|unsafe)\s+)?"
                    r"(?:fn|struct|enum)\s+(?:parse_|emit_|check_)?(?:" + alternatives
-                   + r")(?:Decl|_decl|_sva|_if|_for)?\b")
+                   + r")(?:Decl|Meta|_decl|_block|_sva|_if|_for|_asserts|_state|_sender_state|_receiver_state)?\b")
         command = [executable, "--no-config", "--color", "never", "--no-heading", "-n", "-i",
                    "--sort", "path", "--glob", "*.rs", "--", pattern, "src"]
         call = _run(command, root)
@@ -220,10 +311,18 @@ def retrieve_search_context(root: Path, query: str, *, roles=("ast", "parser", "
                     "variant": owner_variant}
         for group in candidates.values():
             for role, rows in group.items():
-                if any(row["variant"] is not None for row in rows.values()):
+                if any(row["variant"] in ("if", "for") for row in rows.values()):
                     # Generic questions can use shared owners, never an arbitrary
                     # specialized routine. Explicit variants require an exact match.
                     group[role] = {key: row for key, row in rows.items() if row["variant"] == variant}
+                if role == "backend" and backend_scope is not None:
+                    allowed = {backend_scope}
+                    if backend_scope == "sender_state":
+                        allowed.add("state")
+                    group[role] = {key: row for key, row in group[role].items() if row["variant"] in allowed}
+                elif (role == "backend" and rows
+                      and {name.replace("_", "") for name in names} == {"creditchannel"}):
+                    raise ValueError("ambiguous credit-channel backend scope; refine the question")
         complete = [group for group in candidates.values() if all(group[role] for role in roles)]
         result["missing_roles"] = [role for role in roles if not any(g[role] for g in candidates.values())]
         if not complete:
