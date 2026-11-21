@@ -3598,6 +3598,56 @@ impl<'a> TypeChecker<'a> {
                     span,
                 ));
             }
+            (Ty::Vec(elem_l, len_l), Ty::Vec(elem_r, len_r)) => {
+                if len_l != len_r || elem_l != elem_r {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "width mismatch: `{name}` is {} but RHS is {}; \
+                             vectors must match in length and element type (slice or rebuild the vector explicitly)",
+                            lhs_ty.display(),
+                            rhs_ty.display()
+                        ),
+                        span,
+                    ));
+                }
+            }
+            (Ty::Vec(_, _), other) | (other, Ty::Vec(_, _))
+                if !matches!(other, Ty::Error | Ty::Todo) =>
+            {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "type mismatch: `{name}` is {} but RHS is {}",
+                        lhs_ty.display(),
+                        rhs_ty.display()
+                    ),
+                    span,
+                ));
+            }
+            (Ty::ScaledVec(e1, n1, s1), Ty::ScaledVec(e2, n2, s2)) => {
+                if n1 != n2 || e1 != e2 || s1 != s2 {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "width mismatch: `{name}` is {} but RHS is {}; \
+                             scaled vectors must match in shape and scale type",
+                            lhs_ty.display(),
+                            rhs_ty.display()
+                        ),
+                        span,
+                    ));
+                }
+            }
+            (Ty::ScaledVec(_, _, _), other) | (other, Ty::ScaledVec(_, _, _))
+                if !matches!(other, Ty::Error | Ty::Todo) =>
+            {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "type mismatch: `{name}` is {} but RHS is {}",
+                        lhs_ty.display(),
+                        rhs_ty.display()
+                    ),
+                    span,
+                ));
+            }
             _ => {}
         }
     }
