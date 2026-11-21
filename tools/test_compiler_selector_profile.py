@@ -19,6 +19,9 @@ class SelectorProfileTests(unittest.TestCase):
         self.binary = self.root / "codex"
         self.binary.write_text("fixture")
         self.binary.chmod(0o700)
+        self.host = self.root / "codex-code-mode-host"
+        self.host.write_text("host fixture")
+        self.host.chmod(0o700)
         self.workspace = self.root / "workspace"
         self.home = self.root / "home"
         self.workspace.mkdir()
@@ -48,16 +51,20 @@ class SelectorProfileTests(unittest.TestCase):
             self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
             self.assertNotIn("--approve-for-me", command)
             self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
+            self.assertEqual(command[command.index("--enable") + 1], "code_mode_host")
+            self.assertIn("code_mode", [command[i + 1] for i, arg in enumerate(command[:-1]) if arg == "--disable"])
+            self.assertNotIn("code_mode_host", [command[i + 1] for i, arg in enumerate(command[:-1]) if arg == "--disable"])
         self.assertIn("--strict-config", invocation["command"])
         self.assertIn("--ignore-user-config", invocation["command"])
         self.assertEqual(invocation["environment"], {"CODEX_HOME": str(self.home)})
         self.assertEqual(invocation["stdin"], "DEVNULL")
         self.assertEqual(invocation["settings"]["project_doc_max_bytes"], 0)
         self.assertFalse(invocation["settings"]["skills.include_instructions"])
-        self.assertEqual(len(invocation["file_sha256"]), 4)
+        self.assertEqual(len(invocation["file_sha256"]), 5)
+        self.assertEqual(invocation["policy"], "compiler-selector-profile-v2")
 
     def test_changed_files_reject_instead_of_refreshing_pins(self):
-        for path in (self.binary, self.catalog, self.schema):
+        for path in (self.binary, self.host, self.catalog, self.schema):
             with self.subTest(path=path):
                 original = path.read_bytes()
                 invocation = self.build()
@@ -65,6 +72,14 @@ class SelectorProfileTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_selector_invocation(invocation)
                 path.write_bytes(original)
+
+    def test_bundled_host_must_be_present_and_executable(self):
+        self.host.chmod(0o600)
+        with self.assertRaises(ValueError):
+            self.build()
+        self.host.unlink()
+        with self.assertRaises(ValueError):
+            self.build()
 
     def test_altered_commands_or_profile_are_rejected(self):
         for mutate in (

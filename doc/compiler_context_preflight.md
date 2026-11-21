@@ -391,6 +391,16 @@ Unknown or changed CLI behavior requires review, not a silent
 fallback. Freeze the helper, profile inputs and inventory before a new paired
 experiment; apply the same profile and selection protocol to both arms.
 
+Profile v2 keeps the bundled code-mode host enabled and pins its executable,
+while `code_mode` and agent tool features remain disabled. CLI 0.159.2 emitted
+a startup error when the host itself was disabled, even without a model tool
+call. That failed live attempt remains charged under its original v1 policy;
+offline inspection alone did not detect the startup error. Any actual tool
+activity still fails the selector protocol. The CLI may also emit the exact
+`Reading additional input from stdin...` notice with closed stdin. A caller may
+classify that fixed notice separately only when stdin is explicitly `DEVNULL`;
+it must not broadly ignore stderr or startup error items.
+
 ## Offline Regression Mode
 
 ```sh

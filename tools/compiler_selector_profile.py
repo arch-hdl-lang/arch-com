@@ -16,12 +16,12 @@ import subprocess
 import time
 
 
-POLICY = "compiler-selector-profile-v1"
+POLICY = "compiler-selector-profile-v2"
 INSTRUCTIONS = Path(__file__).with_name("compiler_selector_instructions.md")
 DISABLED = ("shell_tool", "unified_exec", "apps", "multi_agent", "multi_agent_v2",
             "browser_use", "computer_use", "image_generation", "view_image", "sleep_tool",
             "plugins", "hooks", "skill_search", "tool_search", "tool_suggest",
-            "workspace_dependencies", "goals", "code_mode", "code_mode_host")
+            "workspace_dependencies", "goals", "code_mode")
 COMPONENT_ROLES = {"permissions.instructions": "developer", "collaboration_mode.instructions": "developer",
                    "multi_agent.role_instructions": "developer", "multi_agent.mode_instructions": "developer",
                    "environments.environment_context": "user", "user.text": "user"}
@@ -75,6 +75,11 @@ def build_selector_invocation(codex: Path, workspace: Path, home: Path, catalog:
         raise ValueError("Codex must be a bounded absolute executable")
     codex = codex.resolve()
     binary_pin = _file_pin(codex)
+    host = codex.with_name("codex-code-mode-host")
+    if not host.is_file() or not os.access(host, os.X_OK):
+        raise ValueError("Codex requires its bundled executable code-mode host")
+    host = host.resolve()
+    host_pin = _file_pin(host)
     workspace, home = Path(workspace), Path(home)
     if any(not p.is_absolute() or not p.is_dir() or p.is_symlink() for p in (workspace, home)):
         raise ValueError("workspace and home must be absolute nonsymlink directories")
@@ -101,12 +106,13 @@ def build_selector_invocation(codex: Path, workspace: Path, home: Path, catalog:
         "model_catalog_json": str(catalog), "model_instructions_file": str(instructions),
         "skills.include_instructions": False, "skills.bundled.enabled": False,
     }
-    options = ["--sandbox", "read-only", "-C", str(workspace)]
+    # CLI 0.159.2 requires the host at startup even with code_mode disabled.
+    options = ["--sandbox", "read-only", "-C", str(workspace), "--enable", "code_mode_host"]
     for key, value in settings.items():
         options += ["-c", key + "=" + json.dumps(value)]
     for feature in DISABLED:
         options += ["--disable", feature]
-    files = {str(codex): binary_pin, **{str(path): _pin(content) for path, content in (
+    files = {str(codex): binary_pin, str(host): host_pin, **{str(path): _pin(content) for path, content in (
         (catalog, catalog_bytes), (schema, schema_bytes), (instructions, instruction_bytes))}}
     return {"policy": POLICY, "command": [str(codex), "--no-daemon", "exec", "--json",
             "--ignore-user-config", "--strict-config", *options, "--ephemeral",
