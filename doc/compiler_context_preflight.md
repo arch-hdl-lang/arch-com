@@ -311,6 +311,86 @@ health or enforce the caller's entire workflow. They do not change defaults,
 perform an automatic retry, or claim token savings. Fresh paired measurement
 must retain all failures and distinguish consumed regression tasks from holdouts.
 
+## Optional Compact Selector
+
+`CompactSelectionSession` is an opt-in alternative to the existing v1 selection
+functions, which remain unchanged. It sends short request-local aliases plus
+one response-binding value instead of repeating full snapshot IDs in every
+schema enum. Full IDs stay on the host and still drive source/role verification.
+
+```python
+from tools.compiler_selection import CompactSelectionSession
+
+session = CompactSelectionSession(root)
+request = session.prepare(context, question)
+# Send only request["prompt"] and request["output_schema"] to the approved client.
+# After checking raw transport/usage and actual tool events:
+# result = session.verify(context, reply, query=question, used_tools=used_tools)
+```
+
+The model must echo the schema's binding and choose aliases for every role.
+The binding combines a fresh nonce with the prepared snapshot identity; it is
+correlation data, not a secret capability or proof of ownership. A reply from a
+different prepared session is rejected even when alias names coincide. Query,
+roles, role metadata, source pins and source freshness remain checked. Every
+verification attempt consumes the session, including invalid replies, tools,
+null/duplicate choices, stale evidence and failed source checks. Concurrent
+verification cannot consume it twice. Do not retry or create replacement
+sessions without charging earlier attempts to the caller's shared budget.
+
+Retain the host-held session until verification. Model-free replay must use the
+original trusted request/binding and reconstruct the full-ID source checks,
+not generate a new random binding or take one from a model reply. Legacy v1
+replay and historical policies are unaffected. Shorter serialized payloads are
+not evidence of fewer billed tokens or a graph-specific performance advantage.
+
+## Optional Read-Only Worker Profile
+
+`tools/compiler_selector_profile.py` prepares a dedicated selector invocation
+and inspects its current offline prompt components. It never launches a model
+or authorizes a live run. It does not change the ordinary coding-agent profile.
+Use a separate non-repository working directory and dedicated `CODEX_HOME`.
+The caller supplies any separately authorized authentication; this helper does
+not read or copy credentials. Keep runtime files outside synced source folders.
+
+```python
+from tools.compiler_selector_profile import prepare_selector_run, validate_selector_invocation
+
+# schema_path contains request["output_schema"]. catalog_path is a captured
+# model catalog containing the selected model, not a mutable global cache.
+prepared = prepare_selector_run(codex_path, worker_dir, worker_home,
+                                catalog_path, schema_path, request["prompt"])
+invocation = prepared["invocation"]
+# After separate live authorization, recheck immediately before execution:
+validate_selector_invocation(invocation)
+# The caller owns execution, stdin=DEVNULL, deadlines, usage/tool-event audits,
+# source revalidation and accounting for every failed attempt. No retries here.
+```
+
+The profile uses explicit read-only sandbox arguments without auto-approval,
+a task-specific instruction file, a pinned model catalog, disabled tools,
+zero repository-document loading and no skill instruction catalog. Runtime
+permission instructions remain. It rejects inherited project configuration and
+user configuration in the dedicated home,
+changed pinned files, unexpected rendered instruction sections, a mismatched
+task, incorrect component roles and permissions that do not explicitly render
+read-only. Offline inspection drains stdout/stderr within a shared byte bound
+and deadline. The low-level
+`build_selector_invocation` only constructs arguments; `prepare_selector_run`
+reports `offline_inspected`, not live readiness or complete-contract verification.
+
+The tested CLI is 0.159.2. Its `debug prompt-input` does not accept strict-config,
+so inspection uses its debug entrypoint; the prepared live argv retains
+`--strict-config` and `--ignore-user-config`. Inventory records text-component
+hashes and UTF-8 byte sizes, plus binary/catalog/instruction/schema pins. It is
+explicitly **not** a complete provider-wire request capture or token count:
+base instructions and the output schema may be supplied outside the debug
+input list. The instructions file is pinned, but its actual wire inclusion is
+not verified by this diagnostic (`selector_instructions_wire_verified=False`).
+Unknown or changed CLI behavior requires review, not a silent
+fallback. Freeze the helper, profile inputs and inventory before a new paired
+experiment; apply the same profile and selection protocol to both arms.
+
 ## Offline Regression Mode
 
 ```sh
@@ -318,6 +398,7 @@ python3 -m unittest discover -s tools -p test_compiler_context.py
 python3 -m unittest discover -s tools -p test_compiler_response.py
 python3 -m unittest discover -s tools -p test_compiler_search.py
 python3 -m unittest discover -s tools -p test_compiler_selection.py
+python3 -m unittest discover -s tools -p test_compiler_selector_profile.py
 python3 -m unittest discover -s tools -p test_compiler_recovery.py
 python3 tools/codegraph_direct_eval.py --compiler-context --arch-bin target/debug/arch
 ARCH_COMPILER_GRAPH_BIN=target/debug/arch python3 -m unittest discover -s tools -p test_compiler_ownership_integration.py

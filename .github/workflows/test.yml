@@ -45,6 +45,7 @@ jobs:
       - run: python -m unittest discover -s tools -p 'test_compiler_response.py'
       - run: python -m unittest discover -s tools -p 'test_compiler_search.py'
       - run: python -m unittest discover -s tools -p 'test_compiler_selection.py'
+      - run: python -m unittest discover -s tools -p 'test_compiler_selector_profile.py'
       - run: python -m unittest discover -s tools -p 'test_compiler_recovery.py'
 
   cargo-test:
