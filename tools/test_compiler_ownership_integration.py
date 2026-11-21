@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from compiler_context import retrieve_compiler_context
 from compiler_recovery import RecoverySession
-from compiler_selection import prepare_selection, verify_selection
+from compiler_selection import CompactSelectionSession, prepare_selection, verify_selection
 
 
 CASES = (
@@ -70,6 +70,17 @@ class CompilerOwnershipIntegrationTests(unittest.TestCase):
             answer[role] = matches[0]
         result = verify_selection(self.root, context, json.dumps(answer), ROLES, query=query)
         self.assertEqual(result["status"], "verified", result.get("reason"))
+        compact = CompactSelectionSession(self.root)
+        prepared = compact.prepare(context, query, ROLES)
+        self.assertEqual(prepared["status"], "ready", prepared.get("reason"))
+        public = json.loads(prepared["prompt"].rsplit("\n", 1)[1])
+        selection = {"binding": public["binding"]}
+        for role, (symbol, path) in expected.items():
+            selection[role] = next(key for key, row in public["evidence"].items()
+                                   if row["symbol"] == symbol and row["path"] == path)
+        verified = compact.verify(context, json.dumps(selection), ROLES, query=query)
+        self.assertEqual(verified["status"], "verified", verified.get("reason"))
+        self.assertEqual(verified["citations"], result["citations"])
 
     def test_four_consumed_cases_and_paraphrases_have_complete_graph_evidence(self):
         for name, queries, symbols, backend in CASES:
