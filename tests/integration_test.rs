@@ -1591,6 +1591,180 @@ end fifo BadLifo
     assert!(result.is_err());
 }
 
+#[test]
+fn test_fifo_same_domain_clock_error_934() {
+    let source = r#"
+domain DomA
+  freq_mhz: 100
+end domain DomA
+
+fifo SameDomainFifo
+  param DEPTH: const = 8;
+  param T: type = UInt<32>;
+  port wclk: in Clock<DomA>;
+  port rclk: in Clock<DomA>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo SameDomainFifo
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(
+        result.is_err(),
+        "same-domain clock ports on fifo must fail typecheck (arch#934)"
+    );
+    let errs = result.unwrap_err();
+    let msg = errs
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        msg.contains("two clock ports (`wclk` and `rclk`) in the same domain `DomA`"),
+        "expected same-domain error message, got: {msg}"
+    );
+    assert!(
+        msg.contains(
+            "same-domain clocks are a compile error — use a single clock port for a synchronous FIFO"
+        ),
+        "expected single-clock suggestion in message, got: {msg}"
+    );
+}
+
+#[test]
+fn test_fifo_diff_domain_clock_valid() {
+    let source = r#"
+domain DomA
+  freq_mhz: 100
+end domain DomA
+
+domain DomB
+  freq_mhz: 50
+end domain DomB
+
+fifo DiffDomainFifo
+  param DEPTH: const = 8;
+  param T: type = UInt<32>;
+  port wclk: in Clock<DomA>;
+  port rclk: in Clock<DomB>;
+  port rst: in Reset<Async>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo DiffDomainFifo
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    assert!(
+        checker.check().is_ok(),
+        "different-domain clock ports on dual-clock fifo must pass"
+    );
+}
+
+#[test]
+fn test_fifo_too_many_clocks_error() {
+    let source = r#"
+domain DomA
+  freq_mhz: 100
+end domain DomA
+
+domain DomB
+  freq_mhz: 50
+end domain DomB
+
+domain DomC
+  freq_mhz: 25
+end domain DomC
+
+fifo ThreeClockFifo
+  param DEPTH: const = 8;
+  param T: type = UInt<32>;
+  port clk1: in Clock<DomA>;
+  port clk2: in Clock<DomB>;
+  port clk3: in Clock<DomC>;
+  port rst: in Reset<Async>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo ThreeClockFifo
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(
+        result.is_err(),
+        "fifo with 3 clock ports must fail typecheck"
+    );
+    let errs = result.unwrap_err();
+    let msg = errs
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        msg.contains("has 3 clock ports; a FIFO supports at most 2 clock ports"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn test_fifo_missing_clock_error() {
+    let source = r#"
+fifo NoClockFifo
+  param DEPTH: const = 8;
+  param T: type = UInt<32>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo NoClockFifo
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(
+        result.is_err(),
+        "fifo with 0 clock ports must fail typecheck"
+    );
+    let errs = result.unwrap_err();
+    let msg = errs
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        msg.contains("requires at least 1 `Clock<Domain>` port"),
+        "got: {msg}"
+    );
+}
+
 // ── RAM ───────────────────────────────────────────────────────────────────────
 
 #[test]
