@@ -543,6 +543,7 @@ impl<'a> Codegen<'a> {
 
         let rdata_a_r = format!("{pfx_a}_{rdata_a}_r");
         let rdata_b_r = format!("{pfx_b}_{rdata_b}_r");
+        let write_mode = r.write_mode.unwrap_or(RamWriteMode::NoChange);
         match r.latency {
             0 => {
                 // A true-dual-port memory must describe each physical port in
@@ -591,14 +592,37 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("if ({pfx_a}_en) begin"));
                     self.indent += 1;
                 }
-                self.line(&format!("if ({pfx_a}_wen)"));
-                self.indent += 1;
-                self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
-                self.indent -= 1;
-                self.line("else");
-                self.indent += 1;
-                self.line(&format!("{rdata_a_r} <= mem[{pfx_a}_addr];"));
-                self.indent -= 1;
+                match write_mode {
+                    RamWriteMode::WriteFirst => {
+                        self.line(&format!("if ({pfx_a}_wen) begin"));
+                        self.indent += 1;
+                        self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
+                        self.line(&format!("{rdata_a_r} <= {pfx_a}_wdata;"));
+                        self.indent -= 1;
+                        self.line("end else begin");
+                        self.indent += 1;
+                        self.line(&format!("{rdata_a_r} <= mem[{pfx_a}_addr];"));
+                        self.indent -= 1;
+                        self.line("end");
+                    }
+                    RamWriteMode::ReadFirst => {
+                        self.line(&format!("{rdata_a_r} <= mem[{pfx_a}_addr];"));
+                        self.line(&format!("if ({pfx_a}_wen)"));
+                        self.indent += 1;
+                        self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
+                        self.indent -= 1;
+                    }
+                    RamWriteMode::NoChange => {
+                        self.line(&format!("if ({pfx_a}_wen)"));
+                        self.indent += 1;
+                        self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
+                        self.indent -= 1;
+                        self.line("else");
+                        self.indent += 1;
+                        self.line(&format!("{rdata_a_r} <= mem[{pfx_a}_addr];"));
+                        self.indent -= 1;
+                    }
+                }
                 if has_en_a {
                     self.indent -= 1;
                     self.line("end");
@@ -611,14 +635,37 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("if ({pfx_b}_en) begin"));
                     self.indent += 1;
                 }
-                self.line(&format!("if ({pfx_b}_wen)"));
-                self.indent += 1;
-                self.line(&format!("mem[{pfx_b}_addr] <= {pfx_b}_wdata;"));
-                self.indent -= 1;
-                self.line("else");
-                self.indent += 1;
-                self.line(&format!("{rdata_b_r} <= mem[{pfx_b}_addr];"));
-                self.indent -= 1;
+                match write_mode {
+                    RamWriteMode::WriteFirst => {
+                        self.line(&format!("if ({pfx_b}_wen) begin"));
+                        self.indent += 1;
+                        self.line(&format!("mem[{pfx_b}_addr] <= {pfx_b}_wdata;"));
+                        self.line(&format!("{rdata_b_r} <= {pfx_b}_wdata;"));
+                        self.indent -= 1;
+                        self.line("end else begin");
+                        self.indent += 1;
+                        self.line(&format!("{rdata_b_r} <= mem[{pfx_b}_addr];"));
+                        self.indent -= 1;
+                        self.line("end");
+                    }
+                    RamWriteMode::ReadFirst => {
+                        self.line(&format!("{rdata_b_r} <= mem[{pfx_b}_addr];"));
+                        self.line(&format!("if ({pfx_b}_wen)"));
+                        self.indent += 1;
+                        self.line(&format!("mem[{pfx_b}_addr] <= {pfx_b}_wdata;"));
+                        self.indent -= 1;
+                    }
+                    RamWriteMode::NoChange => {
+                        self.line(&format!("if ({pfx_b}_wen)"));
+                        self.indent += 1;
+                        self.line(&format!("mem[{pfx_b}_addr] <= {pfx_b}_wdata;"));
+                        self.indent -= 1;
+                        self.line("else");
+                        self.indent += 1;
+                        self.line(&format!("{rdata_b_r} <= mem[{pfx_b}_addr];"));
+                        self.indent -= 1;
+                    }
+                }
                 if has_en_b {
                     self.indent -= 1;
                     self.line("end");
