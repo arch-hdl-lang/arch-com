@@ -10903,44 +10903,7 @@ impl<'a> TypeChecker<'a> {
 
         let expected_ret = self.resolve_type_expr(&f.ret_ty, &f.name.name, &local_types);
 
-        for item in &f.body {
-            match item {
-                FunctionBodyItem::Let(l) => {
-                    self.check_snake_case(&l.name);
-                    let val_ty = self.resolve_expr_type(&l.value, &f.name.name, &local_types);
-                    let ty = if let Some(ann) = &l.ty {
-                        self.resolve_type_expr(ann, &f.name.name, &local_types)
-                    } else {
-                        val_ty
-                    };
-                    local_types.insert(l.name.name.clone(), ty);
-                }
-                FunctionBodyItem::Return(expr) => {
-                    let ret_ty = self.resolve_expr_type(expr, &f.name.name, &local_types);
-                    if !matches!(ret_ty, Ty::Error | Ty::Todo)
-                        && !matches!(expected_ret, Ty::Error | Ty::Todo)
-                        && ret_ty != expected_ret
-                        && !types_compatible(&expected_ret, &ret_ty)
-                    {
-                        self.warnings.push(CompileWarning {
-                            message: format!(
-                                "function `{}`: return type mismatch (declared {}, got {})",
-                                f.name.name,
-                                expected_ret.display(),
-                                ret_ty.display()
-                            ),
-                            span: expr.span,
-                        });
-                    }
-                }
-                FunctionBodyItem::IfElse(_)
-                | FunctionBodyItem::For(_)
-                | FunctionBodyItem::Assign(_) => {
-                    // Type checking for control flow in functions is deferred
-                    // (expressions within are checked by the SV backend)
-                }
-            }
-        }
+        self.check_function_body_items(&f.body, &f.name.name, &expected_ret, &mut local_types);
 
         // Verify all code paths return a value (no latches).
         if !Self::fn_body_always_returns(&f.body) {
@@ -10952,6 +10915,124 @@ impl<'a> TypeChecker<'a> {
                 ),
                 f.span,
             ));
+        }
+    }
+
+    fn check_function_body_items(
+        &mut self,
+        items: &[FunctionBodyItem],
+        fn_name: &str,
+        expected_ret: &Ty,
+        local_types: &mut HashMap<String, Ty>,
+    ) {
+        for item in items {
+            match item {
+                FunctionBodyItem::Let(l) => {
+                    self.check_snake_case(&l.name);
+                    let val_ty = self.resolve_expr_type(&l.value, fn_name, local_types);
+                    let ty = if let Some(ann) = &l.ty {
+                        let expected = self.resolve_type_expr(ann, fn_name, local_types);
+                        if let (Some(ew), Some(aw)) = (expected.width(), val_ty.width()) {
+                            if !expr_is_shift(&l.value) {
+                                self.check_shift_demand(&l.value, ew);
+                            }
+                            if ew > aw && expr_is_shift(&l.value) {
+                                self.errors.push(CompileError::general(
+                                    &format!(
+                                        "shift result is UInt<{aw}> but target `{}` is UInt<{ew}>; \
+                                         shifts do not widen. \
+                                         To capture overflow, widen the operand first: `.zext<{ew}>() << n`",
+                                        l.name.name
+                                    ),
+                                    l.value.span,
+                                ));
+                            }
+                        }
+                        expected
+                    } else {
+                        val_ty
+                    };
+                    local_types.insert(l.name.name.clone(), ty);
+                }
+                FunctionBodyItem::Return(expr) => {
+                    let ret_ty = self.resolve_expr_type(expr, fn_name, local_types);
+                    if let (Some(ew), Some(aw)) = (expected_ret.width(), ret_ty.width()) {
+                        if !expr_is_shift(expr) {
+                            self.check_shift_demand(expr, ew);
+                        }
+                        if ew > aw && expr_is_shift(expr) {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "shift result is UInt<{aw}> but function `{}` returns UInt<{ew}>; \
+                                     shifts do not widen. \
+                                     To capture overflow, widen the operand first: `.zext<{ew}>() << n`",
+                                    fn_name
+                                ),
+                                expr.span,
+                            ));
+                        }
+                    }
+                    if !matches!(ret_ty, Ty::Error | Ty::Todo)
+                        && !matches!(expected_ret, Ty::Error | Ty::Todo)
+                        && ret_ty != *expected_ret
+                        && !types_compatible(expected_ret, &ret_ty)
+                    {
+                        self.warnings.push(CompileWarning {
+                            message: format!(
+                                "function `{}`: return type mismatch (declared {}, got {})",
+                                fn_name,
+                                expected_ret.display(),
+                                ret_ty.display()
+                            ),
+                            span: expr.span,
+                        });
+                    }
+                }
+                FunctionBodyItem::Assign(a) => {
+                    let target_ty = self.resolve_expr_type(&a.target, fn_name, local_types);
+                    let val_ty = self.resolve_expr_type(&a.value, fn_name, local_types);
+                    if let (Some(ew), Some(aw)) = (target_ty.width(), val_ty.width()) {
+                        if !expr_is_shift(&a.value) {
+                            self.check_shift_demand(&a.value, ew);
+                        }
+                        if ew > aw && expr_is_shift(&a.value) {
+                            let target_name = match &a.target.kind {
+                                ExprKind::Ident(id) => id.clone(),
+                                _ => "target".to_string(),
+                            };
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "shift result is UInt<{aw}> but target `{target_name}` is UInt<{ew}>; \
+                                     shifts do not widen. \
+                                     To capture overflow, widen the operand first: `.zext<{ew}>() << n`"
+                                ),
+                                a.value.span,
+                            ));
+                        }
+                    }
+                }
+                FunctionBodyItem::IfElse(ie) => {
+                    self.resolve_expr_type(&ie.cond, fn_name, local_types);
+                    self.check_function_body_items(
+                        &ie.then_body,
+                        fn_name,
+                        expected_ret,
+                        local_types,
+                    );
+                    self.check_function_body_items(
+                        &ie.else_body,
+                        fn_name,
+                        expected_ret,
+                        local_types,
+                    );
+                }
+                FunctionBodyItem::For(ff) => {
+                    self.for_iters.push(ff.var.name.clone());
+                    local_types.insert(ff.var.name.clone(), Ty::UInt(32));
+                    self.check_function_body_items(&ff.body, fn_name, expected_ret, local_types);
+                    self.for_iters.pop();
+                }
+            }
         }
     }
 
