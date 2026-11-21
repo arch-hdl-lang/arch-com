@@ -43,6 +43,9 @@ jobs:
       - run: python -m unittest discover -s tools -p 'test_codegraph_eval.py'
       - run: python -m unittest discover -s tools -p 'test_compiler_context.py'
       - run: python -m unittest discover -s tools -p 'test_compiler_response.py'
+      - run: python -m unittest discover -s tools -p 'test_compiler_search.py'
+      - run: python -m unittest discover -s tools -p 'test_compiler_selection.py'
+      - run: python -m unittest discover -s tools -p 'test_compiler_recovery.py'
 
   cargo-test:
     name: cargo test
@@ -72,6 +75,16 @@ jobs:
 
       - name: compiler context preflight audit
         run: python3 tools/codegraph_direct_eval.py --compiler-context --arch-bin target/release/arch
+
+      - name: Install compiler recovery search dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: Compiler ownership and recovery regressions
+        env:
+          ARCH_COMPILER_GRAPH_BIN: target/release/arch
+        run: python3 -m unittest discover -s tools -p 'test_compiler_ownership_integration.py'
 
       - name: cargo test --release
         run: cargo test --release

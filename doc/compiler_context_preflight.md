@@ -40,17 +40,33 @@ evidence of absence.
 Unknown ownership always executes one `dev-query` with the original question
 unchanged, `--best-match`, source excerpts, and requested role filters (default:
 AST, parser, backend). `--best-match` chooses the uniquely highest-ranked
-feature and rejects equal-score ties. Ordinary `dev-query` behavior is unchanged.
+feature and rejects equal-score ties and multiple AST/parser/backend owners in
+the selected roles. Exact feature/alias phrases favor the more specific family.
+Ordinary `dev-query` still exposes multiple families and their owners rather
+than applying this single-answer gate.
 Selected symbol positions are revalidated with the compiler's Rust parser;
 a reference to a symbol is not accepted as its declaration location.
 This is ranked discovery, not proof that the selected feature is semantically
 the only possible answer. A query about several features may need separate
 queries or targeted search.
 
+The TLM-method family includes explicit singular/plural transaction-method and
+TLM-method aliases. This keeps method protocol assertions attached to
+`TlmMethodMeta`, `parse_tlm_method_decl` and `emit_tlm_method_asserts` rather than
+generic module assertions. The consumed confirmation question and paraphrases
+are offline ownership regressions, not new held-out or token-saving evidence.
+The routing change does not complete channel backend links, change recovery,
+or establish general multi-feature ambiguity detection.
+
 The preflight rejects truncated output, multiple visible feature blocks,
 multiple owners for one requested role, missing roles, unsupported rows,
 unsafe paths, mismatched excerpts, and changed source. Graph positions are
 checked against actual source, including the schema-v1 index fingerprint.
+Output structure, role completeness, uniqueness and source paths are checked
+before any wrapper source reads. A missing role, ambiguous owner or unsupported
+file-level link therefore costs the graph command but not partial source reads.
+This preserves recovery allowance without changing the shared operation limit;
+it does not eliminate the graph command's internal source-validation I/O.
 Delivered evidence carries SHA-256 source hashes; prompt preparation rechecks
 them immediately before inclusion. Later consumers can call `check_context`
 again after a delay. The result is a snapshot, not a lock on source files.
@@ -136,12 +152,153 @@ token savings. Compare identical questions/evidence under full and reduced
 profiles, and compare graph with equally host-managed search before attributing
 benefits to graph retrieval.
 
+## Bounded Search Control And Recovery Budget
+
+`tools/compiler_search.py` is a graph-independent, opt-in search provider for
+compiler ownership questions. Use it for an equally host-managed comparison or
+an explicitly chosen search workflow, not as a change to graph-first routing.
+It reads no graph index, curated feature map, benchmark manifest, or answer key.
+
+```python
+from tools.compiler_search import retrieve_search_context, retrieval_budget
+
+context = retrieve_search_context(root, question)
+request = prepare_response(root, context, question)
+budget = retrieval_budget(context, total_operations=6, reserve_operations=2)
+# Any caller-managed recovery must stay within budget["remaining_operations"].
+```
+
+The same `retrieval_budget` accounting can describe an existing graph context.
+It does not undo work, enforce future agent calls, or account for earlier
+retrievals. When chaining providers, callers must subtract all prior operations
+from the next provider's `total_operations`; a new provider does not reset a
+shared budget. `reserve_preserved` is false for contexts that already overspent.
+
+Search extracts a named construct phrase (for example, `ARCH's ... construct`)
+or removes role/request vocabulary from the first sentence. Multiword names
+generate joined, snake-case and initialism candidates without feature-specific
+aliases. Unsupported phrasings may need caller refinement. Generic output
+instructions such as `symbol` and `citation` do not become search terms.
+One recursive, bounded `rg --no-config` scans Rust source for exact declaration
+names. AST `*Decl`, parser `parse_*`, SystemVerilog `emit_*`, and type-checker
+`check_*` candidates are grouped by the same normalized construct stem and
+conventional source directories. Missing complete groups, multiple complete
+groups or duplicate declarations within a selected role request recovery.
+No truncation or partial result is treated as evidence of uniqueness.
+
+Routine matching recognizes bounded, role-specific suffixes such as `_decl`
+and backend `_sva`. Conditional and iterative routine variants require an
+explicit construct-bound cue in the public question, such as `conditional
+generate` or `generate if`; an unrelated prose `for` is not a variant hint.
+Missing or conflicting variant information cannot select an arbitrary parser.
+Names from different construct stems are never combined to fill missing roles.
+These are lexical naming conventions, not a curated-map lookup or proof of
+semantic ownership.
+
+With the default six-operation budget and two-operation reserve, search spends
+at most one command plus three unique source reads. Failed attempts count too.
+The helper checks the allowance before reading sources, then verifies every
+literal row and records source SHA-256 hashes. Missing, ambiguous, changed,
+unsafe or oversized evidence produces `needs_search` with no consumable payload.
+No automatic search retry, model call, or fallback is performed.
+
+`ready` means a consistent set of **lexical candidates**, not parsed Rust or
+verified semantic owners. A declaration-shaped line in a block comment or raw
+string can match; this limitation is explicitly regression-tested. Role
+metadata is intentionally omitted, so `verify_response` only checks literal
+declarations. Independent source/semantic grading is still required when
+measuring answer quality. A naming-based search control is not an oracle.
+
+Host operation counts are not filesystem I/O counts: `rg` scans source internally,
+and freshness/response verification reads remain separately reported. Budget
+reservation alone is not evidence that fallback will succeed or save tokens.
+
+## Evidence Selection And Typed Recovery
+
+The optional `tools/compiler_selection.py` interface avoids asking a model to
+copy declaration quotes. `prepare_selection` exposes bounded source rows with
+content-addressed IDs and a role-to-ID schema; `verify_selection` revalidates
+the snapshot and renders exact citations from the selected rows. IDs are bound
+to the policy, question, requested roles, source hashes, literal rows and source
+role metadata. They are evidence identities, not authorization capabilities.
+The caller must associate each response with its own host-held request/context.
+Null, duplicate or unknown IDs, changed snapshots, graph role swaps, duplicate
+JSON keys and tool-assisted replies request retrieval instead of an answer.
+
+```python
+from tools.compiler_selection import prepare_selection, verify_selection
+
+request = prepare_selection(root, context, question)
+# After a healthy, response-only model call using request["output_schema"]:
+# verified = verify_selection(root, context, reply, query=question,
+#                             used_tools=actual_tool_activity)
+# Only verified["answer"] is a rendered citation answer.
+```
+
+No expected benchmark answer, model-supplied quote or invented source text is
+used for rendering. Existing graph role bindings are retained. Unbound search
+rows remain lexical evidence, not semantic ownership proofs. The source-only
+request and later rendering each recheck source freshness; rendering also runs
+the existing citation verifier. All validation reads, including failed checks,
+are reported separately from retrieval operations. The legacy quote-response
+interface and its policy remain available and unchanged.
+
+`tools/compiler_recovery.py` provides one optional, host-owned recovery attempt:
+
+```python
+from tools.compiler_recovery import RecoverySession
+
+# Use a trusted, absolute rg path. Include ALL earlier retrieval work in context.
+recovery = RecoverySession(root, context, rg_binary=Path("/absolute/path/to/rg"))
+request = recovery.prepare(question)
+# After a healthy, tool-free reply containing only {"construct": "keyword"}:
+# result = recovery.recover(reply, used_tools=actual_tool_activity)
+# If ready, replace context with result["context"], prepare_selection, and
+# make one new response-only call. Do not combine graph and search role metadata.
+```
+
+Only a lowercase construct identifier (maximum 64 characters) is accepted.
+The typed name bypasses prose stopwords, so language keywords such as `function`
+are not discarded as generic request vocabulary. The host owns root, roles,
+and the public question captured by `prepare`; a different question cannot be
+substituted later in that session. Recovery keeps this question for explicit
+variant disambiguation instead of replacing it with generic retrieval wording.
+Calling `recover` without successful preparation rejects the request without
+searching and consumes the one-shot attempt. An explicit bus-generation scope
+cannot be replaced by an unqualified module-generation keyword; unsupported
+scopes require refinement rather than borrowing another family's owners.
+The host also owns the
+executable, source paths, command options and remaining budget. Search is one
+bounded argv invocation, without a shell; it cannot execute a model-provided
+command. The executable's resolved absolute path and SHA-256 are recorded and
+checked before retrieval, with separately reported integrity-read I/O. This
+controls host retrieval, not arbitrary agent-shell PATHs or operating-system
+TOCTOU races. The binary is a trusted host dependency, not a model input.
+
+The session snapshots initial retrieval counters, charges failed searches, and
+consumes its single recovery attempt even for invalid replies or failed work.
+It never resets the six-operation total. A fresh three-file answer normally
+requires four operations; it cannot fit after four prior operations. In that
+case, search may spend one command but performs no over-budget source reads.
+Two remaining operations are not a promise of successful recovery.
+
+The host must reject unhealthy model stages before calling these helpers,
+record every model/tool attempt and its cost, and stop on unknown usage rather
+than retrying. The helpers themselves launch no models and cannot certify model
+health or enforce the caller's entire workflow. They do not change defaults,
+perform an automatic retry, or claim token savings. Fresh paired measurement
+must retain all failures and distinguish consumed regression tasks from holdouts.
+
 ## Offline Regression Mode
 
 ```sh
 python3 -m unittest discover -s tools -p test_compiler_context.py
 python3 -m unittest discover -s tools -p test_compiler_response.py
+python3 -m unittest discover -s tools -p test_compiler_search.py
+python3 -m unittest discover -s tools -p test_compiler_selection.py
+python3 -m unittest discover -s tools -p test_compiler_recovery.py
 python3 tools/codegraph_direct_eval.py --compiler-context --arch-bin target/debug/arch
+ARCH_COMPILER_GRAPH_BIN=target/debug/arch python3 -m unittest discover -s tools -p test_compiler_ownership_integration.py
 ```
 
 This mode exercises actual counter and register-file ownership queries,
@@ -149,3 +306,13 @@ known-file bypass, missing coverage, payload exhaustion, a reference masqueradin
 as a declaration, and a stale-index mutation in a disposable index. It has independent expected owner names,
 never launches an agent, and reports separately from the existing graph-ranking
 audit. Both modes run in CI.
+
+The real-provider ownership integration suite requires ripgrep and a built
+compiler. It covers module, parameter, conditional-generate and assertion
+ownership, paraphrases, literal evidence-ID rendering, typed search recovery,
+and recovery after an incomplete graph response. Generic generate remains
+ambiguous. CI runs this suite with the release compiler and explicitly installed
+ripgrep; without `ARCH_COMPILER_GRAPH_BIN`, ordinary unit discovery skips it.
+These are consumed development regressions from a failed paired benchmark.
+Synthetic selection replies and construct keywords are test inputs, not live
+model results or evidence of measured token savings.
