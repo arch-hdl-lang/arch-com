@@ -88,7 +88,11 @@ class ReplayTests(unittest.TestCase):
         # without invoking Yosys/SBY. Complements the single-fixture checks
         # above, which only touch FMA6_high + e5m2_32_low.
         keys = sorted(p.stem for p in runner.INPUTS.glob('*.json'))
-        self.assertTrue(keys, 'no archived fixtures discovered under INPUTS')
+        # Every archived configuration must be exercised, so a dropped fixture
+        # fails here rather than silently shrinking coverage.
+        expected_keys = {'FMA6_high', 'FMA7_low', 'e2m1_3_high', 'e5m2_3_low', 'e5m2_32_low'}
+        self.assertTrue(expected_keys <= set(keys),
+                        f'missing archived fixtures: {sorted(expected_keys - set(keys))}')
         faults = ['baseline'] + list(runner.FAULTS)
         total = 0
         for key in keys:
@@ -106,8 +110,10 @@ class ReplayTests(unittest.TestCase):
                             # reference + wrapper core + top at minimum
                             self.assertGreaterEqual(design.count('endmodule'), 3)
                             total += 1
-        # 4 keys x (4 baseline tasks + 6 faults) + e5m2_32_low second profile.
-        self.assertGreaterEqual(total, 50)
+        # 10 designs per (key, profile) = 4 baseline tasks + 6 fault/startup.
+        # e5m2_32_low runs both profiles; every other key runs strengthened only.
+        expected_total = sum(2 if k == 'e5m2_32_low' else 1 for k in keys) * 10
+        self.assertEqual(total, expected_total)
 
 
 if __name__ == '__main__':
