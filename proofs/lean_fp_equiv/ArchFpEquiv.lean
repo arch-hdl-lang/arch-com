@@ -25,5 +25,12 @@ import ArchFpEquiv.FmaEquiv
 import ArchFpEquiv.ScaledDot
 import ArchFpEquiv.F32AddCorrect
 import ArchFpEquiv.F32AddRel
+import ArchFpEquiv.IEEE754ValueBridge
+import ArchFpEquiv.RneF32Spec
+import ArchFpEquiv.SmtLibRoundingBridge
+import ArchFpEquiv.FmaRneComposition
 import ArchFpEquiv.StagedPipeline
 import ArchFpEquiv.F32PairwiseSum
+import ArchFpEquiv.ConcreteBlock
+import ArchFpEquiv.TreeRoundingBound
+import ArchFpEquiv.BlockExecutionBound

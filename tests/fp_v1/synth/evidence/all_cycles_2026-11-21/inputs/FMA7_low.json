@@ -1,0 +1,15 @@
+{
+  "family": "FMA7",
+  "latency": 7,
+  "active_low": true,
+  "reset_value": 1065353216,
+  "core": "ArchF32FmaStaged7",
+  "wrapper": "Pipe",
+  "function": "arch_fma_f32",
+  "uncompressed_sha256": {
+    "FMA7_low_comb.arch.gz": "a9b5455f18663d91d3b4b5ce354fd033484b79c3a5e606f1707609127307faa7",
+    "FMA7_low_comb.sv.gz": "78d039731e778828f686deac3a852bf09a88f7ed9034f45d9caf1d6452390a9b",
+    "FMA7_low_staged.arch.gz": "b581531d548c982e4161d9df7d9372dd83c00c0f55ea87fd8cbaf93dc1173fee",
+    "FMA7_low_staged.sv.gz": "2799e52bd27a6b7dadf35ed80cb6a7f82f45b6f6e7a281f1f2e6ff0002500570"
+  }
+}

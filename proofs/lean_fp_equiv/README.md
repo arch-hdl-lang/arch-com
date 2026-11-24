@@ -175,6 +175,21 @@ formal` SMT are byte-for-byte unchanged.
 **Also verified (`cargo test`):** the `render_lean` renderer and its output
 (`src/fp_ir.rs` unit tests `renders_both_dialects`, `lean_renders_every_op_kind`).
 
+## Post-freeze block-dot proof and replay
+
+`ArchFp.arch_block_result_cases` in `ArchFpEquiv/BlockExecutionBound.lean`
+proves the finite/error-bound versus nonfinite/overflow-witness split for
+1–32 finite elements in E2M1/E2M3/E3M2/E4M3/E5M2 and E8M0 scales other than 255.
+The bound includes reduction rounding, both scale roundings and underflow.
+It is a theorem about the concrete Lean model, with native proof evaluation
+and compiler/RTL correspondence remaining explicit trust.
+
+See [scope, formula, versions and replay commands](../../tests/fp_v1/synth/POSTER_PROOF_RESULTS.md).
+The included scalar value/RNE bridges are dependencies of this block theorem;
+they do not import SMT solver verdicts into Lean. The independent pipeline
+cross-check uses SymbiYosys and is documented separately in
+[SBY_PIPELINE.md](../../tests/fp_v1/synth/SBY_PIPELINE.md).
+
 ## Build
 
 ```
@@ -182,6 +197,7 @@ cd proofs/lean_fp_equiv && lake build
 ```
 
 Requires the `leanprover/lean4:v4.30.0` toolchain (elan reads `./lean-toolchain`).
-No external packages — Lean core `BitVec` + the bundled `bv_decide`/`cadical`.
+Dependencies include the pinned Mathlib revision in `lake-manifest.json`,
+Lean core `BitVec`, and bundled `bv_decide`/`cadical`.
 `add_comm` (~45 s) and `sub_is_add_neg` (~34 s) carry raised `bv_decide`
 `timeout`s; the rest are instant.

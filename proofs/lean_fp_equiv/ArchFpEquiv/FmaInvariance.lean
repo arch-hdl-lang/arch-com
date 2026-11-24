@@ -42,7 +42,7 @@ theorem fma_eq_ref_same_small (a b c : BitVec 32)
   have hsign : (arch_fma_sign98 a b c == 1#1) = (arch_fma_sign a b c == 1#1) := by
     unfold finiteNonzero isNaN isInf isZero expField fracField
       arch_fma_sign98 arch_fma_sign at *
-    bv_decide
+    bv_decide (config := { timeout := 1200 })
   rw [arch_fma_f32_sticky_finite a b c ha hb hc hnc,
       arch_fma_f32_ref_finite a b c ha hb hc hnc470, hscale,
       roundNE_scale _ _ _ _ (Nat.pos_of_ne_zero hm470), hexp, hsign]
@@ -69,7 +69,7 @@ theorem fma_eq_ref_diff_small (a b c : BitVec 32)
   have hsign : (arch_fma_sign98 a b c == 1#1) = (arch_fma_sign a b c == 1#1) := by
     unfold finiteNonzero isNaN isInf isZero expField fracField
       arch_fma_sign98 arch_fma_sign arch_fma_mag98 fmaDiff98 fmaSel98 fpEunb at *
-    bv_decide
+    bv_decide (config := { timeout := 1200 })
   have hscale := mag98_eq_mag470_scaled_diff a b c hdiff hd48
   have hm98 : (arch_fma_mag98 a b c).toNat ≠ 0 := fun h => hnc (BitVec.eq_of_toNat_eq (by simp [h]))
   have hm470 : (arch_fma_mag a b c).toNat ≠ 0 := by
@@ -139,7 +139,7 @@ theorem fma_eq_ref_same_big (a b c : BitVec 32)
   have hsign : (arch_fma_sign98 a b c == 1#1) = (arch_fma_sign a b c == 1#1) := by
     unfold finiteNonzero isNaN isInf isZero expField fracField at ha hb hc
     unfold arch_fma_sign98 arch_fma_sign
-    bv_decide
+    bv_decide (config := { timeout := 1200 })
   obtain ⟨hchi, hcst⟩ := mag98_scaled_collapse_same_pred a b c hsame hdlo hdhi
   rw [arch_fma_f32_sticky_finite a b c ha hb hc hnc,
       arch_fma_f32_ref_finite a b c ha hb hc hnc470,
@@ -227,7 +227,7 @@ theorem fma_eq_ref_same_big_sub (a b c : BitVec 32)
   have hsign : (arch_fma_sign98 a b c == 1#1) = (arch_fma_sign a b c == 1#1) := by
     unfold finiteNonzero isNaN isInf isZero expField fracField at ha hb hc
     unfold arch_fma_sign98 arch_fma_sign
-    bv_decide
+    bv_decide (config := { timeout := 1200 })
   -- subnormal-determining facts
   have hehi := ehi_small_int a b c ha hb hc hsmall hdhi
   have hlog22 : Nat.log2 (fmaSigHi98 a b c).toNat < 23 :=
@@ -274,7 +274,7 @@ theorem fma_eq_ref_diff_big (a b c : BitVec 32)
     unfold arch_fma_mag98 at hnc
     unfold fmaDiff98 fmaSel98 fpEunb at hb49
     unfold arch_fma_sign98 arch_fma_sign
-    bv_decide
+    bv_decide (config := { timeout := 1200 })
   have hHpos : 1 ≤ (fmaSigHi98 a b c).toNat := by
     have : 0 < (2 : Nat) ^ 23 := Nat.pow_pos (by decide); omega
   have hmag98pos : 0 < (arch_fma_mag98 a b c).toNat :=
@@ -370,7 +370,7 @@ theorem fma_eq_ref_diff_big_sub (a b c : BitVec 32)
     unfold arch_fma_mag98 at hnc
     unfold fmaDiff98 fmaSel98 fpEunb at hb49
     unfold arch_fma_sign98 arch_fma_sign
-    bv_decide
+    bv_decide (config := { timeout := 1200 })
   have hHpos : 1 ≤ (fmaSigHi98 a b c).toNat := fmaSigHi98_pos a b c ha hb hc
   have hmag98pos : 0 < (arch_fma_mag98 a b c).toNat :=
     Nat.pos_of_ne_zero (fun h => hnc (BitVec.eq_of_toNat_eq (by simp [h])))
@@ -487,7 +487,7 @@ theorem fma_eq_ref_diff49 (a b c : BitVec 32)
     unfold finiteNonzero isNaN isInf isZero expField fracField at ha hb hc
     unfold arch_fma_mag98 at hnc
     unfold arch_fma_sign98 arch_fma_sign
-    bv_decide
+    bv_decide (config := { timeout := 1200 })
   rw [arch_fma_f32_sticky_finite a b c ha hb hc hnc,
       arch_fma_f32_ref_finite a b c ha hb hc hnc470, hmageq, heeq, hsign]
 
@@ -513,7 +513,7 @@ theorem fma_eq_ref_diff_boundary (a b c : BitVec 32)
     unfold arch_fma_mag98 at hnc
     unfold fmaDiff98 fmaSel98 fpEunb at hb49
     unfold arch_fma_sign98 arch_fma_sign
-    bv_decide
+    bv_decide (config := { timeout := 1200 })
   have hmag98pos : 0 < (arch_fma_mag98 a b c).toNat :=
     Nat.pos_of_ne_zero (fun h => hnc (BitVec.eq_of_toNat_eq (by simp [h])))
   have hm1ne : 0 < (arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49) :=

@@ -3,18 +3,12 @@ import ArchFpEquiv.F32AddRel
 import Mathlib
 
 /-!
-# Theorem B — the pairwise-summation error bound (foundation)
+# Pairwise-summation error bound and block-dot composition
 
-Theorem B (`ScaledDot.pairwise_sum_error_bound`, currently an axiom) is the
-Higham pairwise-summation bound (ASNA Thm 4.6): the balanced-pairwise FP32 sum of
-a list differs from the exact sum by at most `γ_d · Σ|xᵢ|`, where `d = ⌈log₂N⌉`
-and `γ_d = d·u/(1−d·u)`, `u = 2⁻²⁴`.
-
-This module builds the **algebraic foundation** — the `γ` recurrence that makes
-the tree induction compose, its non-negativity, and the base cases — all proved
-over the concrete `f32R` (`F32AddRel`), sorry-free. The remaining bulk (the tree
-induction over `pairUp`/`pairwiseFuel` and the FP-precondition threading) is
-documented at the end.
+The generic and FP32 pairwise bounds are proved below, including the bridge
+from the fuel-based model. `scaled_dot_error_bound` uses this theorem with
+explicit summation-safety, nonemptiness and depth hypotheses. Product and scale exactness use concrete widening models and proved lemmas;
+no external solver result is imported as a Lean theorem.
 -/
 
 namespace ArchFp
@@ -409,10 +403,10 @@ theorem pairwise_bound_f32 (ps : List (BitVec 32)) (d : Nat)
     Pcl haddP d ps hne hmem hlen hdu
 
 /-- **Theorem B (FP), in `ScaledDot`'s exact statement form.** Same result phrased
-    with `f32ToRat` / `ratAbs` / `ratSum` / `gammaPairwise` — i.e. exactly the
-    content of the `ScaledDot.pairwise_sum_error_bound` axiom, now a THEOREM under
+    with `f32ToRat` / `ratAbs` / `ratSum` / `gammaPairwise` — replacing the former
+    `ScaledDot.pairwise_sum_error_bound` axiom with a theorem under
     the explicit summation-safety, nonemptiness, and `d·u < 1` hypotheses (the
-    latter two are needed for the bound to hold and are implicit in the axiom). -/
+    depth restriction is necessary for the standard gamma bound). -/
 theorem pairwise_sum_error_bound_thm (ps : List (BitVec 32)) (d : Nat)
     (hne : ps ≠ []) (hsafe : SummationSafe ps)
     (hlen : ps.length ≤ 2 ^ d) (hdu : ((d:Rat) + 1) * f32u < 1) :
@@ -427,14 +421,47 @@ theorem pairwise_sum_error_bound_thm (ps : List (BitVec 32)) (d : Nat)
     simp only [ratSum, f32ToRat, ratAbs_abs]; rfl
   rw [e1, e2]; exact hb
 
-/-! ## Status
+/-! ## The end-to-end block-dot error bound (composition) -/
 
-Theorem B is proved: `pairwise_sum_error_bound_thm` is exactly the content of the
-`ScaledDot.pairwise_sum_error_bound` axiom, now a theorem. The only gap to
-*deleting* that axiom declaration is a merged-frame refactor: `ScaledDot`'s
-`AllFiniteNoOverflow` would be defined as `SummationSafe` and `scaled_dot_error_bound`
-threaded with `hne` / `hdu` — but `ScaledDot` cannot import `F32PairwiseSum`
-(cycle), so the composition would move here. The mathematical obligation is
-discharged. -/
+/-- Block-dot error composition using the proved pairwise bound.
+
+The summation-safety and depth hypotheses are explicit. Finite element-product and representable scale exactness are proved in
+`BlockExact`. Summation safety and scale representability remain hypotheses. -/
+theorem scaled_dot_error_bound
+    (fmt : BlockElem) (sa sb : BitVec 8) (ea eb : List (BitVec 8)) (d : Nat)
+    (hfinite : ∀ p ∈ ea.zip eb, FiniteElem fmt p.1 ∧ FiniteElem fmt p.2)
+    (hlen : (archProducts fmt ea eb).length ≤ 2 ^ d)
+    (hne : archProducts fmt ea eb ≠ [])
+    (hsafe : SummationSafe (archProducts fmt ea eb))
+    (hdu : ((d : Rat) + 1) * f32u < 1)
+    (hov1 : NoScaleOverflow (archPairwiseSum (archProducts fmt ea eb)) sa)
+    (hov2 : NoScaleOverflow
+      (arch_f32_mul (archPairwiseSum (archProducts fmt ea eb)) (widenScale sa)) sb)
+    (hsa : 0 ≤ f32ToRat (widenScale sa)) (hsb : 0 ≤ f32ToRat (widenScale sb)) :
+    ratAbs (f32ToRat (archScaledDot fmt sa sb ea eb) - exactBlockDot fmt sa sb ea eb)
+      ≤ gammaPairwise d
+          * ratSum ((archProducts fmt ea eb).map (fun p => ratAbs (f32ToRat p)))
+          * f32ToRat (widenScale sa) * f32ToRat (widenScale sb) := by
+  -- B, at the product list: |sum_fp − Σ f32ToRat Pᵢ| ≤ γ_d · Σ|Pᵢ|.
+  have hB := pairwise_sum_error_bound_thm (archProducts fmt ea eb) d hne hsafe hlen hdu
+  -- Multiply the bound through by Xa (≥0), then Xb (≥0) — one scale at a time.
+  have h1 := ratAbs_sub_mul_le
+    (f32ToRat (archPairwiseSum (archProducts fmt ea eb)))
+    (ratSum ((archProducts fmt ea eb).map f32ToRat))
+    (gammaPairwise d * ratSum ((archProducts fmt ea eb).map (fun p => ratAbs (f32ToRat p))))
+    (f32ToRat (widenScale sa)) hsa hB
+  have h2 := ratAbs_sub_mul_le
+    (f32ToRat (archPairwiseSum (archProducts fmt ea eb)) * f32ToRat (widenScale sa))
+    (ratSum ((archProducts fmt ea eb).map f32ToRat) * f32ToRat (widenScale sa))
+    (gammaPairwise d * ratSum ((archProducts fmt ea eb).map (fun p => ratAbs (f32ToRat p)))
+      * f32ToRat (widenScale sa))
+    (f32ToRat (widenScale sb)) hsb h1
+  -- Rewrite the goal's two sides into h2's shape: the hardware side via the
+  -- scale pull, the exact side via products-sum-exactness. Both groupings are
+  -- left-associative by construction, so this is definitional — no algebra.
+  rw [archScaledDot_scale_pull fmt sa sb ea eb hov1 hov2, exactBlockDot,
+      ← products_sum_exact fmt ea eb hfinite]
+  exact h2
+
 
 end ArchFp

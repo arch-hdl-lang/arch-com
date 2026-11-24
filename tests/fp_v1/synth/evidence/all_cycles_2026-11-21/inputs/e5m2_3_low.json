@@ -1,0 +1,15 @@
+{
+  "family": "e5m2/3",
+  "latency": 5,
+  "active_low": true,
+  "reset_value": 0,
+  "core": "arch_scaled_dot_e5m2_3_e8m0_staged5",
+  "wrapper": "Pipe",
+  "function": "arch_scaled_dot_e5m2_3_e8m0",
+  "uncompressed_sha256": {
+    "e5m2_3_low_comb.arch.gz": "e383219d7110e07fc05892e7169e3f9ad581194dadd7efecdbe4b3c98f73bf62",
+    "e5m2_3_low_comb.sv.gz": "f6710d9e280fd158098048c970b1282ca0211fee73d52475b73b0c2f13274e98",
+    "e5m2_3_low_staged.arch.gz": "6433a437bf60acb1f91dfec9d8f013f0abf31409270484b0e75148f3e471c5ec",
+    "e5m2_3_low_staged.sv.gz": "adb554f43895cc6fcaa5ef6f81a8c47f469cb3b988db36765258c950a0cad6c2"
+  }
+}

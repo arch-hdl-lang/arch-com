@@ -1,0 +1,15 @@
+{
+  "family": "FMA6",
+  "latency": 6,
+  "active_low": false,
+  "reset_value": 1065353216,
+  "core": "ArchF32FmaStaged6",
+  "wrapper": "Pipe",
+  "function": "arch_fma_f32",
+  "uncompressed_sha256": {
+    "FMA6_high_comb.arch.gz": "a9b5455f18663d91d3b4b5ce354fd033484b79c3a5e606f1707609127307faa7",
+    "FMA6_high_comb.sv.gz": "78d039731e778828f686deac3a852bf09a88f7ed9034f45d9caf1d6452390a9b",
+    "FMA6_high_staged.arch.gz": "ee5d7cfa8cb801136d5560cb4f7cccb4a24b7136b0c036c8a32ebf143b3c984a",
+    "FMA6_high_staged.sv.gz": "f7677ae274b4e1e5e6d96ce94a5319030c1c93bdc16cefa894d82432603721c9"
+  }
+}
