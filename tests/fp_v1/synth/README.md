@@ -163,3 +163,11 @@ with the real, reproducible fmax.
 
 To get real ns/Fmax, point yosys at a Liberty file (`abc -liberty cells.lib`,
 e.g. a free Sky130 / Nangate `.lib`) instead of the `-g` generic-gate mapping.
+
+## Post-freeze pipeline correctness replay
+
+[SBY_PIPELINE.md](SBY_PIPELINE.md) describes the independent all-cycles
+SymbiYosys checks for five frozen RTL fixtures, including a 32-element
+E5M2 block dot. [POSTER_PROOF_RESULTS.md](POSTER_PROOF_RESULTS.md) records
+the numerical proof scope and compact result provenance. These temporal
+checks do not establish a PPA result or compiler-wide correctness.

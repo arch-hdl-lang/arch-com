@@ -1,0 +1,147 @@
+% Workshop poster derived from the frozen neurips_verified_fp.tex manuscript.
+% Starred post-freeze updates: concrete block-dot bound, independent SymbiYosys
+% all-cycles RTL proofs, and upstream Carcara fix status. Reviewed against frozen paper: 2026-11-23.
+% The supplied example establishes the 61 x 85 cm portrait format only.
+% Build: pdflatex -interaction=nonstopmode -halt-on-error neurips_verified_fp_poster.tex
+\documentclass{article}
+\usepackage[paperwidth=61cm,paperheight=85cm,margin=0cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{amsmath,amssymb,graphicx,tikz,qrcode}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{pdftitle={LLM-Assisted Formal Verification of Compiler-Generated Synthesizable Floating-Point Arithmetic},pdfauthor={Shuqing Zhao},pdfsubject={NeurIPS 2026 AI for Chip Design workshop poster}}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\definecolor{navy}{HTML}{123E4A}
+\definecolor{mint}{HTML}{EDF4F0}
+\definecolor{teal}{HTML}{167D87}
+\definecolor{orange}{HTML}{DC633F}
+\definecolor{ink}{HTML}{253B43}
+\definecolor{muted}{HTML}{50676D}
+\definecolor{line}{HTML}{D7E3DF}
+\newcommand{\bodyfont}{\fontsize{22}{29}\selectfont}
+\newcommand{\smallfont}{\fontsize{18}{24}\selectfont}
+\newcommand{\labeltext}[1]{{\fontsize{17}{21}\selectfont\bfseries\color{teal}#1}}
+\newcommand{\sect}[2]{{\fontsize{27}{32}\selectfont\bfseries\color{navy}\textcolor{orange}{#1}\quad #2}\par\vspace{.55cm}}
+\newcommand{\para}[2]{\textbf{#1}\enspace #2\par\vspace{.35cm}}
+\newcommand{\card}[4]{\fill[white,rounded corners=8pt] (#1,-#2) rectangle ++(#3,-#4);}
+\newcommand{\txt}[4]{\node[anchor=north west,inner sep=0,text=ink] at (#1,-#2) {\begin{minipage}[t]{#3cm}\bodyfont #4\end{minipage}};}
+\begin{document}
+\null
+\begin{tikzpicture}[remember picture,overlay,x=1cm,y=1cm,shift={(current page.north west)},>=Stealth]
+\fill[mint] (0,0) rectangle (61,-85);
+\fill[navy] (0,0) rectangle (61,-12.5);
+\fill[orange] (2,-2.1) rectangle (3.25,-2.3);
+\txt{3.7}{1.8}{55}{\color{white}\fontsize{18}{22}\selectfont\bfseries NeurIPS 2026\quad /\quad AI for Chip Design\quad /\quad Workshop Poster}
+\txt{2}{3.0}{57}{\color{white}\fontsize{48}{54}\selectfont\bfseries LLM-Assisted Formal Verification of\\Compiler-Generated Synthesizable\\Floating-Point Arithmetic}
+\txt{2}{9.5}{57}{\color{white}\fontsize{24}{29}\selectfont\textbf{Shuqing Zhao}\quad\textcolor{white!72}{Meta Platforms, Inc.}\par\vspace{.2cm}\fontsize{19}{24}\selectfont Menlo Park, California, USA\quad\textcolor{white!72}{shuqingz@meta.com}}
+
+% One-sentence message readable from across the poster aisle.
+\txt{2}{13.6}{57}{\fontsize{42}{48}\selectfont\bfseries\color{navy}Trust the checks, not the agent.}
+\txt{2}{16.1}{57}{Human-directed, LLM-implemented floating-point hardware, accepted by claim-specific machine checks with explicit trust boundaries.}
+\txt{2}{18.5}{57}{\labeltext{FP32}\quad\textcolor{muted}{/}\quad\labeltext{BF16}\quad\textcolor{muted}{/}\quad\labeltext{OCP FP8}\quad\textcolor{muted}{/}\quad\labeltext{MX / NVFP4}\hfill\smallfont Static round-to-nearest, ties-to-even (RNE)}
+
+\card{2}{21}{28}{16.2}
+\card{31}{21}{28}{16.2}
+\txt{3}{22}{26}{\sect{01}{One source, three models}
+\textcolor{teal}{\textbf{Check A: do the representations agree?}}}
+\node[fill=mint,rounded corners=4pt,minimum width=24cm,minimum height=1.15cm,text=navy,font=\fontsize{21}{25}\selectfont\bfseries] (desc) at (16,-25.7) {One operator description: Rust eDSL};
+\node[fill=mint,rounded corners=4pt,minimum width=24cm,minimum height=1.15cm,text=navy,font=\fontsize{21}{25}\selectfont\bfseries] (ir) at (16,-27.3) {Bit-vector IR: pointer-shared DAG};
+\node[fill=mint,rounded corners=4pt,minimum width=24cm,minimum height=1.15cm,text=navy,font=\fontsize{21}{25}\selectfont\bfseries] (lin) at (16,-28.9) {Shared linearization: one SSA order};
+\draw[->,teal,line width=2pt] (desc.south) -- (ir.north);
+\draw[->,teal,line width=2pt] (ir.south) -- (lin.north);
+\foreach \x/\name/\lab/\renderer in {7.5/sv/SystemVerilog/render\_sv,16/smt/SMT-LIB/render\_smt,24.5/lean/Lean 4/render\_lean}{
+  \node[draw=line,line width=1.2pt,rounded corners=4pt,minimum width=7.2cm,minimum height=1.55cm,text=navy,align=center,font=\fontsize{20}{24}\selectfont\bfseries] (\name) at (\x,-31.1) {\lab\\{\fontsize{16}{20}\selectfont\ttfamily\renderer}};
+  \draw[->,teal,line width=2pt] (lin.south) -- (\name.north);
+}
+\node[anchor=north,text=ink,align=center,font=\fontsize{17}{21}\selectfont] at (7.5,-32.2) {Synthesis / simulation\\SV $\to$ SMT miters};
+\node[anchor=north,text=ink,align=center,font=\fontsize{17}{21}\selectfont] at (16,-32.2) {Miters vs.\ \texttt{fp.*}\\Z3 / cvc5};
+\node[anchor=north,text=ink,align=center,font=\fontsize{17}{21}\selectfont] at (24.5,-32.2) {Equivalence / value proofs\\Lean $\leftrightarrow$ SMT node checks};
+\txt{3}{34.5}{26}{\smallfont\textbf{Implementation $\leftrightarrow$ implementation.} External node-wise checks compare Lean and SMT expressions; Yosys-to-SMT miters check RTL. Renderer agreement alone does not establish arithmetic correctness.}
+
+\txt{32}{22}{26}{\sect{02}{Check arithmetic correctness}
+\textcolor{teal}{\textbf{Check B: does it match the specification?}}\par\vspace{.35cm}
+\textbf{Strategy:} use exhaustive SMT checks where tractable; invest in structured Lean proofs for difficult operations.\par\vspace{.35cm}
+\para{Tier 1: exhaustive SMT}{Multiplier-free FP32 operators and binary BF16 arithmetic are checked against SMT-LIB floating-point semantics.}
+\para{Tier 2: structured Lean}{For FP32 multiply and FMA, lift bit patterns to algebraic values and prove rounding against a value-level RNE specification.}
+\textcolor{teal}{\textbf{Why it scales:}} reason about one natural-number multiplication, not a bit-blasted $24\!\times\!24$ multiplier.\par\vspace{.35cm}
+\smallfont\textbf{Contract:} two-state values; static RNE; no dynamic rounding modes or status flags. Lean correctness statements retain their stated premises.}
+
+\card{2}{38.2}{28}{19.2}
+\card{31}{38.2}{28}{19.2}
+\txt{3}{39.2}{26}{\sect{03}{Redesign without re-proving multiply}
+An exact-wide alignment path is easy to specify but costly to implement. Sticky-bit folding preserves the information needed for rounding.}
+\txt{3}{43.1}{26}{\fontsize{17}{21}\selectfont\bfseries\color{muted}470-BIT EXACT ALIGNMENT\hfill SCHEMATIC}
+\fill[navy!12] (3,-44.0) rectangle (11,-45.5);
+\fill[mint] (11,-44.0) rectangle (21,-45.5);
+\fill[orange!25] (21,-44.0) rectangle (29,-45.5);
+\draw[navy!40] (3,-44.0) rectangle (29,-45.5);
+\node[text=navy,font=\fontsize{19}{23}\selectfont,align=center] at (7,-44.75) {high significand\\48 bits};
+\node[text=navy,font=\fontsize{19}{23}\selectfont,align=center] at (16,-44.75) {relative shift $\Delta\le421$\\all low bits retained};
+\node[text=navy,font=\fontsize{19}{23}\selectfont,align=center] at (25,-44.75) {low significand\\48 bits};
+\draw[->,teal,line width=2pt] (16,-45.65) -- (16,-46.25);
+\txt{3}{46.35}{26}{\fontsize{17}{21}\selectfont\bfseries\color{teal}98 BITS TOTAL: $1+48+48+1$\hfill NOT TO SCALE}
+\fill[navy!12] (3,-47.2) rectangle (6,-48.8);
+\fill[teal!15] (6,-47.2) rectangle (16,-48.8);
+\fill[orange!15] (16,-47.2) rectangle (26,-48.8);
+\fill[orange!35] (26,-47.2) rectangle (29,-48.8);
+\draw[teal,line width=1.5pt] (3,-47.2) rectangle (29,-48.8);
+\foreach \x in {6,16,26}{\draw[teal] (\x,-47.2) -- (\x,-48.8);}
+\node[text=navy,font=\fontsize{16}{20}\selectfont,align=center] at (4.5,-48) {carry\\1 bit};
+\node[text=navy,font=\fontsize{19}{23}\selectfont,align=center] at (11,-48) {high significand: 48 bits\\anchored at $2^{49}$};
+\node[text=navy,font=\fontsize{19}{23}\selectfont,align=center] at (21,-48) {guard region: 48 bits\\lowest retained bit at $2^1$};
+\node[text=navy,font=\fontsize{16}{20}\selectfont,align=center] at (27.5,-48) {sticky\\$2^0$};
+\txt{3}{49.0}{26}{\fontsize{16}{20}\selectfont\color{muted}Before add/subtract: discarded low bits OR-fold into sticky.}
+\txt{3}{50.2}{26}{\textbf{Same multiplier on both sides: it cancels.}\par\vspace{.25cm}
+\[\forall a,b,c:\quad \mathrm{FMA}_{98}(a,b,c)=\mathrm{FMA}_{\mathrm{ref}}(a,b,c)\]
+\textcolor{teal}{\textbf{Lean equivalence over all $2^{96}$ input triples.}}\par\vspace{.35cm}
+\smallfont The \texttt{sorry}-free proof composes with reference rounding. RTL timing is checked separately by SymbiYosys\textsuperscript{*} (section 06); solver, RTL translation and reference harness remain trusted.}
+
+\txt{32}{39.2}{26}{\sect{04}{Proof evidence prioritized, not PPA}
+{\fontsize{40}{44}\selectfont\bfseries\color{teal}2,788}\quad\textbf{checked renderer certificates}\par
+\smallfont Check A: Lean/SMT representation agreement across 62 shared functions; zero holes or skipped rules. Arithmetic correctness is a separate check (B), with the scope stated in section 02.\par\vspace{.55cm}
+\bodyfont\textbf{FP32 FMA: six-cycle output latency}\par\vspace{.3cm}
+\smallfont
+\begin{tabular*}{26cm}{@{\extracolsep{\fill}}lrr@{}}
+\textbf{Implementation} & \textbf{Cells} & \textbf{MHz}\\[.2cm]
+\hline\\[-.55cm]
+ARCH schedule & 13,471 & 345.5\\[.2cm]
+FPnew distributed & 8,097 & 386.1\\[.2cm]
+HardFloat + output delays & 9,064 & 247.0\\[.2cm]
+\hline
+\end{tabular*}\par\vspace{.35cm}
+Same Nangate45 typical-corner Yosys/ABC flow. MHz is reciprocal critical-path delay, pre-placement, with ideal clocks: \textbf{not physically closed timing}.\par\vspace{.3cm}
+HardFloat has one arithmetic stage plus output delays, not a six-stage arithmetic pipeline.\par\vspace{.35cm}
+\bodyfont\textbf{Contribution: a replaceable, checked arithmetic contract; no competitive PPA advantage claimed.}}
+
+% Prominent limitations: kept in the main reading path, not hidden in fine print.
+\fill[navy,rounded corners=8pt] (2,-58.4) rectangle (59,-71.0);
+\txt{3}{59.4}{55}{\color{white}\fontsize{27}{32}\selectfont\bfseries\textcolor{orange}{05}\quad What is proved - and what remains trusted}
+\txt{3}{61.7}{26}{\color{white}\smallfont\textbf{Narrow FMA is not always narrow RNE.}\par\vspace{.25cm}
+BF16 and E5M2 FMA implement characterized FP32-accumulating fusion, followed by narrowing. E4M3 FMA is correctly rounded outright.\par\vspace{.45cm}
+\textbf{General block-dot bound proved\textsuperscript{*}.}\par\vspace{.25cm}
+For 1--32 finite elements in five low-precision formats, with valid E8M0 scales, finite outputs obey a Lean error bound including both scale roundings and underflow. Nonfinite outputs have an overflow-stage witness.\par\vspace{.3cm}
+Native proof evaluation and compiler/RTL correspondence remain trusted.}
+\txt{32}{61.7}{26}{\color{white}\smallfont\textbf{External trust is explicit.} Archived certificates used a locally corrected Carcara binary; the same Boolean fix is now upstream\textsuperscript{*}. Parser/translation, checker and external rewrite identities remain trusted.\par\vspace{.35cm}
+\textbf{All-input compositional SMT comparison completed.} It trusts solver verdicts, FP-to-BV lowering and encoding/cut composition; it is not a new Lean end-to-end theorem.\par\vspace{.35cm}
+\textbf{Carcara checking adds independent SMT evidence.} Partial certification of the additional FMA SMT comparison is not a missing step in the Lean FMA proof. The frozen snapshot has 28 accepted certificates (10 support + 18 finite partitions).}
+
+\card{2}{72}{28}{8.6}
+\card{31}{72}{28}{8.6}
+\txt{3}{72.7}{26}{\sect{06}{What the checks caught}
+\smallfont\textbf{SymbiYosys all-cycles proof\textsuperscript{*}.} RTL vs. combinational reference: FMA6 (reset high), FMA7 (low); block-dot E2M1, $N=3$ (high), E5M2, $N=3$ or $32$ (low). After initial reset: synchronous reset/internal fill-valid; no stalls or external handshake. 30 injected faults caught.\par\vspace{.2cm}
+\textbf{Known Z3 FMA bug reproduced.} Z3 4.15.4 allowed the wrong adjacent result. Exact arithmetic, Bitwuzla and corrected Z3 agreed; this was a known upstream defect.\par\vspace{.2cm}
+\textbf{Carcara bug fixed upstream\textsuperscript{*}.} Empty OR/AND identities corrected to false/true (\href{https://github.com/ufmg-smite/carcara/commit/ed1250fa458bf9a37612333624c9aa3dd8de11a5}{18 Nov 2026}). Our local fix rejects an invalid-proof probe; earlier certificates were rechecked.}
+\txt{32}{72.7}{26}{\sect{07}{What users can prove}
+\smallfont\textbf{FP8 narrowing without overflow.} Under the default E4M3 profile (overflow $\to$ NaN), adding two inputs in $[-128,128]$ then narrowing is \textbf{PROVED} never NaN.\par\vspace{.3cm}
+Remove the range assumptions: \textbf{REFUTED}, with counterexample $-448 + (-52)$.\par\vspace{.3cm}
+\textbf{Block-dot error bounded\textsuperscript{*}.} For 1--32 finite elements (five formats, valid E8M0 scales), Lean bounds error from the exact scaled dot product for finite outputs, including accumulation, scale rounding and underflow; nonfinite outputs have an overflow-stage witness.}
+\txt{2}{81.3}{51}{\smallfont\textbf{Code, proofs and replay artifacts}\quad
+\href{https://github.com/arch-hdl-lang/arch-com}{\texttt{github.com/arch-hdl-lang/arch-com}}\par
+\fontsize{16}{20}\selectfont\textcolor{muted}{\textsuperscript{*}Post-freeze update (reviewed 23 Nov 2026). Unmarked claims follow the frozen manuscript.}}
+\node[anchor=north east,inner sep=.15cm,fill=white] at (59,-81.0) {\qrcode[height=2.0cm]{https://github.com/arch-hdl-lang/arch-com}};
+\fill[orange] (2,-83) rectangle (55,-83.12);
+\end{tikzpicture}
+\end{document}

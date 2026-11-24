@@ -1,6 +1,142 @@
 # Scope: `scaled_dot` accumulation proof
 
-**Goal.** Close the one formal gap that separates `scaled_dot` from FMA: FMA has
+**Current status:** the concrete Lean block-dot model has a general mixed
+error bound for finite outputs and explicit overflow classification for
+nonfinite outputs, for valid finite-input blocks of 1–32 elements. The
+post-freeze theorem and trust boundaries are described below. Earlier phase
+notes are retained as history, not a list of current proof gaps.
+
+## Current integration status (2026-11-21)
+
+### General rounding, underflow, and overflow (completed follow-up)
+
+`ArchFp.arch_block_result_cases` now proves the concrete result
+split for all equal-length, nonempty blocks of at most 32 elements in the five
+supported formats, with finite element encodings and non-NaN E8M0 scales:
+
+- A finite output satisfies the general mixed error bound, including both
+  scale roundings and gradual underflow.
+- A nonfinite output is classified as infinity or NaN and has a witness to an
+  actual finite-input overflow in the reduction or one of the scale steps.
+
+`ArchFp.arch_add_mixed` and `arch_mul_mixed` cover every finite-input,
+finite-output case, including zeros and cancellation. A finite final output
+forces all intermediates to be finite. No `checkBlock`, `checkAddError`,
+`SummationSafe`, exact-scale witness, or normal-result premise appears in the
+new public block theorem. The numerical composition is symbolic; existing
+leaf exactness and scale-value results retain their native-evaluation trust.
+
+The earlier relative-only theorem in `F32PairwiseSum.lean` remains valid with
+its original conditions; the new mixed bound supplies the general alternative.
+The phase narrative below is historical. See [the complete theorem scope,
+formula, trust audit and validation](../../tests/fp_v1/synth/POSTER_PROOF_RESULTS.md).
+
+
+The widening/exactness modeling gaps have now been replaced by concrete models
+and proofs:
+
+- `BlockWidenModel.lean` contains six RISC-V widening helpers generated from the
+  current shared IR. `regen_block_widen_model.py --check` compares them with the
+  current renderer and also checks that the existing FP32 add/multiply Lean
+  models match it. `BlockElem` explicitly selects E2M1, E2M3, E3M2, E4M3 or E5M2;
+  narrow formats ignore the unused storage padding bits.
+- `BlockExact.products_exact` proves rational product exactness for finite
+  elements in each format. `products_finite` additionally proves the result is
+  finite. Both follow from exhaustive integer evaluation of every pair of
+  8-bit storage codes, guarded against non-finite inputs. This uses
+  `native_decide`; it is not an imported SMT verdict.
+- `widenScale` is the concrete E8M0 conversion. `scale_value` establishes its
+  power-of-two value, including code 0 = 2^-127; code 255 is excluded as NaN.
+- `NoScaleOverflow` is now a definition, not an axiom. Despite the historical
+  name, it requires **exact representability**, not merely absence of overflow.
+  For nonzero input it requires a finite FP32 witness on the exact decoded
+  product grid, plus the rounder's finite-range condition. The predicate never
+  refers to the implementation's output or assumes its value equality.
+- `ScaleExact.mul_exact_of_representable` derives exact multiplication from the
+  existing finite-multiply and nearest-rounding theorems: a representable
+  witness has zero distance, so the nearest result has zero distance too.
+  The signed-integer and rational bridges then establish value equality.
+  `BlockExact.scale_mul_exact` specializes this to E8M0 and handles signed zero.
+- `ScaledDot` and its final composition now thread the element format and
+  finite-element guards and use these exactness theorems. None of the five
+  original hand-written modeling axioms remains.
+
+This is still a **conditional numerical bound**. `SummationSafe` has not been
+proved for every concrete MX block, and each of the two actual scale steps must
+satisfy the explicit representability condition. Arbitrary valid scale codes do
+not guarantee that: overflow and inexact underflow are possible. The theorem
+also retains the depth/length conditions. Exact subnormal scaling is supported;
+inexact underflow cannot be claimed exact.
+
+The trust base includes Lean's standard logical axioms and native evaluation
+used by `native_decide`/`bv_decide`, including reused arithmetic lemmas. Removing
+hand-written modeling axioms does not mean a compiler-independent proof or a
+new theorem about emitted RTL. The regenerated definitions are source-bound;
+renderer/wiring correspondence remains a separate evidence layer. The frozen manuscript is unchanged; the poster labels these follow-ups with an asterisk.
+
+Validation commands:
+
+```sh
+python3 proofs/lean_fp_equiv/scripts/regen_block_widen_model.py --check
+cd proofs/lean_fp_equiv
+lake env lean -o .lake/build/lib/lean/ArchFpEquiv/BlockWidenModel.olean ArchFpEquiv/BlockWidenModel.lean
+lake env lean -o .lake/build/lib/lean/ArchFpEquiv/ScaleExact.olean ArchFpEquiv/ScaleExact.lean
+lake env lean -o .lake/build/lib/lean/ArchFpEquiv/BlockExact.olean ArchFpEquiv/BlockExact.lean
+lake env lean -o .lake/build/lib/lean/ArchFpEquiv/ScaledDot.olean ArchFpEquiv/ScaledDot.lean
+lake env lean -o .lake/build/lib/lean/ArchFpEquiv/F32PairwiseSum.olean ArchFpEquiv/F32PairwiseSum.lean
+lake env lean ArchFpEquiv/BlockExactChecks.lean
+```
+
+The focused checks include exact normal-to-subnormal scaling, exact scaling of
+subnormal inputs, signed zero, the minimum E8M0 scale, rejection of NaN scales,
+rejection of inexact underflow and overflow, and finite-element guard boundaries.
+
+## Concrete-block discharge (2026-11-21)
+
+`ConcreteBlock.lean` supplies a separate, executable route for specific inputs:
+`checkBlock fmt sa sb ea eb = true` implies `checked_block_error_bound`. It
+requires equal, nonempty lists of at most 32 elements and derives all the finite
+element, depth, local summation, scale exactness, and scale nonnegativity facts.
+No `SummationSafe` or `NoScaleOverflow` hypothesis is required at its call site.
+
+The proof uses `TreeErrors`, a predicate over only the additions actually
+performed in the finite tree, instead of closure under arbitrary repeated
+additions. Local error checks use exact signed integers in units of 2^-149.
+The scale check constructs a witness from `roundNE_f32`, checks its finite range
+and exact common-grid value, and invokes the proved scaling theorem. It does not
+assume the implementation output is correct or use a host floating-point oracle.
+The bound uses depth 5 conservatively for every accepted length from 1 to 32.
+
+This is **soundness of acceptance**, not universal acceptance of all valid MX
+blocks. An arbitrary given block can discharge the check with `native_decide`:
+
+```lean
+exact checked_block_error_bound fmt sa sb ea eb (by native_decide)
+```
+
+For variables standing for arbitrary block data, a separate proof that the check
+accepts those data is still required. `ConcreteBlockChecks.lean` discharges full
+32-, 31-, and 1-element examples for each of the five formats, with cancellation,
+shape/NaN rejection, exact subnormal scaling, overflow and inexact underflow
+checks. These examples do not exhaust the space of all 32-element blocks.
+
+In fact, universal exact scaling is false even for finite valid encodings. The
+E2M1 block `[1, 0, ..., 0]` dotted with itself has unscaled result 1. Two E8M0
+code-0 scales give exact value 2^-254, but the implementation returns zero.
+Two code-254 scales cause infinity. Both are machine-checked counterexamples
+and are rejected by `checkBlock`. The general mixed-bound theorem described above accounts for these cases;
+it does not delete the conditions of the historical exact-scaling theorem.
+
+Replay after the prerequisite modules above:
+
+```sh
+lake env lean -o .lake/build/lib/lean/ArchFpEquiv/ConcreteBlock.olean ArchFpEquiv/ConcreteBlock.lean
+lake env lean -o .lake/build/lib/lean/ArchFpEquiv/ConcreteBlockChecks.olean ArchFpEquiv/ConcreteBlockChecks.lean
+```
+
+## Historical development notes
+
+**Original goal.** Close the one formal gap that separates `scaled_dot` from FMA: FMA has
 a machine-checked *whole-operation* value theorem (`arch_fma_f32 =
 round-to-nearest of the exact `a·b+c``, Lean, sorry-free); `scaled_dot` today
 has only a *leaf* theorem (`MX_DOT`: every element-pair product is exact in
@@ -8,10 +144,11 @@ FP32). The **accumulation** — the summation tree that reduces the N products �
 has no value theorem and no error bound. This document scopes the proof that
 closes it.
 
-Status: **Phase 1 landed** (skeleton + structural miter); **Phase 2 partial**
+Historical status: **Phase 1 landed** (skeleton + structural miter); **Phase 2 partial**
 (`ratAbs_sub_mul_le` proved in core `Rat`; the `(1+δ)` add bridge is open and
 gated on an `arch_f32_add` correctly-rounded lemma that does not yet exist).
 Theorem B remains (Phase 3). See §6.
+
 
 ---
 
