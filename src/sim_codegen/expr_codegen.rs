@@ -1673,8 +1673,15 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let c = cpp_expr(count, ctx);
             let v = cpp_expr(value, ctx);
             let val_width = infer_expr_width(value, ctx);
-            // Generate: _arch_repeat(val, count, val_width)
-            format!("_arch_repeat((uint64_t)({v}), {c}, {val_width})")
+            let result_bits = infer_expr_width(expr, ctx);
+            if (65..=128).contains(&result_bits) {
+                // u128 carrier band: the uint64 helper would truncate the
+                // replicated value to 64 bits (sim != SV). Keep full width.
+                format!("_arch_repeat_u128((_arch_u128)({v}), {c}, {val_width})")
+            } else {
+                // Generate: _arch_repeat(val, count, val_width)
+                format!("_arch_repeat((uint64_t)({v}), {c}, {val_width})")
+            }
         }
         ExprKind::Clog2(arg) => {
             let a = cpp_expr(arg, ctx);
