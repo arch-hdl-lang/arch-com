@@ -4,9 +4,9 @@
 //! top bits to 64 (a wrong value, no warning, no abort) while the emitted SV
 //! `{N{x}}` was correct — a silent sim != SV miscompile.
 //!
-//! The fixture replicates into 120 bits (mid-band), 128 bits (upper band
-//! boundary) and 48 bits (the <=64 control that must stay on the unchanged
-//! uint64 path). All five expected values were cross-checked against
+//! The fixture replicates into 65, 120, 128 and 104 bits (band boundaries and a wide
+//! operand), plus 48 bits (the <=64 control that must stay on the unchanged
+//! uint64 path). All expected values were cross-checked against
 //! Verilator-emitted SV.
 
 use std::process::Command;
@@ -34,7 +34,7 @@ fn repeat_result_in_u128_band_not_truncated_sim() {
         String::from_utf8_lossy(&out.stderr),
     );
     assert!(
-        stdout.contains("5 pass / 0 fail"),
-        "expected all five u128-band replication checks to pass; got:\n{stdout}"
+        stdout.contains("9 pass / 0 fail"),
+        "expected all nine u128-band replication checks to pass; got:\n{stdout}"
     );
 }

@@ -3,26 +3,43 @@
 // sim` model (a wrong value, no warning) — the emitter called a uint64-only
 // `_arch_repeat` helper. The emitted SV `{N{x}}` is correct, so sim != SV.
 //
-// `{3{b40}}` = 120 bits (mid-band) and `{2{b64}}` = 128 bits (upper band
-// boundary) both exercise the fix; `{2{b24}}` = 48 bits is a <=64 control
-// that must stay on the (unchanged) uint64 path.
+// Coverage across the band:
+//   {5{b13}}  = 65 bits  — lower boundary (just above the 64-bit native band)
+//   {3{b40}}  = 120 bits — mid-band
+//   {2{b64}}  = 128 bits — upper boundary
+//   {1{w104}} = 104 bits — single replication of a >64-bit OPERAND (exercises
+//                          the `(_arch_u128)(v)` operand cast, not just the
+//                          result carrier)
+//   {2{b24}}  = 48 bits  — <=64 control that must stay on the uint64 path
 module RepeatU128
   port b40: in UInt<40>;
   port b64: in UInt<64>;
   port b24: in UInt<24>;
+  port b13: in UInt<13>;
+  port r65_hi: out UInt<1>;    // {5{b13}}[64:64]
+  port r65_lo: out UInt<64>;   // {5{b13}}[63:0]
   port hi: out UInt<56>;       // {3{b40}}[119:64]
   port lo: out UInt<64>;       // {3{b40}}[63:0]
   port w128_hi: out UInt<64>;  // {2{b64}}[127:64]
   port w128_lo: out UInt<64>;  // {2{b64}}[63:0]
+  port one_hi: out UInt<40>;   // {1{w104}}[103:64]  (wide operand)
+  port one_lo: out UInt<64>;   // {1{w104}}[63:0]
   port c48: out UInt<48>;      // {2{b24}}  (<=64 control)
+  let rep65: UInt<65> = {5{b13}};
   let rep120: UInt<120> = {3{b40}};
   let rep128: UInt<128> = {2{b64}};
+  let w104: UInt<104> = {b40, b40, b24};
+  let one104: UInt<104> = {1{w104}};
   let rep48: UInt<48> = {2{b24}};
   comb
+    r65_hi = rep65[64:64];
+    r65_lo = rep65[63:0];
     hi = rep120[119:64];
     lo = rep120[63:0];
     w128_hi = rep128[127:64];
     w128_lo = rep128[63:0];
+    one_hi = one104[103:64];
+    one_lo = one104[63:0];
     c48 = rep48;
   end comb
 end module RepeatU128
