@@ -1061,6 +1061,21 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
     return result;
 }
 
+/// Bit replication helper for the 65..=128-bit (`_arch_u128`) carrier band.
+/// Mirrors `_arch_repeat` but keeps the full width so a replicated result
+/// wider than 64 bits (e.g. `{3{UInt<40>}}` -> UInt<120>) is not truncated to
+/// 64 bits. Only called when the *result* width is in 65..=128, so the running
+/// value never needs more than the u128 carrier (val_width <= 128).
+static inline _arch_u128 _arch_repeat_u128(_arch_u128 val, uint32_t n, uint32_t val_width) {
+    _arch_u128 mask = (val_width >= 128) ? ~(_arch_u128)0
+                                         : (((_arch_u128)1 << val_width) - 1);
+    _arch_u128 result = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        result = (result << val_width) | (val & mask);
+    }
+    return result;
+}
+
 /// Runtime bounds check — hard abort on out-of-range index.
 /// Used for Vec<T,N> indexing, single-bit selects on UInt<W>/SInt<W>,
 /// and variable part-selects [+:]/[-:].

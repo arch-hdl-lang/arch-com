@@ -731,6 +731,15 @@
       "tb_files": [
         "tests/module_reg_log_tb.cpp"
       ]
+    },
+    {
+      "name": "sim_repeat_u128",
+      "arch_files": [
+        "tests/sim_repeat_u128.arch"
+      ],
+      "tb_files": [
+        "tests/sim_repeat_u128_tb.cpp"
+      ]
     }
   ]
 }
