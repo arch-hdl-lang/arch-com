@@ -48,6 +48,25 @@ jobs:
       - run: python -m unittest discover -s tools -p 'test_compiler_selector_profile.py'
       - run: python -m unittest discover -s tools -p 'test_compiler_recovery.py'
 
+  fp-synth-replay:
+    name: FP synth replay guard
+    runs-on: ubuntu-latest
+    # Solver-free regression guard for the published SymbiYosys pipeline
+    # cross-check harness (tests/fp_v1/synth/crosscheck_sby_pipeline.py). These
+    # checks bind the archived design fingerprint, reject corrupt fixtures and
+    # mutation-site drift, require a bounded counterexample for every mutation,
+    # and assemble the full generation matrix (every fixture x baseline+6 faults
+    # x profile). They import the runner and read the committed gzipped fixtures
+    # only — no Yosys, SBY, Verilator, z3 or Lean — so they belong in this fast
+    # PR gate; the solver-bound proof replay itself stays in the opt-in/nightly
+    # tier per this file's dependency policy above.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s tests/fp_v1/synth -p 'test_sby_pipeline_replay.py'
+
   cargo-test:
     name: cargo test
     runs-on: ubuntu-latest
