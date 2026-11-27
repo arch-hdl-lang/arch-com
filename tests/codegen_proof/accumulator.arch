@@ -1,0 +1,24 @@
+module Acc
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port sum: out UInt<9>;
+  port acc_o: out UInt<8>;
+  port eq: out Bool;
+  reg acc: UInt<8> reset rst => 0;
+  wire t: UInt<8>;
+  let s: UInt<9> = a + b;
+  comb
+    t = en ? a : (a ^ b);
+    sum = s;
+    acc_o = acc;
+    eq = a == b;
+  end comb
+  seq on clk rising
+    if en
+      acc <= acc +% t;
+    end if
+  end seq
+end module Acc

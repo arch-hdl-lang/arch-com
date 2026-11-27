@@ -256,6 +256,30 @@ Generated certificate proofs use a linear nested case split over state numbers,
 so larger real thread tables such as fork/join products replay without the
 exponential blow-up of a chained `<;>` tactic.
 
+## ARCH → SystemVerilog Codegen Validator
+
+`ArchCodegenProof/` holds a translation validator for `arch build` output,
+proved sound once. The design, trusted base and roadmap are in
+`doc/plan_verified_codegen.md`.
+
+- `Core.lean` is the normative semantics of the ARCH module subset.
+- `Sv.lean` is the IEEE 1800 semantics of the emitted SV subset.
+- `Sir.lean` and `Netlist.lean` hold the shared sized IR, the normalizer and
+  the trace semantics.
+- `Validate.lean` holds `check` and `check_sound`: if `check core sv = true`,
+  then the ports and flop clock are equal and the two modules have the same
+  traces for all inputs and cycles.
+
+The compiler emits one certificate per build. Each module's `core` comes
+from the checked AST, and its `sv` is read back from the emitted `.sv` text:
+
+```sh
+arch build Foo.arch --check-codegen-proof-lean
+```
+
+`scripts/codegen_cert_sweep.sh` replays certificates for every `.arch` file
+in the repo.
+
 ## Next Extensions
 
 Good next proof increments:
