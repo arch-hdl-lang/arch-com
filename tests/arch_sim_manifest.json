@@ -740,6 +740,15 @@
       "tb_files": [
         "tests/sim_repeat_u128_tb.cpp"
       ]
+    },
+    {
+      "name": "sim_onehot_u128",
+      "arch_files": [
+        "tests/sim_onehot_u128.arch"
+      ],
+      "tb_files": [
+        "tests/sim_onehot_u128_tb.cpp"
+      ]
     }
   ]
 }

@@ -1,0 +1,28 @@
+// Regression: `onehot(idx)` whose result lands in the 65..=128-bit
+// (`_arch_u128`) carrier band was computed as `1ULL << idx` in the native
+// `arch sim` model — a 64-bit shift that truncates the set bit to the low
+// word (and is UB for idx >= 64), while the emitted SV `(1 << idx)` is
+// correct. A silent sim != SV miscompile (#1182), sibling of the `{N{x}}`
+// fix in #1180/#1181.
+//
+//   onehot into UInt<100> — exercises idx 64 (lower word boundary) and 99
+//   onehot into UInt<128> — exercises idx 64, 99 and 127 (top bit)
+//   onehot into UInt<48>  — <=64 control that must stay on the 1ULL path
+module OnehotU128
+  port idx: in UInt<8>;
+  port oh100_hi: out UInt<36>;  // onehot(idx):UInt<100> [99:64]
+  port oh100_lo: out UInt<64>;  // [63:0]
+  port oh128_hi: out UInt<64>;  // onehot(idx):UInt<128> [127:64]
+  port oh128_lo: out UInt<64>;  // [63:0]
+  port oh48: out UInt<48>;      // onehot(idx):UInt<48> (<=64 control)
+  let a100: UInt<100> = onehot(idx);
+  let a128: UInt<128> = onehot(idx);
+  let a48: UInt<48> = onehot(idx);
+  comb
+    oh100_hi = a100[99:64];
+    oh100_lo = a100[63:0];
+    oh128_hi = a128[127:64];
+    oh128_lo = a128[63:0];
+    oh48 = a48;
+  end comb
+end module OnehotU128
