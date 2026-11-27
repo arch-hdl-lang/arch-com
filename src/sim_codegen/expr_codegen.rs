@@ -1689,7 +1689,17 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         }
         ExprKind::Onehot(index) => {
             let idx = cpp_expr(index, ctx);
-            format!("(1ULL << {idx})")
+            // Shift a u128 `1`, not `1ULL`. `onehot`'s result width is
+            // context-determined by the assignment target (not carried on the
+            // node, so it cannot be recovered here), and a 64-bit `1ULL << idx`
+            // truncates the set bit to the low word whenever the target is
+            // wider than 64 bits — a silent sim != SV miscompile for idx >= 64
+            // (#1182, sibling of the `{N{x}}` fix in #1180/#1181). The u128
+            // shift is also strictly more correct for <= 64-bit targets: there
+            // `1ULL << idx` is UB for idx >= 64, whereas `(_arch_u128)1 << idx`
+            // places the bit above bit 63, which the narrowing assignment then
+            // drops to 0 (the bit is out of the target's range) as SV does.
+            format!("((_arch_u128)1 << {idx})")
         }
         ExprKind::Signed(inner) => {
             // signed(x) reinterprets `x`'s bit pattern as a two's-complement
