@@ -284,7 +284,7 @@ end module Top
     // site — either way, the elaborated design must be rejected.
     let err = check_source(src).expect_err("generate-for i=0 computes W=0, must violate W >= 4");
     assert!(
-        err.contains("W=0") && err.contains("violates constraint"),
+        (err.contains("W=0") || err.contains("`W`=0")) && err.contains("violates constraint"),
         "unexpected error: {err}"
     );
 }

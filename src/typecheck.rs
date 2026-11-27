@@ -220,6 +220,8 @@ pub struct TypeChecker<'a> {
     file_scopes: Vec<std::ops::Range<usize>>,
     /// Package imports visible to the item currently being checked.
     active_uses: HashSet<String>,
+    /// Spans of parameter declarations whose declared defaults have already been validated.
+    checked_param_where_spans: HashSet<(usize, usize)>,
     /// Signal names implicitly declared by an `inst` output connection
     /// (`clk_out -> clk_ifu_w;`) in the construct currently being checked.
     ///
@@ -247,6 +249,7 @@ impl<'a> TypeChecker<'a> {
             active_params: Vec::new(),
             file_scopes: Vec::new(),
             active_uses: HashSet::new(),
+            checked_param_where_spans: HashSet::new(),
         }
     }
 
@@ -8526,15 +8529,26 @@ impl<'a> TypeChecker<'a> {
         let Some(constraint) = &p.constraint else {
             return;
         };
+        if !self
+            .checked_param_where_spans
+            .insert((p.span.start, p.span.end))
+        {
+            return;
+        }
 
         // Build a local type env + const value map from this construct's
         // params, in declaration order, up to and including `p` itself —
         // matches "may reference the declared param itself and any earlier
         // const params in the same block" from the spec.
+        // We inspect `declared_default` (or fallback to `default`) so that
+        // monomorphized module variants evaluate the declared default rather
+        // than an instantiation override value, eliminating phantom definition-site
+        // errors (#998).
         let mut local_types: HashMap<String, Ty> = HashMap::new();
         let mut param_vals: HashMap<String, i64> = HashMap::new();
         for ap in self.active_params.clone().iter() {
-            if let Some(def) = &ap.default {
+            let def_expr = ap.declared_default.as_ref().or(ap.default.as_ref());
+            if let Some(def) = def_expr {
                 let ty = self.resolve_expr_type(def, "<param>", &local_types);
                 local_types.insert(ap.name.name.clone(), ty);
                 if let Some(v) = crate::elaborate::try_eval_i64(def, &param_vals) {

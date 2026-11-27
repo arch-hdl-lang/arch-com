@@ -1614,6 +1614,7 @@ fn lower_module_threads(
                 name: Ident::new(state_names[si].clone(), sp),
                 kind: ParamKind::WidthConst(hi_lit, lo_lit),
                 default: Some(Expr::new(ExprKind::Literal(LitKind::Dec(si as u64)), sp)),
+                declared_default: Some(Expr::new(ExprKind::Literal(LitKind::Dec(si as u64)), sp)),
                 constraint: None,
                 is_local: true,
                 span: sp,
@@ -2839,7 +2840,8 @@ pub(crate) fn synthesize_lock_arbiter(
             params: vec![ParamDecl {
                 name: Ident::new("NUM_REQ".to_string(), sp),
                 kind: ParamKind::Const,
-                default: Some(n_threads_expr),
+                default: Some(n_threads_expr.clone()),
+                declared_default: Some(n_threads_expr),
                 constraint: None,
                 is_local: false,
                 span: sp,
