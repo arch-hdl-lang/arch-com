@@ -44930,3 +44930,79 @@ fn carry_cast_omitted_only_when_sv_width_already_keeps_the_carry() {
         "the literal-index form lints clean:\n{log}"
     );
 }
+
+#[test]
+fn test_sim_codegen_orphan_reg_emits_reset_logic_1053() {
+    // Regression for arch-hdl-lang/arch-com#1053:
+    // A `reg` with a `reset` clause but no `seq` block driving it gets a reset flop in SV
+    // via `emit_orphan_reset_regs` but pre-fix got no reset logic in arch sim.
+    // Sim must emit the reset assignment for orphan registers to ensure parity with SV
+    // (vital for hardwired capability/configuration registers in I3C, CAN, DSP, and analog configs).
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module C
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port q: out UInt<4>;
+          reg r: UInt<4> reset rst => 4'd5;
+          comb
+            q = r;
+          end comb
+        end module C
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    let start_marker = "void VC::eval_posedge() {";
+    let pe_start = cpp
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("expected eval_posedge body in:\n{cpp}"));
+    let pe_body = &cpp[pe_start + start_marker.len()..];
+    let pe_body = pe_body.split("\n}\n").next().unwrap_or("");
+    assert!(
+        pe_body.contains("if (_rising_clk)"),
+        "expected rising edge clock guard in eval_posedge:\n{pe_body}"
+    );
+    assert!(
+        pe_body.contains("if (rst)"),
+        "expected sync reset guard in eval_posedge:\n{pe_body}"
+    );
+    assert!(
+        pe_body.contains("_n_r = 5;"),
+        "expected orphan reg reset assignment in eval_posedge:\n{pe_body}"
+    );
+}
+
+#[test]
+fn test_sim_codegen_orphan_reg_async_reset_1053() {
+    // Async reset orphan reg verification (common in analog/PMIC/ADC/DAC trims).
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module C
+          port clk: in Clock<SysDomain>;
+          port rst_n: in Reset<Async, Low>;
+          port q: out UInt<8>;
+          reg trim: UInt<8> reset rst_n => 8'hA5;
+          comb
+            q = trim;
+          end comb
+        end module C
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    let start_marker = "void VC::eval_posedge() {";
+    let pe_start = cpp
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("expected eval_posedge body in:\n{cpp}"));
+    let pe_body = &cpp[pe_start + start_marker.len()..];
+    let pe_body = pe_body.split("\n}\n").next().unwrap_or("");
+    assert!(
+        pe_body.contains("if ((!rst_n))"),
+        "expected async reset guard in eval_posedge:\n{pe_body}"
+    );
+    assert!(
+        pe_body.contains("_trim = 165;") && pe_body.contains("_n_trim = 165;"),
+        "expected orphan async reg reset assignment to live and shadow in eval_posedge:\n{pe_body}"
+    );
+}

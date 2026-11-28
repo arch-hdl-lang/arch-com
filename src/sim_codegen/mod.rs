@@ -2675,7 +2675,7 @@ impl<'a> SimCodegen<'a> {
             })
             .collect();
 
-        if !reg_blocks.is_empty() || !pipe_regs.is_empty() {
+        if !reg_blocks.is_empty() || !pipe_regs.is_empty() || !reg_decls.is_empty() {
             // Declare _n_ temporaries for all regs. Use the param-aware
             // helper so Vec<_, PARAM_NAME> resolves to the literal default
             // (otherwise we emit `_n_arr[0]` and corrupt stack on memcpy).
@@ -2995,6 +2995,189 @@ impl<'a> SimCodegen<'a> {
                 }
 
                 cpp.push_str("  }\n");
+            }
+
+            // Orphan registers: RegDecls with a reset clause that are not assigned in any seq block.
+            // Mirrors SV backend's `emit_orphan_reset_regs` in src/codegen/module.rs:1835.
+            // Closes #1053 (silent sim != SV miscompile on unassigned reset registers, such as
+            // hardwired capability registers in I3C/CAN/DSP/analog configs).
+            let mut assigned_in_any_block = std::collections::BTreeSet::new();
+            for rb in &reg_blocks {
+                collect_stmt_assigns(&rb.stmts, &mut assigned_in_any_block);
+            }
+
+            struct OrphanReset<'a> {
+                name: &'a str,
+                rst_name: String,
+                is_async: bool,
+                is_low: bool,
+                init: String,
+            }
+
+            let mut orphans: Vec<OrphanReset> = Vec::new();
+            for rd in &reg_decls {
+                if matches!(rd.reset, RegReset::None)
+                    || assigned_in_any_block.contains(&rd.name.name)
+                {
+                    continue;
+                }
+                let Some(info) = resolve_reg_reset_info(&rd.reset, &m.ports) else {
+                    continue;
+                };
+                let reset_expr = reset_value_from_reg_reset(&rd.reset);
+                let init_val = if let Some(expr) = reset_expr {
+                    match &expr.kind {
+                        ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
+                        ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
+                        ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
+                        ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
+                        ExprKind::Bool(b) => {
+                            if *b {
+                                "1".to_string()
+                            } else {
+                                "0".to_string()
+                            }
+                        }
+                        _ => {
+                            let tmp_ctx = Ctx::new(
+                                &reg_names,
+                                &port_names,
+                                &let_names,
+                                &inst_names,
+                                &wide_names,
+                                &widths,
+                                &enum_map,
+                                &bus_port_names,
+                            )
+                            .with_signed_names(&signed_names)
+                            .with_function_names(function_names)
+                            .with_reset_levels(&reset_levels)
+                            .with_float_names(&float_names)
+                            .with_decl_types(&decl_types, &struct_defs);
+                            cpp_expr(expr, &tmp_ctx)
+                        }
+                    }
+                } else {
+                    "0".to_string()
+                };
+                orphans.push(OrphanReset {
+                    name: rd.name.name.as_str(),
+                    rst_name: info.0,
+                    is_async: info.1,
+                    is_low: info.2,
+                    init: init_val,
+                });
+            }
+
+            if !orphans.is_empty() {
+                let mut orphan_groups: std::collections::BTreeMap<
+                    (String, bool, bool),
+                    Vec<&OrphanReset>,
+                > = std::collections::BTreeMap::new();
+                for o in &orphans {
+                    orphan_groups
+                        .entry((o.rst_name.clone(), o.is_async, o.is_low))
+                        .or_default()
+                        .push(o);
+                }
+
+                let orphan_clk = reg_blocks.first().map(|rb| &rb.clock.name).or_else(|| {
+                    m.ports
+                        .iter()
+                        .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                        .map(|p| &p.name.name)
+                });
+
+                for ((rst_name, is_async, is_low), group) in &orphan_groups {
+                    let cond = if *is_low {
+                        format!("(!{rst_name})")
+                    } else {
+                        rst_name.clone()
+                    };
+                    if *is_async {
+                        cpp.push_str(&format!("  if ({cond}) {{\n"));
+                        for o in group {
+                            let reg_name = o.name;
+                            let init = &o.init;
+                            if vec_reg_names.contains(reg_name) {
+                                let count = vec_sizes.get(reg_name).copied().unwrap_or(0);
+                                if count > 0 {
+                                    if init == "0" {
+                                        cpp.push_str(&format!(
+                                            "    memset(_{reg_name}, 0, sizeof(_{reg_name}));\n"
+                                        ));
+                                        cpp.push_str(&format!(
+                                            "    memset(_n_{reg_name}, 0, sizeof(_n_{reg_name}));\n"
+                                        ));
+                                    } else {
+                                        cpp.push_str(&format!(
+                                            "    for (size_t _i = 0; _i < {count}; ++_i) {{ _{reg_name}[_i] = {init}; _n_{reg_name}[_i] = {init}; }}\n"
+                                        ));
+                                    }
+                                }
+                            } else if wide_names.contains(reg_name) {
+                                let bits = widths.get(reg_name).copied().unwrap_or(0);
+                                if bits > 128 {
+                                    let words = wide_words(bits);
+                                    cpp.push_str(&format!(
+                                        "    _{reg_name} = VlWide<{words}>({init});\n"
+                                    ));
+                                    cpp.push_str(&format!(
+                                        "    _n_{reg_name} = VlWide<{words}>({init});\n"
+                                    ));
+                                } else {
+                                    cpp.push_str(&format!(
+                                        "    _{reg_name} = (_arch_u128){init};\n"
+                                    ));
+                                    cpp.push_str(&format!(
+                                        "    _n_{reg_name} = (_arch_u128){init};\n"
+                                    ));
+                                }
+                            } else {
+                                cpp.push_str(&format!("    _{reg_name} = {init};\n"));
+                                cpp.push_str(&format!("    _n_{reg_name} = {init};\n"));
+                            }
+                        }
+                        cpp.push_str("  }\n");
+                    } else if let Some(clk) = orphan_clk {
+                        cpp.push_str(&format!("  if (_rising_{clk}) {{\n"));
+                        cpp.push_str(&format!("    if ({cond}) {{\n"));
+                        for o in group {
+                            let reg_name = o.name;
+                            let init = &o.init;
+                            if vec_reg_names.contains(reg_name) {
+                                let count = vec_sizes.get(reg_name).copied().unwrap_or(0);
+                                if count > 0 {
+                                    if init == "0" {
+                                        cpp.push_str(&format!(
+                                            "      memset(_n_{reg_name}, 0, sizeof(_n_{reg_name}));\n"
+                                        ));
+                                    } else {
+                                        cpp.push_str(&format!(
+                                            "      for (size_t _i = 0; _i < {count}; ++_i) {{ _n_{reg_name}[_i] = {init}; }}\n"
+                                        ));
+                                    }
+                                }
+                            } else if wide_names.contains(reg_name) {
+                                let bits = widths.get(reg_name).copied().unwrap_or(0);
+                                if bits > 128 {
+                                    let words = wide_words(bits);
+                                    cpp.push_str(&format!(
+                                        "      _n_{reg_name} = VlWide<{words}>({init});\n"
+                                    ));
+                                } else {
+                                    cpp.push_str(&format!(
+                                        "      _n_{reg_name} = (_arch_u128){init};\n"
+                                    ));
+                                }
+                            } else {
+                                cpp.push_str(&format!("      _n_{reg_name} = {init};\n"));
+                            }
+                        }
+                        cpp.push_str("    }\n");
+                        cpp.push_str("  }\n");
+                    }
+                }
             }
 
             // pipe_reg chain assignments — write to _n_ temporaries (before commit).
