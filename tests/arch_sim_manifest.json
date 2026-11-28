@@ -749,6 +749,15 @@
       "tb_files": [
         "tests/sim_onehot_u128_tb.cpp"
       ]
+    },
+    {
+      "name": "sim_u128_band_mask",
+      "arch_files": [
+        "tests/sim_u128_band_mask.arch"
+      ],
+      "tb_files": [
+        "tests/sim_u128_band_mask_tb.cpp"
+      ]
     }
   ]
 }
