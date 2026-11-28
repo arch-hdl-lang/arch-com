@@ -6664,7 +6664,7 @@ The primary structural use of generate for is instantiating N copies of a submod
 |                                                                                   |
 | // The sum_in of PE\[0\] is 0; for PE\[i\>0\] it is PE\[i-1\].sum_out             |
 |                                                                                   |
-| **pipeline** SystolicArray                                                        |
+| **module** SystolicArray                                                          |
 |                                                                                   |
 | **param** SIZE: **const** = 4; // change to 8, 16, 32 --- no other changes needed |
 |                                                                                   |
@@ -6680,7 +6680,7 @@ The primary structural use of generate for is instantiating N copies of a submod
 |                                                                                   |
 | // This is impossible in SystemVerilog --- ports cannot be generated.             |
 |                                                                                   |
-| generate **for** i **in** 0..SIZE-1                                               |
+| generate_for i **in** 0..SIZE-1                                                   |
 |                                                                                   |
 | **port** a_in\[i\]: **in** SInt\<8\>;                                             |
 |                                                                                   |
@@ -6688,11 +6688,9 @@ The primary structural use of generate for is instantiating N copies of a submod
 |                                                                                   |
 | **port** result\[i\]: **out** SInt\<ACC_W\>;                                      |
 |                                                                                   |
-| **end** generate **for** i                                                        |
+| **end** generate_for                                                              |
 |                                                                                   |
-| **stage** Compute                                                                 |
-|                                                                                   |
-| generate **for** i **in** 0..SIZE-1                                               |
+| generate_for i **in** 0..SIZE-1                                                   |
 |                                                                                   |
 | **inst** pe\[i\]: SystolicPE                                                      |
 |                                                                                   |
@@ -6716,23 +6714,19 @@ The primary structural use of generate for is instantiating N copies of a submod
 |                                                                                   |
 | **end** **inst** pe\[i\]                                                          |
 |                                                                                   |
-| **end** generate **for** i                                                        |
-|                                                                                   |
-| **end** **stage** Compute                                                         |
-|                                                                                   |
-| **stall** **when** en == false;                                                   |
+| **end** generate_for                                                              |
 |                                                                                   |
 | // Generated assertions --- one overflow check per PE                             |
 |                                                                                   |
-| generate **for** i **in** 0..SIZE-1                                               |
+| generate_for i **in** 0..SIZE-1                                                   |
 |                                                                                   |
-| **assert** pe_valid\[i\]: pe\[i\].acc_reg \>= -SInt\<ACC_W\>().min() **and**      |
+| **assert** pe_valid_i: pe\[i\].acc_reg \>= -SInt\<ACC_W\>().min() **and**        |
 |                                                                                   |
 | pe\[i\].acc_reg \<= SInt\<ACC_W\>().max();                                        |
 |                                                                                   |
-| **end** generate **for** i                                                        |
+| **end** generate_for                                                              |
 |                                                                                   |
-| **end** **pipeline** SystolicArray                                                |
+| **end** **module** SystolicArray                                                  |
 |                                                                                   |
 | // Instantiation --- the caller sees SIZE ports by name                           |
 |                                                                                   |
