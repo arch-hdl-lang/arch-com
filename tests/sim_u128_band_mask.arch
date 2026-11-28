@@ -1,0 +1,75 @@
+// Regression: `+%` / `-%` / `*%` whose result lands in the 65..=128-bit
+// (`_arch_u128` carrier) band must be computed and stored at full width in the
+// native `arch sim` model (#1184).
+//
+// The wrap paths emitted `cast_to_(signed_)bits`, whose C++ type capped at
+// (u)int64_t: a 65..=128-bit wrapping result was both computed without its high
+// carry/borrow (operands stayed in 64-bit arithmetic) and truncated to 64 bits
+// on store, while the emitted SystemVerilog is width-correct — a silent
+// sim != SV miscompile.
+//
+// Covers the 65-bit lower boundary (carry into bit 64), the 96-bit mid-band,
+// mixed operand widths (UInt<96> +% UInt<40>), a signed wrap in the band
+// (SInt<96>), the 127-bit case, the 128-bit upper boundary, and a `+%` inside a
+// seq block (the shared cpp_expr path). Every expected value is cross-checked
+// against the emitted SystemVerilog under the SV reference simulator; most of
+// the 14 checks fail on the pre-fix binary.
+module BandMask
+  port clk: in Clock<C>;
+  port rst: in Reset<Async, High>;
+  port a: in UInt<64>;
+  port b: in UInt<32>;
+
+  // 96-bit mid-band, mixed operand widths (a: 64b, b: 32b -> w96: 96b).
+  let w96: UInt<96> = {a, b};
+  let sub: UInt<96> = w96 -% 96'd1;
+  let add: UInt<96> = w96 +% w96;
+  let mul: UInt<96> = w96 *% 96'd2;
+  port sub_hi: out UInt<32>;
+  port add_hi: out UInt<32>;
+  port mul_hi: out UInt<32>;
+
+  // Mixed operand widths in a single wrap: UInt<96> +% UInt<40>.
+  let c40: UInt<40> = a.trunc<40>();
+  let mix: UInt<96> = w96 +% c40;
+  port mix_hi: out UInt<32>;
+
+  // Signed wrap in the band (exercises cast_to_signed_carrier). Read through a
+  // slice, not a signed comparison, so the non-native signed-compare gap (#952)
+  // cannot interfere with what this checks.
+  let sw: SInt<96> = signed(w96) -% signed(96'd1);
+  port sw_hi: out UInt<32>;
+
+  // 65-bit lower boundary: the carry lands exactly on bit 64.
+  let w65: UInt<65> = a.zext<65>() +% a.zext<65>();
+  port w65_bit64: out Bool;
+
+  // 127-bit case (just below the carrier top).
+  let w127: UInt<127> = {a.trunc<63>(), a};
+  let w127w: UInt<127> = w127 +% w127;
+  port w127_hi: out UInt<63>;
+
+  // 128-bit upper boundary.
+  let w128: UInt<128> = {a, a} +% 128'd1;
+  port w128_hi: out UInt<64>;
+
+  // seq-block wrap in the band; read the HIGH word so truncation is visible.
+  reg acc: UInt<96> reset rst => 0;
+  port acc_hi: out UInt<32>;
+
+  seq on clk rising
+    acc <= acc +% w96;
+  end seq
+
+  comb
+    sub_hi = sub[95:64];
+    add_hi = add[95:64];
+    mul_hi = mul[95:64];
+    mix_hi = mix[95:64];
+    sw_hi = unsigned(sw)[95:64];
+    w65_bit64 = w65[64];
+    w127_hi = w127w[126:64];
+    w128_hi = w128[127:64];
+    acc_hi = acc[95:64];
+  end comb
+end module BandMask

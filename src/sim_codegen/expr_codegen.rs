@@ -1331,10 +1331,17 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 let product = format!("((({cast_ty})({l})) * (({cast_ty})({r})))");
                 return if *op == BinOp::MulWrap {
                     let bits = infer_expr_width(expr, ctx);
+                    // `bits` is <= 128 here (the > 128 case exited above). The
+                    // `*_carrier` helpers mask the product to its ARCH width in
+                    // the `_arch_u128` carrier; the earlier `cast_to_(signed_)
+                    // bits` helpers capped the C++ type at (u)int64_t and so
+                    // silently truncated a 65..=128-bit `*%` result to 64 bits
+                    // (#1184). For <= 64 the carrier helpers delegate to those
+                    // same bit helpers, so that path is byte-for-byte unchanged.
                     if infer_expr_signed(expr, ctx) {
-                        cast_to_signed_bits(&product, bits)
+                        cast_to_signed_carrier(&product, bits)
                     } else {
-                        cast_to_bits(&product, bits)
+                        cast_to_unsigned_carrier(&product, bits)
                     }
                 } else {
                     product
@@ -1385,9 +1392,40 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 }
             }
             if matches!(op, BinOp::AddWrap | BinOp::SubWrap) {
-                let value = format!("({l} {op_str} {r})");
                 let bits = infer_expr_width(expr, ctx);
-                return if infer_expr_signed(expr, ctx) {
+                let signed = infer_expr_signed(expr, ctx);
+                if (65..=128).contains(&bits) {
+                    // 65..=128-bit band: promote each operand to the
+                    // `_arch_u128` carrier *before* the op — otherwise a
+                    // carry/borrow into bits 64..127 is lost in 64-bit C++
+                    // arithmetic — then mask / sign-extend the result to the
+                    // ARCH width. Mirrors the plain Add/Sub path. The earlier
+                    // `cast_to_(signed_)bits` helpers capped the C++ type at
+                    // (u)int64_t, so a 65..=128-bit `+%` / `-%` result was both
+                    // computed without the high carry and truncated to 64 bits
+                    // (#1184).
+                    let (l_wide, r_wide) = if signed {
+                        (
+                            cast_to_signed_carrier(&l, bits),
+                            cast_to_signed_carrier(&r, bits),
+                        )
+                    } else {
+                        (
+                            cast_to_unsigned_carrier(&l, bits),
+                            cast_to_unsigned_carrier(&r, bits),
+                        )
+                    };
+                    let value = format!("({l_wide} {op_str} {r_wide})");
+                    return if signed {
+                        cast_to_signed_carrier(&value, bits)
+                    } else {
+                        cast_to_unsigned_carrier(&value, bits)
+                    };
+                }
+                // <= 64 (byte-for-byte unchanged) and > 128 (VlWide — a
+                // separate open gap) keep the legacy result-only cast.
+                let value = format!("({l} {op_str} {r})");
+                return if signed {
                     cast_to_signed_bits(&value, bits)
                 } else {
                     cast_to_bits(&value, bits)
