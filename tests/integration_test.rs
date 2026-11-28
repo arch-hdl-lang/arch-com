@@ -44930,3 +44930,99 @@ fn carry_cast_omitted_only_when_sv_width_already_keeps_the_carry() {
         "the literal-index form lints clean:\n{log}"
     );
 }
+
+/// Issue #1068: struct field types and bus signal types must be name-resolved
+/// so that undefined or package-hidden types are rejected with a compile error
+/// instead of passing `arch check` and emitting broken SystemVerilog.
+#[test]
+fn test_struct_field_and_bus_signal_undefined_type_rejected_1068() {
+    let bad_struct = r#"
+struct Su
+  a: Nonexistent;
+  b: UInt<4>;
+end struct Su
+
+module Mu
+  port i: in Su;
+  port o: out UInt<4>;
+  comb
+    o = i.b;
+  end comb
+end module Mu
+"#;
+    let errs = typecheck_errors(bad_struct)
+        .expect_err("struct field with undefined type must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("undefined name: `Nonexistent`")),
+        "expected undefined name for Nonexistent, got: {errs:?}"
+    );
+
+    let bad_bus = r#"
+bus Bu
+  d: out Ghost;
+  v: out Bool;
+end bus Bu
+"#;
+    let errs =
+        typecheck_errors(bad_bus).expect_err("bus signal with undefined type must be rejected");
+    assert!(
+        errs.iter().any(|e| e.contains("undefined name: `Ghost`")),
+        "expected undefined name for Ghost, got: {errs:?}"
+    );
+
+    let valid = r#"
+struct ValidInner
+  x: UInt<8>;
+end struct ValidInner
+
+struct ValidOuter
+  inner: ValidInner;
+  flag:  Bool;
+end struct ValidOuter
+
+bus ValidBus
+  param W: const = 16;
+  data: out UInt<W>;
+  st:   out ValidOuter;
+end bus ValidBus
+"#;
+    assert!(
+        typecheck_errors(valid).is_ok(),
+        "valid struct and bus member types must pass typecheck"
+    );
+
+    // Package visibility enforcement (spec §29.2):
+    // Struct fields and bus signals must not leak package-only types without `use`.
+    let bad_pkg_struct = "struct Su\n  p: Pair;\nend struct Su\n";
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Su.arch", bad_pkg_struct)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("undefined name: `Pair`"),
+        "struct field referencing package type without `use` must error:\n{stderr}"
+    );
+
+    let with_use_struct = format!("use Q;\n\n{bad_pkg_struct}");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Su.arch", &with_use_struct)]);
+    assert!(
+        out.status.success(),
+        "struct field referencing package type with `use` must resolve:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let bad_pkg_bus = "bus Bu\n  p: out Pair;\nend bus Bu\n";
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Bu.arch", bad_pkg_bus)]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("undefined name: `Pair`"),
+        "bus signal referencing package type without `use` must error:\n{stderr}"
+    );
+
+    let with_use_bus = format!("use Q;\n\n{bad_pkg_bus}");
+    let out = check_package_domain_files(&[("Q.arch", VIS_PKG), ("Bu.arch", &with_use_bus)]);
+    assert!(
+        out.status.success(),
+        "bus signal referencing package type with `use` must resolve:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
