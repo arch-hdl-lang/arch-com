@@ -148,7 +148,7 @@ Verified against Verilator 5.048 and Icarus Verilog 12.0 (parse/elaborate-only):
 |                                                                                   |
 | **let** c: UInt\<8\> = 0b1111_1111; // underscores allowed anywhere               |
 |                                                                                   |
-| // Sized literals: width\'format\'value --- compiler checks against ascribed type |
+| // Sized literals: width\'format\'value --- value must fit declared width; compiler checks against ascribed type |
 |                                                                                   |
 | **let** d: UInt\<4\> = 4\'b1010;                                                  |
 |                                                                                   |

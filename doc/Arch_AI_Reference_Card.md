@@ -409,7 +409,7 @@ Index:       a[i]
 Call:        FnName(arg1, arg2)    // overload-resolved by argument types
 Enum:        E::Variant
 Struct lit:  S { f: val }
-Sized lit:   8'hFF  16'd1024  4'b1010   // Verilog-style
+Sized lit:   8'hFF  16'd1024  4'b1010   // Verilog-style; value must fit declared width
 todo!        // compilable placeholder; warns at compile, aborts at sim runtime
 ```
 

@@ -44930,3 +44930,52 @@ fn carry_cast_omitted_only_when_sv_width_already_keeps_the_carry() {
         "the literal-index form lints clean:\n{log}"
     );
 }
+
+#[test]
+fn test_sized_literal_overflow_rejected_at_parse_1052() {
+    let source = "
+module Lit2
+  port a: in UInt<4>;
+  port y: out Bool;
+  comb
+    y = a == 4'd20;
+  end comb
+end module Lit2
+";
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let err = parser
+        .parse_source_file()
+        .expect_err("expected 4'd20 rejection");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("sized literal value 20 exceeds declared width of 4 bits"),
+        "expected overflow message, got: {msg}"
+    );
+}
+
+#[test]
+fn test_param_sized_literal_overflow_rejected_at_typecheck_1052() {
+    let source = "
+module ParamLit
+  param W: const = 4;
+  port a: in UInt<W>;
+  port y: out Bool;
+  comb
+    y = a == W'd20;
+  end comb
+end module ParamLit
+";
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(ast).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let err = checker.check().expect_err("expected W'd20 rejection");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(
+        msg.contains("sized literal value 20 exceeds declared width of 4 bits"),
+        "expected overflow message, got: {msg}"
+    );
+}

@@ -5118,9 +5118,20 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(bits)
                 }
                 LitKind::Sized(w, _) => Ty::UInt(*w),
-                LitKind::ParamSized(name, _) => self
+                LitKind::ParamSized(name, v) => self
                     .resolve_param_sized_literal_width(name, expr, local_types)
-                    .map(Ty::UInt)
+                    .map(|w| {
+                        if w < 64 && *v >= (1u64 << w) {
+                            self.errors.push(CompileError::General {
+                                message: format!(
+                                    "sized literal value {} exceeds declared width of {} bits",
+                                    v, w
+                                ),
+                                span: crate::diagnostics::span_to_source_span(expr.span),
+                            });
+                        }
+                        Ty::UInt(w)
+                    })
                     .unwrap_or(Ty::Error),
                 // Float literals default to FP32; BF16 values are written via an
                 // explicit `.to_bf16()` conversion (no implicit float narrowing)
