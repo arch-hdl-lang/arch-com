@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use super::*;
 use super::{SimCodegen, SimModel};
+use crate::ast::RamWriteMode;
 
 impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_ram(&self, r: &RamDecl) -> SimModel {
@@ -422,25 +423,131 @@ impl<'a> SimCodegen<'a> {
                 }
                 cpp.push_str(&format!("  if ({pfx}_en) {{\n"));
                 if has_wen {
-                    cpp.push_str(&format!(
-                        "    if ({pfx}_wen) {{ _mem[{pfx}_addr] = {wdata_name};{mark} }}\n",
-                        mark = if uninit_ram_check {
-                            format!(" _mem_valid[{pfx}_addr] = true;")
-                        } else {
-                            String::new()
+                    let write_mode = r.write_mode.unwrap_or(RamWriteMode::NoChange);
+                    match write_mode {
+                        RamWriteMode::ReadFirst => {
+                            match r.latency {
+                                1 | 2 => {
+                                    cpp.push_str(&read_check(&addr_expr, "    "));
+                                    if is_wide {
+                                        cpp.push_str(&format!("    memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                    } else {
+                                        cpp.push_str(&format!(
+                                            "    _r_{out_name} = _mem[{pfx}_addr];\n"
+                                        ));
+                                    }
+                                }
+                                0 | _ => {}
+                            }
+                            if is_wide {
+                                cpp.push_str(&format!(
+                                    "    if ({pfx}_wen) {{ memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));{mark} }}\n",
+                                    mark = if uninit_ram_check {
+                                        format!(" _mem_valid[{pfx}_addr] = true;")
+                                    } else {
+                                        String::new()
+                                    }
+                                ));
+                            } else {
+                                cpp.push_str(&format!(
+                                    "    if ({pfx}_wen) {{ _mem[{pfx}_addr] = {wdata_name};{mark} }}\n",
+                                    mark = if uninit_ram_check {
+                                        format!(" _mem_valid[{pfx}_addr] = true;")
+                                    } else {
+                                        String::new()
+                                    }
+                                ));
+                            }
                         }
-                    ));
-                    match r.latency {
-                        1 | 2 => {
-                            cpp.push_str(&format!("    if (!{pfx}_wen) {{\n"));
-                            cpp.push_str(&read_check(&addr_expr, "      "));
-                            cpp.push_str(&format!("      _r_{out_name} = _mem[{pfx}_addr];\n"));
-                            cpp.push_str("    }\n");
+                        RamWriteMode::WriteFirst => {
+                            if is_wide {
+                                cpp.push_str(&format!(
+                                    "    if ({pfx}_wen) {{ memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));{mark} }}\n",
+                                    mark = if uninit_ram_check {
+                                        format!(" _mem_valid[{pfx}_addr] = true;")
+                                    } else {
+                                        String::new()
+                                    }
+                                ));
+                            } else {
+                                cpp.push_str(&format!(
+                                    "    if ({pfx}_wen) {{ _mem[{pfx}_addr] = {wdata_name};{mark} }}\n",
+                                    mark = if uninit_ram_check {
+                                        format!(" _mem_valid[{pfx}_addr] = true;")
+                                    } else {
+                                        String::new()
+                                    }
+                                ));
+                            }
+                            match r.latency {
+                                1 | 2 => {
+                                    cpp.push_str(&format!("    if ({pfx}_wen) {{\n"));
+                                    if is_wide {
+                                        cpp.push_str(&format!("      memcpy(&_r_{out_name}, &{wdata_name}, sizeof({elem_ty}));\n"));
+                                    } else {
+                                        cpp.push_str(&format!(
+                                            "      _r_{out_name} = {wdata_name};\n"
+                                        ));
+                                    }
+                                    cpp.push_str("    } else {\n");
+                                    cpp.push_str(&read_check(&addr_expr, "      "));
+                                    if is_wide {
+                                        cpp.push_str(&format!("      memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                    } else {
+                                        cpp.push_str(&format!(
+                                            "      _r_{out_name} = _mem[{pfx}_addr];\n"
+                                        ));
+                                    }
+                                    cpp.push_str("    }\n");
+                                }
+                                0 | _ => {}
+                            }
                         }
-                        0 | _ => {}
+                        RamWriteMode::NoChange => {
+                            if is_wide {
+                                cpp.push_str(&format!(
+                                    "    if ({pfx}_wen) {{ memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));{mark} }}\n",
+                                    mark = if uninit_ram_check {
+                                        format!(" _mem_valid[{pfx}_addr] = true;")
+                                    } else {
+                                        String::new()
+                                    }
+                                ));
+                            } else {
+                                cpp.push_str(&format!(
+                                    "    if ({pfx}_wen) {{ _mem[{pfx}_addr] = {wdata_name};{mark} }}\n",
+                                    mark = if uninit_ram_check {
+                                        format!(" _mem_valid[{pfx}_addr] = true;")
+                                    } else {
+                                        String::new()
+                                    }
+                                ));
+                            }
+                            match r.latency {
+                                1 | 2 => {
+                                    cpp.push_str(&format!("    if (!{pfx}_wen) {{\n"));
+                                    cpp.push_str(&read_check(&addr_expr, "      "));
+                                    if is_wide {
+                                        cpp.push_str(&format!("      memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                    } else {
+                                        cpp.push_str(&format!(
+                                            "      _r_{out_name} = _mem[{pfx}_addr];\n"
+                                        ));
+                                    }
+                                    cpp.push_str("    }\n");
+                                }
+                                0 | _ => {}
+                            }
+                        }
                     }
                 } else {
-                    cpp.push_str(&format!("    _mem[{pfx}_addr] = {wdata_name};\n"));
+                    if is_wide {
+                        cpp.push_str(&format!(
+                            "    memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));\n"
+                        ));
+                    } else {
+                        cpp.push_str(&format!("    _mem[{pfx}_addr] = {wdata_name};\n"));
+                    }
                     cpp.push_str(&write_mark(&addr_expr));
                 }
                 cpp.push_str("  }\n");
@@ -565,31 +672,96 @@ impl<'a> SimCodegen<'a> {
                     }
                     cpp.push_str(&format!("    if ({pfx}_en) {{\n"));
                     if has_wen {
-                        cpp.push_str(&format!("      if ({pfx}_wen) {{\n"));
-                        if is_wide {
-                            cpp.push_str(&format!("        memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));\n"));
-                        } else {
-                            cpp.push_str(&format!("        _mem[{pfx}_addr] = {wdata_name};\n"));
-                        }
-                        cpp.push_str(&write_mark_indented(&addr, "        "));
-                        cpp.push_str("      }");
-                        if matches!(r.latency, 1 | 2) {
-                            if let Some(out_name) = &out_name {
-                                cpp.push_str(" else {\n");
-                                cpp.push_str(&read_check(&addr, "        "));
+                        let write_mode = r.write_mode.unwrap_or(RamWriteMode::NoChange);
+                        match write_mode {
+                            RamWriteMode::ReadFirst => {
+                                if matches!(r.latency, 1 | 2) {
+                                    if let Some(out_name) = &out_name {
+                                        cpp.push_str(&read_check(&addr, "      "));
+                                        if is_wide {
+                                            cpp.push_str(&format!("      memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                        } else {
+                                            cpp.push_str(&format!(
+                                                "      _r_{out_name} = _mem[{pfx}_addr];\n"
+                                            ));
+                                        }
+                                    }
+                                }
+                                cpp.push_str(&format!("      if ({pfx}_wen) {{\n"));
                                 if is_wide {
-                                    cpp.push_str(&format!("        memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                    cpp.push_str(&format!("        memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));\n"));
                                 } else {
                                     cpp.push_str(&format!(
-                                        "        _r_{out_name} = _mem[{pfx}_addr];\n"
+                                        "        _mem[{pfx}_addr] = {wdata_name};\n"
                                     ));
                                 }
+                                cpp.push_str(&write_mark_indented(&addr, "        "));
                                 cpp.push_str("      }\n");
-                            } else {
-                                cpp.push('\n');
                             }
-                        } else {
-                            cpp.push('\n');
+                            RamWriteMode::WriteFirst => {
+                                cpp.push_str(&format!("      if ({pfx}_wen) {{\n"));
+                                if is_wide {
+                                    cpp.push_str(&format!("        memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));\n"));
+                                } else {
+                                    cpp.push_str(&format!(
+                                        "        _mem[{pfx}_addr] = {wdata_name};\n"
+                                    ));
+                                }
+                                cpp.push_str(&write_mark_indented(&addr, "        "));
+                                cpp.push_str("      }\n");
+                                if matches!(r.latency, 1 | 2) {
+                                    if let Some(out_name) = &out_name {
+                                        cpp.push_str(&format!("      if ({pfx}_wen) {{\n"));
+                                        if is_wide {
+                                            cpp.push_str(&format!("        memcpy(&_r_{out_name}, &{wdata_name}, sizeof({elem_ty}));\n"));
+                                        } else {
+                                            cpp.push_str(&format!(
+                                                "        _r_{out_name} = {wdata_name};\n"
+                                            ));
+                                        }
+                                        cpp.push_str("      } else {\n");
+                                        cpp.push_str(&read_check(&addr, "        "));
+                                        if is_wide {
+                                            cpp.push_str(&format!("        memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                        } else {
+                                            cpp.push_str(&format!(
+                                                "        _r_{out_name} = _mem[{pfx}_addr];\n"
+                                            ));
+                                        }
+                                        cpp.push_str("      }\n");
+                                    }
+                                }
+                            }
+                            RamWriteMode::NoChange => {
+                                cpp.push_str(&format!("      if ({pfx}_wen) {{\n"));
+                                if is_wide {
+                                    cpp.push_str(&format!("        memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));\n"));
+                                } else {
+                                    cpp.push_str(&format!(
+                                        "        _mem[{pfx}_addr] = {wdata_name};\n"
+                                    ));
+                                }
+                                cpp.push_str(&write_mark_indented(&addr, "        "));
+                                cpp.push_str("      }");
+                                if matches!(r.latency, 1 | 2) {
+                                    if let Some(out_name) = &out_name {
+                                        cpp.push_str(" else {\n");
+                                        cpp.push_str(&read_check(&addr, "        "));
+                                        if is_wide {
+                                            cpp.push_str(&format!("        memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                        } else {
+                                            cpp.push_str(&format!(
+                                                "        _r_{out_name} = _mem[{pfx}_addr];\n"
+                                            ));
+                                        }
+                                        cpp.push_str("      }\n");
+                                    } else {
+                                        cpp.push('\n');
+                                    }
+                                } else {
+                                    cpp.push('\n');
+                                }
+                            }
                         }
                     } else if matches!(r.latency, 1 | 2) {
                         if let Some(out_name) = &out_name {
