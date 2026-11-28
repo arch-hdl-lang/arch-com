@@ -638,7 +638,8 @@ tests/cvdp/fifo_policy.arch	iverilog	OK	-
 tests/cvdp/fifo_policy.arch	verilator	OK	-
 tests/cvdp/findfasterclock.arch	iverilog	OK	-
 tests/cvdp/findfasterclock.arch	verilator	OK	-
-tests/cvdp/fir_filter.arch	-	BUILD_FAIL	Error:   × 3 errors
+tests/cvdp/fir_filter.arch	iverilog	OK	-
+tests/cvdp/fir_filter.arch	verilator	OK	-
 tests/cvdp/floor_to_seven_segment.arch	iverilog	OK	-
 tests/cvdp/floor_to_seven_segment.arch	verilator	OK	-
 tests/cvdp/fsm_linear_reg.arch	iverilog	OK	-
